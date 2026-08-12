@@ -315,6 +315,39 @@ export interface DocsGuideDict {
  * card headers are an editorial device shown in every locale, so both
  * labels are dictionary values.
  */
+/**
+ * Docs browser-client page (`app/[locale]/docs/web/page.tsx`).
+ *
+ * The overview and local-means-local paragraphs interleave code-owned
+ * command/address literals (`codewhale web`, `127.0.0.1`, `--port`, …)
+ * that stay in the page per docs/VOICE.md; the dictionary carries the
+ * prose segments between them. Both locales share the same literal order,
+ * so the segment keys align one-to-one.
+ */
+export interface DocsWebDict {
+  metaTitle: string;
+  metaDescription: string;
+  /** Body-copy typography for this locale (CJK needs looser leading). */
+  bodyClassName: string;
+  overviewTitle: string;
+  overviewSeg1: string;
+  overviewSeg2: string;
+  overviewSeg3: string;
+  overviewSeg4: string;
+  overviewLead2: string;
+  authTitle: string;
+  authBody: string;
+  localTitle: string;
+  localSeg1: string;
+  localSeg2: string;
+  localSeg3: string;
+  localSeg4: string;
+  localSeg5: string;
+  troubleshootingTitle: string;
+  troubleshootingBody: string;
+  sourceNote: string;
+}
+
 export interface DocsConstitutionDict {
   metaTitle: string;
   metaDescription: string;

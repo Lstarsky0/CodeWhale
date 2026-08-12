@@ -4,11 +4,13 @@ import {
   EN_CHROME,
   EN_DOCS_CONSTITUTION,
   EN_DOCS_GUIDE,
+  EN_DOCS_WEB,
   EN_HOME,
   fill,
   getChrome,
   getDocsConstitution,
   getDocsGuide,
+  getDocsWeb,
   getHome,
   pickText,
   splitToken,
@@ -185,6 +187,7 @@ describe("website dictionaries", () => {
     const pages = [
       ["docs-guide", EN_DOCS_GUIDE, getDocsGuide, "overviewTitle"],
       ["docs-constitution", EN_DOCS_CONSTITUTION, getDocsConstitution, "title"],
+      ["docs-web", EN_DOCS_WEB, getDocsWeb, "overviewTitle"],
     ] as const;
     for (const [name, reference, get, probeKey] of pages) {
       const enKeys = Object.keys(reference).sort();
