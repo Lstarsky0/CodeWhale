@@ -302,3 +302,34 @@ export interface DocsGuideDict {
   nextTitle: string;
   sourceNote: string;
 }
+
+/**
+ * Docs constitution page (`app/[locale]/docs/constitution/page.tsx`).
+ *
+ * The lead paragraph interleaves three code-owned literals
+ * (`/constitution`, the two constitution.json paths) that stay in the page
+ * per docs/VOICE.md — the dictionary carries the prose segments between
+ * them (`overviewLead1..4`), following the segment-key convention rather
+ * than multi-token templates. `layers` follows the `HomeDict.surfaces`
+ * tuple pattern: [primary label, secondary label, body] — the bilingual
+ * card headers are an editorial device shown in every locale, so both
+ * labels are dictionary values.
+ */
+export interface DocsConstitutionDict {
+  metaTitle: string;
+  metaDescription: string;
+  /** Leading/tracking typography for this locale (CJK needs looser leading). */
+  leadingClassName: string;
+  title: string;
+  titleSecondary: string;
+  overviewLead1: string;
+  overviewLead2: string;
+  overviewLead3: string;
+  overviewLead4: string;
+  /** Three [primary, secondary, body] authority-layer cards. */
+  layers: [string, string, string][];
+  closingLead: string;
+  closingLinkLabel: string;
+  closingTail: string;
+  sourceNote: string;
+}

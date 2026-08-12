@@ -12,11 +12,13 @@
  * than a map entry, which keeps `DICTIONARY_LOCALES` equal to the set of
  * non-reference locale directories that `check-locales.mjs` walks.
  */
-import type { ChromeDict, DocsGuideDict, HomeDict } from "./types";
+import type { ChromeDict, DocsConstitutionDict, DocsGuideDict, HomeDict } from "./types";
 import { chrome as enChrome } from "./en/chrome";
 import { home as enHome } from "./en/home";
 import { docsGuide as enDocsGuide } from "./en/docs-guide";
 import { docsGuide as zhDocsGuide } from "./zh/docs-guide";
+import { docsConstitution as enDocsConstitution } from "./en/docs-constitution";
+import { docsConstitution as zhDocsConstitution } from "./zh/docs-constitution";
 import { chrome as zhChrome } from "./zh/chrome";
 import { home as zhHome } from "./zh/home";
 import { chrome as jaChrome } from "./ja/chrome";
@@ -74,6 +76,10 @@ const DOCS_GUIDE: Record<string, DocsGuideDict> = {
   zh: zhDocsGuide,
 };
 
+const DOCS_CONSTITUTION: Record<string, DocsConstitutionDict> = {
+  zh: zhDocsConstitution,
+};
+
 export function getChrome(locale: string): ChromeDict {
   return CHROME[locale] ?? enChrome;
 }
@@ -84,6 +90,10 @@ export function getHome(locale: string): HomeDict {
 
 export function getDocsGuide(locale: string): DocsGuideDict {
   return DOCS_GUIDE[locale] ?? enDocsGuide;
+}
+
+export function getDocsConstitution(locale: string): DocsConstitutionDict {
+  return DOCS_CONSTITUTION[locale] ?? enDocsConstitution;
 }
 
 /**
@@ -101,6 +111,7 @@ export function pickText(pair: { en: string; zh: string }, locale: string): stri
 export const EN_CHROME = enChrome;
 export const EN_HOME = enHome;
 export const EN_DOCS_GUIDE = enDocsGuide;
+export const EN_DOCS_CONSTITUTION = enDocsConstitution;
 
 /** Interpolate `{name}` tokens in a dictionary template. Unknown tokens are
  * left intact so a template/variable drift is visible in review, not silent. */

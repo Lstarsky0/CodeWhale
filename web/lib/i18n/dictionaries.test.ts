@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   DICTIONARY_LOCALES,
   EN_CHROME,
+  EN_DOCS_CONSTITUTION,
   EN_DOCS_GUIDE,
   EN_HOME,
   fill,
   getChrome,
+  getDocsConstitution,
   getDocsGuide,
   getHome,
   pickText,
@@ -180,19 +182,23 @@ describe("website dictionaries", () => {
   });
 
   it("holds every shipped page dictionary to key parity and English fallback (#5337)", () => {
-    const enKeys = Object.keys(EN_DOCS_GUIDE).sort();
-    for (const locale of [...DICTIONARY_LOCALES, "fr", "und"]) {
-      // Page dictionaries are optional per locale: whatever getDocsGuide
-      // resolves — the locale's own file or the English fallback — must
-      // carry the exact reference shape, so a page never sees a missing key.
-      expect(Object.keys(getDocsGuide(locale)).sort(), `${locale} docs-guide keys`).toEqual(
-        enKeys,
-      );
+    const pages = [
+      ["docs-guide", EN_DOCS_GUIDE, getDocsGuide, "overviewTitle"],
+      ["docs-constitution", EN_DOCS_CONSTITUTION, getDocsConstitution, "title"],
+    ] as const;
+    for (const [name, reference, get, probeKey] of pages) {
+      const enKeys = Object.keys(reference).sort();
+      for (const locale of [...DICTIONARY_LOCALES, "fr", "und"]) {
+        // Page dictionaries are optional per locale: whatever the getter
+        // resolves — the locale's own file or the English fallback — must
+        // carry the exact reference shape, so a page never sees a missing key.
+        expect(Object.keys(get(locale)).sort(), `${locale} ${name} keys`).toEqual(enKeys);
+      }
+      // zh ships a real translation, not an English pass-through.
+      expect(get("zh")[probeKey], `${name} zh translation`).not.toBe(reference[probeKey]);
+      // A locale without the file falls back to the English reference object.
+      expect(get("ja"), `${name} fallback`).toBe(reference);
     }
-    // zh ships a real translation, not an English pass-through.
-    expect(getDocsGuide("zh").overviewTitle).not.toBe(EN_DOCS_GUIDE.overviewTitle);
-    // A locale without the file falls back to the English reference object.
-    expect(getDocsGuide("ja")).toBe(EN_DOCS_GUIDE);
   });
 
   it("pickText selects the locale side of legacy { en, zh } pairs", () => {
