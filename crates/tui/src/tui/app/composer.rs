@@ -864,6 +864,7 @@ impl App {
             self.selected_attachment_index = None;
             return false;
         };
+        self.clear_input_history_navigation();
         let reference = references[index].clone();
         let cursor_byte = byte_index_at_char(&self.input, self.cursor_position);
         let new_cursor_byte = if cursor_byte <= reference.start_byte {
@@ -1437,6 +1438,7 @@ impl App {
 
     /// Delete the character under the cursor (vim `x`).
     pub fn vim_delete_char_under_cursor(&mut self) {
+        self.clear_input_history_navigation();
         self.auto_expand_oversized_paste();
         let total = char_count(&self.input);
         if self.cursor_position >= total {
@@ -1457,6 +1459,7 @@ impl App {
 
     /// Delete the entire current logical line (vim `dd`).
     pub fn vim_delete_line(&mut self) {
+        self.clear_input_history_navigation();
         let text = self.input.clone();
         let cursor_byte = byte_index_at_char(&text, self.cursor_position);
         let line_start_byte = text[..cursor_byte].rfind('\n').map_or(0, |idx| idx + 1);
