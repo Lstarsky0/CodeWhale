@@ -95,8 +95,11 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 /// How many times the replacing rename is attempted before the error surfaces.
 const PERSIST_ATTEMPTS: u32 = 6;
 
-/// Backoff step; attempt *n* sleeps `n * step`, so the last wait is 75ms.
-const PERSIST_RETRY_STEP_MS: u64 = 15;
+/// Backoff step; attempt *n* sleeps `n * step`, so the last wait is 250ms and the
+/// whole budget is 750ms. A setup checkpoint is written on a user action, so it
+/// can afford to outlast a scanner or a second instance holding the file for a
+/// moment; it cannot afford to hang.
+const PERSIST_RETRY_STEP_MS: u64 = 50;
 
 /// Whether a failed rename is worth retrying: another process holds the
 /// destination open, which is a momentary condition rather than a refusal the
@@ -104,8 +107,10 @@ const PERSIST_RETRY_STEP_MS: u64 = 15;
 #[cfg(windows)]
 fn rename_is_retryable(error: &std::io::Error) -> bool {
     // 5 = ERROR_ACCESS_DENIED, 32 = ERROR_SHARING_VIOLATION,
-    // 33 = ERROR_LOCK_VIOLATION. A reader holding the file raises 5 or 32.
-    matches!(error.raw_os_error(), Some(5 | 32 | 33))
+    // 33 = ERROR_LOCK_VIOLATION, 1175 = ERROR_UNABLE_TO_DELETE_FILE (what
+    // `ReplaceFileW` raises when it cannot displace the destination it must
+    // delete first). A reader holding the file raises 5 or 32.
+    matches!(error.raw_os_error(), Some(5 | 32 | 33 | 1175))
 }
 
 #[cfg(not(windows))]
@@ -336,7 +341,10 @@ mod tests {
         // being retried five more times.
         #[cfg(windows)]
         {
-            for code in [5, 32, 33] {
+            // 1175 is the code `ReplaceFileW` raises when it cannot displace the
+            // destination it must delete first — the same contention as 32, one
+            // API further along. The pet-mode save hit it.
+            for code in [5, 32, 33, 1175] {
                 assert!(
                     rename_is_retryable(&std::io::Error::from_raw_os_error(code)),
                     "os error {code}"
