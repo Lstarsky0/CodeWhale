@@ -733,6 +733,16 @@ surfaces = { tui = "stable" }
 owner = "crates/tui/src/commands/groups/config/mod.rs"
 
 [[feature]]
+id = "local-model-reasoning"
+name = "Local model reasoning compatibility"
+summary = "The vLLM Chat route sends reviewed model-template effort values instead of assuming a universal ladder."
+status = "stable"
+surfaces = { tui = "stable", web = "stable", api = "stable" }
+since = "unreleased"
+docs = "docs/LOCAL_MODEL_REASONING.md"
+owner = "crates/config/src/local_reasoning.rs"
+
+[[feature]]
 id = "workbar"
 name = "Workbar"
 summary = "/workbar places the tasks, agents and context bar on any edge or hides it."
