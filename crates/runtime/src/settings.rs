@@ -2416,17 +2416,62 @@ fn atomically_replace_settings_file(path: &Path, body: &[u8]) -> Result<()> {
         // is the native existing-file replacement operation and also preserves
         // the destination's ACLs and attributes.
         let mut temporary = tmp.into_temp_path();
-        replace_existing_settings_file(path, &temporary)
-            .with_context(|| format!("Failed to write settings to {}", path.display()))?;
-        // ReplaceFileW consumed the temporary pathname. Do not ask TempPath to
-        // clean up that now-nonexistent source when it drops.
-        temporary.disable_cleanup(true);
-        return Ok(());
+        match replace_existing_settings_file(path, &temporary) {
+            Ok(()) => {
+                // ReplaceFileW consumed the temporary pathname. Do not ask
+                // TempPath to clean up that now-nonexistent source on drop.
+                temporary.disable_cleanup(true);
+                return Ok(());
+            }
+            // A directory that refuses every rename — Codewhale's own home is
+            // one of them on this machine — will refuse this call forever, so a
+            // save that only ever replaces can never land. Rewrite in place
+            // instead: not atomic, but a settings file that saves is worth more
+            // than one that reports 1175 on every toggle.
+            Err(error) if settings_replace_is_transient(&error) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %error,
+                    "settings replacement refused; rewriting the file in place"
+                );
+                temporary.disable_cleanup(true);
+                drop(temporary);
+                rewrite_settings_in_place(path, body)?;
+                return Ok(());
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Failed to write settings to {}", path.display()));
+            }
+        }
     }
 
     tmp.persist(path)
         .map_err(|error| error.error)
         .with_context(|| format!("Failed to write settings to {}", path.display()))?;
+    Ok(())
+}
+
+/// Last-resort delivery for `settings.toml`: rewrite it without a rename.
+///
+/// Deliberately not atomic — an interruption between truncate and the last byte
+/// can leave a partial document — so it runs only after every replacing call
+/// has been refused. `Settings::load_persisted` already tolerates a corrupt
+/// document by falling back to defaults with `load_error` set, so the worst case
+/// here is recoverable, while the alternative is a setting that never saves.
+fn rewrite_settings_in_place(path: &Path, body: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+        .with_context(|| format!("Failed to open {} for an in-place write", path.display()))?;
+    file.write_all(body)
+        .with_context(|| format!("Failed to rewrite settings at {}", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("Failed to sync settings at {}", path.display()))?;
     Ok(())
 }
 

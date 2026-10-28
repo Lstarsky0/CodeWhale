@@ -85,11 +85,49 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
                 ));
             }
             Err(error) => {
-                return Err(error.error)
-                    .with_context(|| format!("failed to persist {}", path.display()));
+                // Some directories refuse every directory-entry rename for as
+                // long as they are held — Codewhale's own home is one of them
+                // here — and no amount of waiting changes that. Only that shape
+                // falls back: a full disk or a real permission refusal keeps its
+                // own error, because an in-place rewrite would fail there too and
+                // this way the caller learns the actual cause.
+                if !rename_is_retryable(&error.error) {
+                    return Err(error.error)
+                        .with_context(|| format!("failed to persist {}", path.display()));
+                }
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %error.error,
+                    "replacing rename refused; rewriting the file in place"
+                );
+                rewrite_in_place(path, bytes)?;
+                return Ok(());
             }
         }
     }
+}
+
+/// Last-resort delivery: rewrite the existing file without a rename.
+///
+/// This is deliberately not atomic — an interruption between truncate and the
+/// last byte can leave a partial file — so it runs only after every replacing
+/// call has been refused. The alternative is a save that never lands at all,
+/// which for a setup checkpoint means the same write is attempted and fails on
+/// every launch.
+fn rewrite_in_place(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+        .with_context(|| format!("failed to open {} for an in-place write", path.display()))?;
+    file.write_all(bytes)
+        .with_context(|| format!("failed to rewrite {} in place", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("failed to sync {} after an in-place write", path.display()))?;
+    Ok(())
 }
 
 /// How many times the replacing rename is attempted before the error surfaces.
@@ -297,6 +335,27 @@ mod tests {
 
     fn synthetic_secret_fixture() -> String {
         ["abc123", "def456", "ghi"].concat()
+    }
+
+    /// The last-resort writer delivers the bytes by truncating the target.
+    ///
+    /// It is what runs when a directory refuses every replacing rename —
+    /// observed on Codewhale's own home, where a save otherwise never lands —
+    /// so it must actually replace a longer document with a shorter one, and
+    /// leave nothing of the old tail behind.
+    #[test]
+    fn an_in_place_rewrite_replaces_a_longer_document() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("setup_state.json");
+        fs::write(&path, b"{\"old\": true, \"padding\": \"aaaaaaaaaaaaaaaa\"}").unwrap();
+
+        rewrite_in_place(&path, b"{\"new\":1}").unwrap();
+
+        assert_eq!(read(&path), "{\"new\":1}");
+        assert!(
+            !read(&path).contains("padding"),
+            "the old tail must be gone"
+        );
     }
 
     #[test]
