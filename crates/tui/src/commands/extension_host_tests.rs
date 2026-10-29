@@ -95,21 +95,27 @@ fn the_real_built_in_catalog_refuses_every_name_alias_and_mode_alias() {
         .map(str::to_string)
         .chain(owned)
     {
-        let refused =
-            register(&mut registry, &name).expect_err(&format!("/{name} must be refused"));
-        // A built-in spelled outside an extension command's grammar (a
-        // punctuation alias) is refused as invalid before the catalog is asked.
         let in_grammar = name.starts_with(|c: char| c.is_ascii_lowercase())
             && name.len() <= 64
             && name
                 .chars()
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
-        let expected = if in_grammar {
-            "built-in command"
+        if in_grammar {
+            let handle = register(&mut registry, &name).unwrap();
+            let _ = registry.mark_active(&owner);
+            let command = registry
+                .live_command(handle, "a", owner.generation)
+                .unwrap();
+            assert_ne!(command.name, name);
+            assert!(!catalog.answers_to(&command.name));
+            registry.unregister(&owner, handle);
         } else {
-            "invalid"
-        };
-        assert!(refused.contains(expected), "{name}: {refused}");
+            assert!(
+                register(&mut registry, &name)
+                    .unwrap_err()
+                    .contains("invalid")
+            );
+        }
     }
     register(&mut registry, "ext-not-built-in").unwrap();
 }
@@ -276,9 +282,8 @@ async fn extension_commands_run_end_to_end_through_the_user_command_registry() {
     manager.shutdown().await;
 }
 
-/// A command may never take a built-in's name or another plugin's: the
-/// registration is refused with a reason and that plugin fails to activate,
-/// without disturbing the plugin that already holds the name.
+/// Built-in names remain protected and plugin commands remain scoped;
+/// a built-in collision is available under its plugin-specific name.
 #[tokio::test]
 async fn extension_commands_never_shadow_built_ins_or_other_plugins() {
     let Some(node) = node_for_tests("extension_commands_never_shadow") else {
@@ -293,18 +298,16 @@ async fn extension_commands_never_shadow_built_ins_or_other_plugins() {
     .await;
     let _catalog = CatalogGuard::install(Arc::new(CommandTable));
     let manager = fixture.manager(node);
+    let _manager = crate::extension_host::TestManagerGuard::install(Arc::clone(&manager));
     let engine = manager.attach(fixture.registry());
     engine.sync().await.unwrap();
     let state = |name: &str| manager.owner_state(&plugin_id(&fixture, name)).unwrap();
-    match state("commands-clash-builtin") {
-        OwnerState::Failed(reason) => {
-            assert!(
-                reason.contains("collides with a built-in command"),
-                "{reason}"
-            )
-        }
-        other => panic!("{other:?}"),
-    }
+    assert_eq!(state("commands-clash-builtin"), OwnerState::Active);
+    assert!(
+        manager
+            .live_command_names()
+            .contains(&"plugin-commands-clash-builtin-help".to_string())
+    );
     // Distinct entry scopes may register the same spelling. The selected
     // caller refuses ambiguity instead of choosing a global union winner.
     assert_eq!(state("ext-commands"), OwnerState::Active);
@@ -318,6 +321,16 @@ async fn extension_commands_never_shadow_built_ins_or_other_plugins() {
         2
     );
     let selected = manager.commands_for_plugins(engine.plugin_view().as_ref());
+    let alias = selected
+        .iter()
+        .find(|entry| entry.registration.name == "plugin-commands-clash-builtin-help")
+        .unwrap();
+    assert_eq!(
+        crate::extension_host::run_command(&alias.reference(), "", None).await,
+        Ok(crate::extension_host::command::CommandOutcome::Show {
+            text: "shadowed".into()
+        })
+    );
     assert!(
         !selected
             .iter()
@@ -326,7 +339,7 @@ async fn extension_commands_never_shadow_built_ins_or_other_plugins() {
     assert!(!manager.live_command_names().contains(&"help".to_string()));
     let diagnostics = manager.diagnostics().join("\n");
     assert!(
-        diagnostics.contains("command `help` refused"),
+        diagnostics.contains("/plugin-commands-clash-builtin-help"),
         "{diagnostics}"
     );
     manager.shutdown().await;
@@ -352,6 +365,7 @@ async fn extension_commands_never_shadow_built_ins_or_other_plugins() {
             plugin_name: "p".into(),
             content_hash: "h".into(),
             name: name.to_string(),
+            declared_name: name.to_string(),
             description: "d".into(),
             argument_hint: None,
         },

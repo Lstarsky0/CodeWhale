@@ -1,4 +1,4 @@
-﻿// === Live /models limits: the ceilings a provider states itself ==========
+// === Live /models limits: the ceilings a provider states itself ==========
 //
 // Every route that is not OrcaRouter, OpenRouter or Concentrate used to build
 // its offerings with `limit: None`, so a provider publishing context and
@@ -20,7 +20,11 @@ fn limits_a_live_listing_states_context_and_output_ceilings() {
             {"id":"row-max","max_context_length":524288,"max_completion_tokens":16000}
         ]}"#,
     );
-    let row = |id: &str| limits.get(id).unwrap_or_else(|| panic!("no limit for {id}"));
+    let row = |id: &str| {
+        limits
+            .get(id)
+            .unwrap_or_else(|| panic!("no limit for {id}"))
+    };
     assert_eq!(row("row-openai").context, Some(1_048_000));
     assert_eq!(row("row-openai").output, Some(64_000));
     assert_eq!(row("row-flat").context, Some(200_000));
@@ -100,4 +104,117 @@ fn limits_a_generic_route_keeps_the_limits_its_listing_states() {
     assert_eq!(limit.context, Some(1_048_000));
     assert_eq!(limit.output, Some(32_000));
     assert_eq!(limit.input, None);
+
+    let body = r#"{"data":[
+        {"id":"deepseek-flash","context_window":1048576,
+         "effort":{"supported_levels":["low","high","max"],"default_level":"high"}},
+        {"id":"new-model","effort":{"supported_levels":["max","future","low"],"default_level":"future"}},
+        {"id":"unknown-model"}
+    ]}"#;
+    let direct = catalog_delta_from_models_body(
+        ProviderKind::Deepseek,
+        "deepseek".to_string(),
+        "https://api.deepseek.com/v1/",
+        body,
+        &[],
+    )
+    .expect("direct DeepSeek catalog");
+    let find = |id: &str| {
+        direct
+            .offerings
+            .iter()
+            .find(|row| row.wire_model_id == id)
+            .unwrap()
+    };
+    assert_eq!(
+        find("deepseek-flash").limit.as_ref().unwrap().context,
+        Some(1_048_576)
+    );
+    assert_eq!(
+        find("deepseek-flash").reasoning_options,
+        vec![
+            json!({"type":"toggle"}),
+            json!({"type":"effort", "values":["low","high","max"], "default":"high"})
+        ]
+    );
+    let projected =
+        crate::reasoning_preference::ReasoningEffort::catalog_effort_values_for_offering(find(
+            "deepseek-flash",
+        ))
+        .unwrap()
+        .into_iter()
+        .filter(|effort| {
+            !matches!(
+                effort,
+                crate::reasoning_preference::ReasoningEffort::Off
+                    | crate::reasoning_preference::ReasoningEffort::Auto
+            )
+        })
+        .map(|effort| effort.as_setting())
+        .collect::<Vec<_>>();
+    assert_eq!(projected, ["low", "high", "max"]);
+    assert_eq!(
+        find("new-model").reasoning_options,
+        vec![
+            json!({"type":"toggle"}),
+            json!({"type":"effort", "values":["max","low"]})
+        ]
+    );
+    assert!(find("unknown-model").reasoning_options_present);
+    assert!(find("unknown-model").reasoning_options.is_empty());
+    assert!(
+        crate::reasoning_preference::ReasoningEffort::catalog_effort_values_for_offering(find(
+            "unknown-model"
+        ))
+        .is_none()
+    );
+    let mut unknown = find("unknown-model").clone();
+    let mut old = unknown.clone();
+    old.reasoning_options = vec![json!({"type":"effort", "values":["high"]})];
+    old.reasoning_options_present = true;
+    unknown.complete_from(&old, Some("https://api.deepseek.com/v1"));
+    assert!(unknown.reasoning_options.is_empty());
+
+    for (provider, endpoint) in [
+        (ProviderKind::Deepseek, "https://relay.example/v1"),
+        (
+            ProviderKind::Deepseek,
+            "https://api.deepseek.com.example/v1",
+        ),
+        (ProviderKind::Custom, "https://api.deepseek.com/v1"),
+    ] {
+        let proxy =
+            catalog_delta_from_models_body(provider, "proxy".to_string(), endpoint, body, &[])
+                .expect("compatible route catalog");
+        assert!(
+            proxy
+                .offerings
+                .iter()
+                .all(|row| !row.reasoning_options_present)
+        );
+        assert!(
+            proxy
+                .offerings
+                .iter()
+                .all(|row| row.reasoning_options.is_empty())
+        );
+    }
+    for invalid in [
+        r#"{"data":[{"id":"a","effort":{"supported_levels":"high"}}]}"#,
+        r#"{"data":[{"id":"a","effort":{"supported_levels":["low"],"default_level":"high"}}]}"#,
+        r#"{"data":[{"id":"a","effort":{"supported_levels":["low","low"]}}]}"#,
+        r#"{"data":[{"id":"a"},{"id":"a"}]}"#,
+        r#"{"data":[{"id":"a","effort":{"supported_levels":["bad\nvalue"]}}]}"#,
+    ] {
+        assert!(
+            catalog_delta_from_models_body(
+                ProviderKind::Deepseek,
+                "deepseek".to_string(),
+                "https://api.deepseek.com",
+                invalid,
+                &[],
+            )
+            .is_err()
+        );
+    }
 }

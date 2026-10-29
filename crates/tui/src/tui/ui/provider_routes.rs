@@ -663,6 +663,40 @@ pub(crate) async fn switch_provider(
     identity: codewhale_runtime::config::ProviderIdentity,
     model_override: Option<String>,
 ) -> bool {
+    switch_provider_inner(app, engine_handle, config, identity, model_override, None).await
+}
+
+pub(super) async fn switch_provider_with_ollama_probe(
+    app: &mut App,
+    engine_handle: &mut EngineHandle,
+    config: &mut Config,
+    identity: codewhale_runtime::config::ProviderIdentity,
+    model: String,
+    endpoint: &str,
+    ticket: &crate::provider_catalog_live::ProviderCatalogRefreshTicket,
+) -> bool {
+    switch_provider_inner(
+        app,
+        engine_handle,
+        config,
+        identity,
+        Some(model),
+        Some((endpoint, ticket)),
+    )
+    .await
+}
+
+async fn switch_provider_inner(
+    app: &mut App,
+    engine_handle: &mut EngineHandle,
+    config: &mut Config,
+    identity: codewhale_runtime::config::ProviderIdentity,
+    model_override: Option<String>,
+    probe: Option<(
+        &str,
+        &crate::provider_catalog_live::ProviderCatalogRefreshTicket,
+    )>,
+) -> bool {
     if app.reject_setting_change_while_busy(MessageId::SettingSubjectProvider) {
         return false;
     }
@@ -705,62 +739,73 @@ pub(crate) async fn switch_provider(
         config.default_text_model = None;
     }
 
-    crate::provider_lake::refresh_local_ollama_catalog(config, &identity).await;
-    let resolved_route =
-        match resolve_runtime_route_for_identity(config, &identity, model_override.as_deref()) {
-            Ok(route) => route,
-            Err(reason) => {
-                app.pending_provider_switch = None;
-                // #3830: if the switch failed only because the target provider has
-                // no key or local runtime, hand off to /provider already focused
-                // on that provider's key prompt instead of dead-ending with an
-                // error the user has to translate into an action.
-                if !crate::provider_readiness::has_api_key_for(config, &identity)
-                    && app.view_stack.top_kind() != Some(ModalKind::ProviderPicker)
+    let resolution = if let Some((endpoint, _)) = probe {
+        if identity.provider != ProviderKind::Ollama
+            || identity.key.as_str() != "ollama"
+            || config.base_url_for_route(&identity) != endpoint
+        {
+            Err("The local model endpoint changed during discovery.".to_string())
+        } else {
+            resolve_runtime_route_for_identity(config, &identity, model_override.as_deref())
+        }
+    } else {
+        crate::provider_lake::refresh_local_ollama_catalog(config, &identity).await;
+        resolve_runtime_route_for_identity(config, &identity, model_override.as_deref())
+    };
+    let resolved_route = match resolution {
+        Ok(route) => route,
+        Err(reason) => {
+            app.pending_provider_switch = None;
+            // #3830: if the switch failed only because the target provider has
+            // no key or local runtime, hand off to /provider already focused
+            // on that provider's key prompt instead of dead-ending with an
+            // error the user has to translate into an action.
+            if !crate::provider_readiness::has_api_key_for(config, &identity)
+                && app.view_stack.top_kind() != Some(ModalKind::ProviderPicker)
+            {
+                let runtime_status = query_provider_runtime_status(engine_handle).await;
+                if let Some(picker) =
+                    crate::tui::provider_picker::ProviderPickerView::new_for_missing_auth(
+                        previous_provider,
+                        &identity,
+                        config,
+                        runtime_status,
+                    )
+                    .map(|picker| {
+                        picker
+                            .with_locale(app.ui_locale)
+                            .with_provider_health(&app.provider_health)
+                    })
                 {
-                    let runtime_status = query_provider_runtime_status(engine_handle).await;
-                    if let Some(picker) =
-                        crate::tui::provider_picker::ProviderPickerView::new_for_missing_auth(
-                            previous_provider,
-                            &identity,
-                            config,
-                            runtime_status,
-                        )
-                        .map(|picker| {
-                            picker
-                                .with_locale(app.ui_locale)
-                                .with_provider_health(&app.provider_health)
-                        })
-                    {
-                        *config = previous_config;
-                        app.refresh_notification_settings(config);
-                        app.view_stack.push(picker);
-                        app.status_message = Some(format!(
-                            "{} needs a key or local runtime — enter one to switch.",
-                            identity
-                                .compatibility()
-                                .map(|row| row.label)
-                                .unwrap_or(identity.key.as_str())
-                        ));
-                        app.needs_redraw = true;
-                        return false;
-                    }
+                    *config = previous_config;
+                    app.refresh_notification_settings(config);
+                    app.view_stack.push(picker);
+                    app.status_message = Some(format!(
+                        "{} needs a key or local runtime — enter one to switch.",
+                        identity
+                            .compatibility()
+                            .map(|row| row.label)
+                            .unwrap_or(identity.key.as_str())
+                    ));
+                    app.needs_redraw = true;
+                    return false;
                 }
-                *config = previous_config;
-                app.refresh_notification_settings(config);
-                app.add_message(HistoryCell::System {
-                    content: format!(
-                        "Cannot switch to {}: {reason}\nProvider unchanged ({}).",
-                        requested_identity, previous_identity
-                    ),
-                });
-                app.status_message = Some(format!(
-                    "Route rejected before provider switch: {}.",
-                    target.as_str()
-                ));
-                return false;
             }
-        };
+            *config = previous_config;
+            app.refresh_notification_settings(config);
+            app.add_message(HistoryCell::System {
+                content: format!(
+                    "Cannot switch to {}: {reason}\nProvider unchanged ({}).",
+                    requested_identity, previous_identity
+                ),
+            });
+            app.status_message = Some(format!(
+                "Route rejected before provider switch: {}.",
+                target.as_str()
+            ));
+            return false;
+        }
+    };
     let validated_route = match resolved_route.validate() {
         Ok(route) => route,
         Err(err) => {
@@ -778,19 +823,40 @@ pub(crate) async fn switch_provider(
     };
     let target_identity_record = validated_route.identity.clone();
     let target_identity = target_identity_record.key.to_string();
-    let resolved_endpoint = validated_route.candidate.endpoint().base_url.clone();
+    let new_base_url = validated_route.candidate.endpoint().base_url.clone();
     let route_limits = validated_route.candidate.limits();
     let context_window_source = validated_route.context_window.source;
     let new_model = validated_route.model.clone();
-    *config = *validated_route.config;
+    let apply_route = || {
+        *config = *validated_route.config;
+        app.set_provider_identity_record(target_identity_record.clone());
+        app.set_model_selection(new_model.clone());
+        app.set_active_context_window_override(config, &target_identity_record);
+        app.set_active_route_resolution(new_base_url.clone(), route_limits, context_window_source);
+    };
+    let applied = if let Some((endpoint, ticket)) = probe {
+        crate::provider_catalog_live::with_current_route_ticket(
+            ticket,
+            ProviderKind::Ollama,
+            "ollama",
+            endpoint,
+            apply_route,
+        )
+    } else {
+        apply_route();
+        Some(())
+    };
+    if applied.is_none() {
+        app.pending_provider_switch = None;
+        *config = previous_config;
+        app.refresh_notification_settings(config);
+        return false;
+    }
     app.refresh_notification_settings(config);
-
-    let new_base_url = resolved_endpoint;
     let new_endpoint = display_base_url_host(&new_base_url);
     let cache_scope_changed = previous_provider != target
         || previous_identity != target_identity
         || previous_model != new_model;
-    app.set_provider_identity_record(target_identity_record.clone());
     // Launch computed "needs a key" for the launch provider. A switch to a
     // route that has its credential answers that, even when the user left the
     // picker with Esc first; otherwise the stale flag keeps the info line on
@@ -810,10 +876,7 @@ pub(crate) async fn switch_provider(
         .filter(|chain| chain.providers().len() > 1);
     app.last_fallback_reason = None;
     app.model_ids_passthrough = config.model_ids_pass_through();
-    app.set_model_selection(new_model.clone());
     app.apply_provider_switch_reasoning_effort(target, &new_base_url, model_override.as_deref());
-    app.set_active_context_window_override(config, &target_identity_record);
-    app.set_active_route_resolution(new_base_url.clone(), route_limits, context_window_source);
     if model_override.is_some() {
         app.provider_models
             .insert(target_identity.clone(), new_model.clone());

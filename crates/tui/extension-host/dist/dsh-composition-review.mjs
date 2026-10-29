@@ -12542,6 +12542,16 @@ var init_core = __esm({
   }
 });
 
+// src/shims/git.ts
+import { AsyncLocalStorage } from "node:async_hooks";
+var gitInvocations;
+var init_git = __esm({
+  "src/shims/git.ts"() {
+    "use strict";
+    gitInvocations = new AsyncLocalStorage();
+  }
+});
+
 // src/shims/shell-hooks.ts
 var init_shell_hooks2 = __esm({
   "src/shims/shell-hooks.ts"() {
@@ -12594,7 +12604,7 @@ var init_commands = __esm({
 });
 
 // src/root.ts
-import { AsyncLocalStorage } from "node:async_hooks";
+import { AsyncLocalStorage as AsyncLocalStorage2 } from "node:async_hooks";
 var REFUSED_SERVICES, PROVIDED_SERVICES, ownerStorage;
 var init_root = __esm({
   "src/root.ts"() {
@@ -12608,6 +12618,7 @@ var init_root = __esm({
     init_dsh_tools_compat();
     init_json();
     init_core();
+    init_git();
     init_owned();
     init_shell_hooks2();
     init_hooks();
@@ -12620,7 +12631,7 @@ var init_root = __esm({
     init_commands();
     REFUSED_SERVICES = new Set(compatibility_default.refused_services);
     PROVIDED_SERVICES = new Set(compatibility_default.provided_services);
-    ownerStorage = new AsyncLocalStorage();
+    ownerStorage = new AsyncLocalStorage2();
   }
 });
 

@@ -154,7 +154,7 @@ fn heading(id: &str, label: String) -> WorkRow {
 
 /// The context view: the budget, not a fact list. Used/limit and the
 /// compaction threshold from the same snapshot the footer meter reads, a
-/// gauge, then the breakdown the accounting can already give per frame —
+/// gauge, the automatic threshold, then the breakdown available per frame —
 /// system prompt, tool schemas, conversation, tool output, files read — and
 /// the one action that exists as a command, `/compact`.
 pub(super) fn context_rows(app: &mut App) -> Vec<WorkRow> {
@@ -177,13 +177,13 @@ pub(super) fn context_rows(app: &mut App) -> Vec<WorkRow> {
         id: WorkRowId("context:budget".to_string()),
         mark: "◔",
         label: format!(
-            "{} of {} · {}% · compacts at {threshold}%",
+            "{} of {} · {}%",
             format_tokens(used),
             format_tokens(u64::from(max)),
             percent.round() as u8
         ),
         detail: "/context for the full source map".to_string(),
-        tone: if percent >= f64::from(threshold) {
+        tone: if app.auto_compact && used >= app.compact_threshold as u64 {
             WorkTone::Attention
         } else {
             WorkTone::Live
@@ -193,6 +193,31 @@ pub(super) fn context_rows(app: &mut App) -> Vec<WorkRow> {
         agent: None,
     }];
     out.push(fact("gauge", gauge(percent, 24), ""));
+    let mut automatic = if app.auto_compact && max > 0 {
+        let effective = (app.compact_threshold as f64 * 100.0 / f64::from(max))
+            .clamp(0.0, 100.0)
+            .round() as u8;
+        fact(
+            "automatic",
+            format!("auto ~{effective}% · target {threshold}%"),
+            "Current route; live token counts and other routes may differ",
+        )
+    } else if app.auto_compact {
+        fact(
+            "automatic",
+            format!("auto threshold unavailable · target {threshold}%"),
+            "The current route's context window is unavailable",
+        )
+    } else {
+        fact(
+            "automatic",
+            "automatic compaction off".to_string(),
+            "Emergency compaction may still occur",
+        )
+    };
+    automatic.selectable = true;
+    automatic.primary_action = Some(SidebarRowAction::Command("/context".to_string()));
+    out.push(automatic);
 
     // Breakdown from what is already counted per frame: the system prompt
     // estimate the footer meter uses and the per-message token cache. No

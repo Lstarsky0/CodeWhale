@@ -1445,11 +1445,11 @@ impl UpdateNotice {
         )
     }
 
-    /// Compact header chip label shown once the check has landed. Quiet by
+    /// Compact metrics-line label shown once the check has landed. Quiet by
     /// design: no action verb, no repetition — the toast and transcript
     /// notice carry the update instructions (#14).
     fn chip_label(&self) -> String {
-        if self.staged.is_some() {
+        if self.staged == Some(true) {
             format!("↑ v{latest} ready", latest = self.latest)
         } else {
             format!("↑ v{latest}", latest = self.latest)
@@ -1809,6 +1809,81 @@ mod provider_key_validation_tests {
                 &base_url,
             ),
             served
+        );
+
+        let identity =
+            picker_provider_identity(&config, ProviderKind::Ollama, None).expect("Ollama identity");
+        let base_url = "http://127.0.0.1:11434/v1";
+        let fingerprint = base_url_fingerprint(base_url);
+        let make_roster = |ids: &[&str], fingerprint: &str| ProviderCatalogDelta {
+            provider: "ollama".into(),
+            base_url_fingerprint: fingerprint.to_string(),
+            fetched_at,
+            offerings: ids
+                .iter()
+                .map(|id| CatalogOffering {
+                    provider: "ollama".into(),
+                    wire_model_id: (*id).into(),
+                    endpoint_key: "chat".into(),
+                    source: CatalogSource::Live {
+                        base_url_fingerprint: fingerprint.to_string(),
+                        fetched_at,
+                    },
+                    ..Default::default()
+                })
+                .collect(),
+        };
+        let mut native = make_roster(&["qwen3:4b"], &fingerprint);
+        native.offerings[0].default_for_provider = true;
+        let ticket = crate::provider_catalog_live::begin_refresh_for_identity(
+            ProviderKind::Ollama,
+            identity.key.as_str(),
+            base_url,
+        );
+        assert_eq!(
+            crate::provider_catalog_live::record_success_if_current(&ticket, native),
+            Some(codewhale_config::catalog::CatalogStatus::Fresh)
+        );
+        let generic = make_roster(&["qwen3:4b", "nomic-embed-text:latest"], &fingerprint);
+        publish_verified_roster(&identity, base_url, Some(generic));
+        let cached = crate::provider_catalog_live::cached_entry_for_route(
+            ProviderKind::Ollama,
+            identity.key.as_str(),
+            base_url,
+        )
+        .unwrap()
+        .expect("native Ollama roster remains available");
+        assert_eq!(
+            cached
+                .offerings
+                .iter()
+                .map(|row| row.wire_model_id.as_str())
+                .collect::<Vec<_>>(),
+            ["qwen3:4b"]
+        );
+        let empty_base_url = "http://127.0.0.1:11435/v1";
+        assert!(
+            crate::provider_catalog_live::cached_entry_for_route(
+                ProviderKind::Ollama,
+                identity.key.as_str(),
+                empty_base_url,
+            )
+            .unwrap()
+            .is_none()
+        );
+        let generic = make_roster(
+            &["qwen3:4b", "nomic-embed-text:latest"],
+            &base_url_fingerprint(empty_base_url),
+        );
+        publish_verified_roster(&identity, empty_base_url, Some(generic));
+        assert!(
+            crate::provider_catalog_live::cached_entry_for_route(
+                ProviderKind::Ollama,
+                identity.key.as_str(),
+                empty_base_url,
+            )
+            .unwrap()
+            .is_none()
         );
     }
 

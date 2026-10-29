@@ -84,12 +84,47 @@ pub(crate) fn offline_queue_projection(
     (app.queued_messages.clone(), draft)
 }
 
+#[derive(Clone)]
+pub(crate) struct SavedWorkProjection {
+    pub(super) owner: Option<String>,
+    pub(super) state: Option<crate::session_manager::SessionWorkState>,
+}
+
+pub(crate) fn saved_work_projection(app: &App, session: &SavedSession) -> SavedWorkProjection {
+    SavedWorkProjection {
+        owner: app.current_session_id.clone(),
+        state: session.work_state.clone(),
+    }
+}
+
+pub(crate) async fn publish_saved_work_projection(
+    app: &mut App,
+    projection: &SavedWorkProjection,
+) -> Result<bool, String> {
+    let Some(work) = app.runtime_services.work.clone() else {
+        return Ok(false);
+    };
+    let published = work
+        .publish_pending_matching(
+            projection.owner.as_deref(),
+            projection
+                .state
+                .as_ref()
+                .and_then(|state| state.graph.as_ref()),
+        )
+        .await?;
+    if !published && work.has_pending_publish() {
+        return Err("a newer Work update remains pending".to_string());
+    }
+    Ok(published)
+}
+
+#[cfg(test)]
 pub(crate) async fn publish_pending_work_projection(app: &mut App) -> Result<bool, String> {
     let Some(work) = app.runtime_services.work.clone() else {
         return Ok(false);
     };
-    let published = work.publish_pending().await?;
-    Ok(published)
+    work.publish_pending().await
 }
 
 pub(crate) async fn persist_pending_work_checkpoint(app: &mut App) -> Result<bool, String> {
@@ -102,18 +137,20 @@ pub(crate) async fn persist_pending_work_checkpoint(app: &mut App) -> Result<boo
     let manager = SessionManager::default_location()
         .map_err(|err| format!("could not open sessions directory: {err}"))?;
     let session = build_session_snapshot(app, &manager)?;
+    let projection = saved_work_projection(app, &session);
     if app.current_session_id.is_none() {
         app.current_session_id = Some(session.metadata.id.clone());
     }
     if !persistence_actor::try_persist(PersistRequest::SaveCheckpoint { session }) {
         return Err("persistence actor is unavailable".to_string());
     }
-    publish_pending_work_projection(app).await
+    publish_saved_work_projection(app, &projection).await
 }
 
 pub(crate) fn persist_with_pending_work_boundary(
     app: &mut App,
     request: PersistRequest,
+    projection: &SavedWorkProjection,
 ) -> Result<(), String> {
     let has_pending = app
         .runtime_services
@@ -127,7 +164,8 @@ pub(crate) fn persist_with_pending_work_boundary(
     if !persistence_actor::try_persist(request) {
         return Err("persistence actor is unavailable".to_string());
     }
-    app.publish_pending_work_state().map(|_| ())
+    app.publish_saved_work_state(projection.owner.as_deref(), projection.state.as_ref())
+        .map(|_| ())
 }
 
 pub(crate) fn restore_matching_offline_queue_state(
@@ -425,14 +463,17 @@ pub(crate) fn persist_recovery_snapshot(app: &mut App) {
     if let Ok(manager) = SessionManager::default_location()
         && let Ok(session) = build_session_snapshot(app, &manager)
     {
+        let projection = saved_work_projection(app, &session);
         if app.current_session_id.is_none() {
             app.current_session_id = Some(session.metadata.id.clone());
         }
-        if let Err(err) =
-            persist_with_pending_work_boundary(app, PersistRequest::SaveCheckpoint { session })
-        {
+        if let Err(err) = persist_with_pending_work_boundary(
+            app,
+            PersistRequest::SaveCheckpoint { session },
+            &projection,
+        ) {
             app.status_message = Some(format!(
-                "To-do list update pending: recovery snapshot could not be queued ({err})"
+                "To-do list update pending while saving recovery snapshot ({err})"
             ));
         }
     }
@@ -442,12 +483,15 @@ pub(crate) fn persist_full_reset_snapshot(app: &mut App) {
     if let Ok(manager) = SessionManager::default_location()
         && let Ok(session) = build_session_snapshot(app, &manager)
     {
+        let projection = saved_work_projection(app, &session);
         app.current_session_id = Some(session.metadata.id.clone());
-        if let Err(err) =
-            persist_with_pending_work_boundary(app, PersistRequest::SessionSnapshot(session))
-        {
+        if let Err(err) = persist_with_pending_work_boundary(
+            app,
+            PersistRequest::SessionSnapshot(session),
+            &projection,
+        ) {
             app.status_message = Some(format!(
-                "To-do list update pending: reset snapshot could not be queued ({err})"
+                "To-do list update pending while saving reset snapshot ({err})"
             ));
         }
     }

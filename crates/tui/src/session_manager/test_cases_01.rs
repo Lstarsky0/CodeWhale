@@ -514,6 +514,9 @@
         )
         .expect("owned legacy checkpoint");
 
+        assert!(manager.delete_session("retired-recovery").is_err());
+        assert!(legacy_path.exists());
+        fs::remove_file(&legacy_path).expect("remove legacy checkpoint");
         manager.delete_session("retired-recovery").expect("delete");
         assert!(manager.load_legacy_checkpoint().expect("legacy").is_none());
         assert!(
@@ -833,7 +836,10 @@
         let (ledger, _) = manager.late_usage_paths(id).expect("ledger paths");
         assert!(!SessionManager::late_usage_is_deleted(&ledger).expect("not retired"));
 
-        // Explicit deletion remains the user's decision.
+        assert!(manager.delete_session(id).is_err());
+        assert_eq!(fs::read(&snapshot).unwrap(), original);
+        assert_eq!(fs::read(&legacy).unwrap(), corrupt);
+        fs::remove_file(&legacy).expect("remove damaged legacy fixture");
         manager.delete_session(id).expect("explicit delete");
         assert!(!snapshot.exists());
     }

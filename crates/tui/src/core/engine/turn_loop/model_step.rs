@@ -567,7 +567,14 @@ impl Engine {
             job.response_settled(!response_stream_failed);
         }
         turn.add_parent_usage(&usage);
-        turn.note_parent_prompt_len(self.session.messages.len());
+        turn.note_parent_prompt_len(
+            self.session.messages.len(),
+            crate::compaction::estimate_request_input_tokens(
+                &stream_request.messages,
+                stream_request.system.as_ref(),
+                stream_request.tools.as_deref(),
+            ),
+        );
         self.session.latest_parent_input_tokens = turn.latest_parent_input_tokens;
         if usage_reported {
             let _ = self

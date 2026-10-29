@@ -86,10 +86,8 @@ impl DeepseekEffortTier {
 /// tier. The empty string is CodeWhale's "unset" effort, which means the
 /// default tier.
 ///
-/// Anything absent from this table is not a DeepSeek tier request: the
-/// Responses wire normalizes it to the default tier (it must send *some*
-/// documented label), while the Chat wire writes nothing at all rather than
-/// guessing a field the user did not ask for.
+/// The Responses wire normalizes unknown spellings to the default tier, except
+/// for `auto`, which is omitted. The Chat wire omits unknown spellings.
 pub(super) const DEEPSEEK_EFFORT_ALIASES: &[(&str, DeepseekEffortTier)] = &[
     ("off", DeepseekEffortTier::Off),
     ("disabled", DeepseekEffortTier::Off),
@@ -110,7 +108,7 @@ pub(super) const DEEPSEEK_EFFORT_ALIASES: &[(&str, DeepseekEffortTier)] = &[
 ];
 
 /// The tier CodeWhale falls back to when a caller asks for something this
-/// table does not name (`auto`, a future provider label, a typo).
+/// table does not name (a future provider label or a typo).
 pub(super) const DEEPSEEK_DEFAULT_EFFORT_TIER: DeepseekEffortTier = DeepseekEffortTier::High;
 
 /// Look up a raw effort string. Case- and whitespace-insensitive.

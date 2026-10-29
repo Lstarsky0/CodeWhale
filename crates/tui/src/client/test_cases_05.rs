@@ -3,9 +3,7 @@
     /// one table. If they ever disagree, one of them was edited alone.
     #[test]
     fn deepseek_chat_and_responses_wires_agree_with_the_shared_effort_table() {
-        use super::deepseek_effort::{
-            DEEPSEEK_DEFAULT_EFFORT_TIER, DEEPSEEK_EFFORT_ALIASES, deepseek_effort_tier,
-        };
+        use super::deepseek_effort::{DEEPSEEK_EFFORT_ALIASES, deepseek_effort_tier};
 
         for &(alias, tier) in DEEPSEEK_EFFORT_ALIASES {
             for provider in [ProviderKind::Deepseek, ProviderKind::Deepseek] {
@@ -34,15 +32,14 @@
             );
         }
 
-        // A spelling the table does not name: the Chat wire writes nothing,
-        // the Responses wire must still send a documented label.
+        // Auto leaves the tier to the provider on both wires.
         assert_eq!(deepseek_effort_tier("auto"), None);
         let mut body = json!({});
         apply_reasoning_effort(&mut body, Some("auto"), ProviderKind::Deepseek);
         assert_eq!(body, json!({}));
         assert_eq!(
             super::responses::responses_reasoning_effort("auto", true),
-            Some(DEEPSEEK_DEFAULT_EFFORT_TIER.responses_effort())
+            None
         );
     }
 

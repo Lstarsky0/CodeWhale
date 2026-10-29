@@ -1669,9 +1669,9 @@ pub struct App {
     pub status_message: Option<String>,
     /// Recent status toasts (ephemeral, newest at back).
     pub status_toasts: VecDeque<StatusToast>,
-    /// Header chip label (e.g. `↑ v0.9.5`) set once by the fire-and-forget
+    /// Metrics-line label (e.g. `↑ v0.9.5`) set once by the fire-and-forget
     /// startup version check when a newer stable release exists. Drives the
-    /// small persistent update chip in the header so the affordance survives
+    /// persistent update notice so the affordance survives
     /// the transient toast without nagging (FINISH-0.9.4 #14).
     pub update_available: Option<String>,
     /// Sticky status toast used for important warnings/errors.
@@ -6958,14 +6958,13 @@ impl App {
         if let Some(work) = self.runtime_services.work.as_ref() {
             let empty = SessionWorkState::default();
             let state = state.unwrap_or(&empty);
-            work.restore_with_workspace_owner_bindings(
+            let restored = work.restore_with_workspace_owner_bindings(
                 session_id,
                 workspace,
                 state.graph.as_ref(),
                 &state.todos,
                 &state.plan,
             )?;
-            let restored = work.capture(Some(session_id))?;
             let normalized_state = restored.map(|state| SessionWorkState {
                 graph: Some(state.graph),
                 todos: state.todos,
@@ -7031,14 +7030,19 @@ impl App {
         true
     }
 
-    /// Publish a validated Work Graph transaction after a synchronous caller
-    /// has completed its atomic session write.
-    pub fn publish_pending_work_state(&mut self) -> Result<bool, String> {
-        let published = self
-            .runtime_services
-            .work
-            .as_ref()
-            .map_or(Ok(false), |work| work.publish_pending_sync())?;
+    pub fn publish_saved_work_state(
+        &mut self,
+        owner: Option<&str>,
+        state: Option<&SessionWorkState>,
+    ) -> Result<bool, String> {
+        let Some(work) = self.runtime_services.work.as_ref() else {
+            return Ok(false);
+        };
+        let published = work
+            .publish_pending_sync_matching(owner, state.and_then(|state| state.graph.as_ref()))?;
+        if !published && work.has_pending_publish() {
+            return Err("a newer Work update remains pending".to_string());
+        }
         Ok(published)
     }
 

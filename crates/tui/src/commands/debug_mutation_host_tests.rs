@@ -1,14 +1,17 @@
 //! Preserved snapshot/history safety tests outside the portable debug group.
 use super::CommandResult;
+use codewhale_command_contract::facets::CommandPresentationContext;
 use codewhale_commands::debug::undo;
 fn patch_undo(app: &mut App) -> CommandResult {
     super::debug_group::host_result(undo::patch_result(
         super::contract::debug_operations::undo_files(app, false),
+        &UndoPresentation,
     ))
 }
 fn undo_conversation(app: &mut App) -> CommandResult {
     super::debug_group::host_result(undo::conversation_result(
         super::contract::debug_operations::undo_conversation_for_engine(app),
+        &UndoPresentation,
     ))
 }
 fn retry(app: &mut App) -> CommandResult {
@@ -20,6 +23,34 @@ use codewhale_models::Role;
 use codewhale_models::{ContentBlock, Message, Tool};
 use codewhale_runtime::config::Config;
 use std::path::PathBuf;
+
+struct UndoPresentation;
+impl CommandPresentationContext for UndoPresentation {
+    fn translate(&self, key: &str, replacements: &[(&str, &str)]) -> Result<String, String> {
+        let catalog: serde_json::Value =
+            serde_json::from_str(include_str!("../../../localization/locales/en.json")).unwrap();
+        let id: String = key
+            .split('_')
+            .map(|word| {
+                let mut chars = word.chars();
+                chars
+                    .next()
+                    .unwrap()
+                    .to_uppercase()
+                    .chain(chars)
+                    .collect::<String>()
+            })
+            .collect();
+        let mut text = catalog[&id]
+            .as_str()
+            .ok_or_else(|| format!("unknown test key {key}"))?
+            .to_string();
+        for (name, value) in replacements {
+            text = text.replace(&format!("{{{name}}}"), value);
+        }
+        Ok(text)
+    }
+}
 
 pub(in crate::commands) fn create_test_app() -> App {
     let options = TuiOptions {
@@ -567,11 +598,12 @@ fn test_undo_reports_that_files_were_not_reverted_when_the_repo_is_unavailable()
         "conversation undo still runs: {message}"
     );
     assert!(
-        message.contains(undo::FILES_NOT_REVERTED_NOTE),
+        message
+            .contains("Workspace files were NOT reverted — only the conversation was rolled back."),
         "the user must be told files were not reverted: {message}"
     );
     assert!(
-        message.contains(undo::SNAPSHOT_REPO_UNAVAILABLE_PREFIX),
+        message.contains("Snapshot repo unavailable"),
         "the reason must travel with the fallback: {message}"
     );
 }
@@ -1153,7 +1185,7 @@ fn undo_takes_a_newer_request_off_before_refusing_an_older_one() {
         first
             .message
             .as_deref()
-            .is_some_and(|m| m.contains(undo::NO_FILE_CHANGES_NOTE)),
+            .is_some_and(|m| m.contains("No file changes to undo.")),
         "{:?}",
         first.message
     );

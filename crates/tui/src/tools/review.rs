@@ -219,6 +219,14 @@ pub struct ReviewOutput {
     /// an inline comment. This is what lets a reader stop checking something.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ruled_out: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolved_findings: Vec<ReviewResolution>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewResolution {
+    pub key: String,
+    pub evidence: ReviewEvidence,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

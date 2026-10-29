@@ -1930,8 +1930,8 @@ pub struct Config {
     pub legacy_model: Option<String>,
     #[serde(alias = "authMode")]
     pub auth_mode: Option<String>,
-    /// DeepSeek reasoning-effort tier: `"off" | "low" | "medium" | "high" | "max"`.
-    /// Defaults to `"max"` at runtime if unset.
+    /// DeepSeek reasoning-effort tier: `"auto" | "off" | "low" | "medium" | "high" | "max"`.
+    /// Defaults to `"auto"` at runtime if unset.
     pub reasoning_effort: Option<String>,
     /// True only when compatibility migration inferred `reasoning_effort`
     /// from a retiring DeepSeek alias. This distinguishes that inferred value
@@ -9364,7 +9364,7 @@ fn deepseek_missing_key_message() -> &'static str {
         "  codewhale auth set --provider deepseek\n",
         "Get a key: https://platform.deepseek.com/api_keys\n",
         "Or export DEEPSEEK_API_KEY=<your-key> (this shell only).\n",
-        "zsh: ~/.zshrc is interactive only; use ~/.zshenv.\n",
+        "In zsh, ~/.zshrc is read only by interactive shells.\n",
         "Or set api_key in ~/.codewhale/config.toml.\n",
         "If you already use DeepSeek Harness, grant read-only access:\n",
         "  codewhale auth external-consent --provider deepseek --mode read-only"
@@ -10927,7 +10927,7 @@ fn save_root_api_key_metadata_without_plaintext(config_path: &Path, table: &str)
         // Saving a key never pins a model (see
         // `codewhale_config::credentials::prepare_provider_api_key_metadata`).
         if !doc.contains_key("reasoning_effort") {
-            crate::config_persistence::set_document_value(doc, &["reasoning_effort"], "max")?;
+            crate::config_persistence::set_document_value(doc, &["reasoning_effort"], "auto")?;
         }
         crate::config_persistence::unset_document_value(doc, &["api_key"])?;
         crate::config_persistence::unset_document_value(doc, &["providers", table, "api_key"])?;
@@ -10984,9 +10984,9 @@ auth_mode = "api_key"
 # default_text_model = "{DEFAULT_TEXT_MODEL}"
 
 # Thinking mode (DeepSeek V4 reasoning effort):
-# "off" | "low" | "medium" | "high" | "max"
+# "auto" | "off" | "low" | "medium" | "high" | "max"
 # Ctrl+T in the TUI (or /effort) cycles the active model's effort levels.
-reasoning_effort = "max"
+reasoning_effort = "auto"
 
 [providers.{table}]
 api_key = "{api_key}"

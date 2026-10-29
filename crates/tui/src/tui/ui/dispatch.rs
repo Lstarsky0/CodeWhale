@@ -1176,15 +1176,17 @@ pub(crate) fn build_dispatch_success_closure(
             if let Ok(manager) = SessionManager::default_location()
                 && let Ok(session) = build_session_snapshot(app, &manager)
             {
+                let projection = saved_work_projection(app, &session);
                 if app.current_session_id.is_none() {
                     app.current_session_id = Some(session.metadata.id.clone());
                 }
                 if let Err(err) = persist_with_pending_work_boundary(
                     app,
                     PersistRequest::SaveCheckpoint { session },
+                    &projection,
                 ) {
                     app.status_message = Some(format!(
-                        "To-do list update pending: turn checkpoint could not be queued ({err})"
+                        "To-do list update pending while saving turn checkpoint ({err})"
                     ));
                 }
             }

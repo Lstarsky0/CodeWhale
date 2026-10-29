@@ -27,8 +27,8 @@ pub enum ReasoningEffort {
     High,
     XHigh,
     Ultra,
-    Auto,
     #[default]
+    Auto,
     Max,
 }
 
@@ -278,12 +278,31 @@ impl ReasoningEffort {
         // collapse exactly as `client::deepseek_effort` sends them, so the
         // effective tier names what the wire receives (#6650).
         if matches!(provider, ProviderKind::Deepseek) {
-            return match normalized {
+            let effective = match normalized {
                 Self::Minimal => Self::Low,
                 Self::Medium | Self::XHigh => Self::High,
                 Self::Ultra => Self::Max,
                 other => other,
             };
+            if codewhale_config::provider_base_url_is_official(provider, base_url)
+                && let Some(offering) = crate::provider_lake::catalog_offering_for_route(
+                    provider, identity, base_url, wire_model,
+                )
+            {
+                if let Some(values) = Self::catalog_effort_values_for_offering(&offering) {
+                    return Self::clamp_to_catalog_efforts(
+                        effective,
+                        Self::catalog_default_for_offering(&offering),
+                        &values,
+                    );
+                }
+                if offering.reasoning_options.iter().any(|option| {
+                    option.get("type").and_then(|value| value.as_str()) == Some("effort")
+                }) {
+                    return Self::Auto;
+                }
+            }
+            return effective;
         }
         // Ollama's current OpenAI-compatible Chat Completions contract
         // documents the complete none/low/medium/high/max ladder. Keep every

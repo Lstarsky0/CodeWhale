@@ -38,7 +38,8 @@ impl ProviderKeyVerifier for LiveProviderKeyVerifier {
 /// regional table keeps its own partition.
 ///
 /// The endpoint decides availability; the catalog still decides which listed
-/// ids are chat models. A first roster for a route keeps only the ids the
+/// ids are chat models. Ollama publishes only through its capability-aware
+/// native refresh. A first roster for another route keeps only the ids the
 /// catalog already offers there (case-insensitively, in the provider's own
 /// spelling), so an OpenAI-style `/models` that also lists embedding, speech
 /// and image models does not flood setup. When the catalog knows none of the
@@ -55,6 +56,9 @@ pub(crate) fn publish_verified_roster(
     base_url: &str,
     roster: Option<codewhale_config::catalog::ProviderCatalogDelta>,
 ) {
+    if identity.provider == ProviderKind::Ollama {
+        return;
+    }
     let Some(mut roster) = roster else {
         return;
     };

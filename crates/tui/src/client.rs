@@ -3864,6 +3864,13 @@ impl CodewhaleClient {
             .await
             .map_err(|_| CatalogRefreshError::Network)?;
             profiles.extend(fetched);
+            if tags.iter().any(|tag| {
+                profiles
+                    .get(tag)
+                    .is_none_or(|profile| profile.capabilities.is_none())
+            }) {
+                return Err(CatalogRefreshError::InvalidResponse);
+            }
             let running_url = reqwest::Url::parse(&format!("{origin}/api/ps"))
                 .map_err(|_| CatalogRefreshError::InvalidResponse)?;
             let running_deadline =
@@ -5002,6 +5009,81 @@ struct ListedRow {
     limits: ListedRowLimits,
 }
 
+#[derive(Debug, Deserialize)]
+struct ListedDeepseekRow {
+    id: String,
+    #[serde(default)]
+    effort: Option<ListedDeepseekEffort>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListedDeepseekEffort {
+    supported_levels: Vec<String>,
+    #[serde(default)]
+    default_level: Option<String>,
+}
+
+fn listed_deepseek_efforts_by_model_id(
+    body: &str,
+) -> Result<std::collections::BTreeMap<String, Vec<Value>>, CatalogRefreshError> {
+    let page: ModelsPage<'_> =
+        serde_json::from_str(body).map_err(|_| CatalogRefreshError::InvalidResponse)?;
+    let rows: Vec<Box<serde_json::value::RawValue>> = serde_json::from_str(page.rows()?.get())
+        .map_err(|_| CatalogRefreshError::InvalidResponse)?;
+    if rows.len() > PROVIDER_CATALOG_MAX_ROWS {
+        return Err(CatalogRefreshError::InvalidResponse);
+    }
+    let mut result = std::collections::BTreeMap::new();
+    for row in rows {
+        let row: ListedDeepseekRow =
+            serde_json::from_str(row.get()).map_err(|_| CatalogRefreshError::InvalidResponse)?;
+        if !codewhale_runtime::catalog_cache::valid_catalog_model_id(&row.id)
+            || result.contains_key(&row.id)
+        {
+            return Err(CatalogRefreshError::InvalidResponse);
+        }
+        let mut options = Vec::new();
+        if let Some(effort) = row.effort {
+            let mut seen = std::collections::BTreeSet::new();
+            if effort.supported_levels.len() > 16
+                || effort.supported_levels.iter().any(|level| {
+                    level.is_empty()
+                        || level.len() > 32
+                        || !level.bytes().all(|byte| {
+                            byte.is_ascii_lowercase()
+                                || byte.is_ascii_digit()
+                                || matches!(byte, b'_' | b'-')
+                        })
+                        || !seen.insert(level)
+                })
+                || effort
+                    .default_level
+                    .as_ref()
+                    .is_some_and(|default| !effort.supported_levels.contains(default))
+            {
+                return Err(CatalogRefreshError::InvalidResponse);
+            }
+            let supported: Vec<_> = effort
+                .supported_levels
+                .iter()
+                .filter(|level| matches!(level.as_str(), "low" | "high" | "max"))
+                .cloned()
+                .collect();
+            let mut option = json!({ "type": "effort", "values": supported });
+            if let Some(default) = effort
+                .default_level
+                .filter(|level| matches!(level.as_str(), "low" | "high" | "max"))
+            {
+                option["default"] = json!(default);
+            }
+            options.push(json!({ "type": "toggle" }));
+            options.push(option);
+        }
+        result.insert(row.id, options);
+    }
+    Ok(result)
+}
+
 impl ListedRowLimits {
     fn to_models_dev_limit(&self) -> Option<codewhale_config::models_dev::ModelsDevLimit> {
         let block = self.limit.as_ref();
@@ -5598,6 +5680,13 @@ fn catalog_delta_from_models_body(
         )?
     } else {
         let mut listed_limits = listed_limits_by_model_id(body);
+        let listed_efforts = if api_provider == ProviderKind::Deepseek
+            && codewhale_config::provider_base_url_is_official(api_provider, base_url)
+        {
+            listed_deepseek_efforts_by_model_id(body)?
+        } else {
+            std::collections::BTreeMap::new()
+        };
         let models = apply_provider_model_cutline(
             api_provider,
             parse_models_response_for_provider(body, api_provider)
@@ -5621,34 +5710,38 @@ fn catalog_delta_from_models_body(
         }
         models
             .into_iter()
-            .map(|model| CatalogOffering {
-                cost_source: None,
-                modalities_source: None,
-                provider: provider.clone(),
-                endpoint_key: if api_provider == ProviderKind::OpencodeGo {
-                    codewhale_config::opencode_go_endpoint_key(&model.id)
-                        .expect("filtered Go roster")
-                } else {
-                    "chat"
+            .map(|model| {
+                let reasoning_options = listed_efforts.get(&model.id);
+                CatalogOffering {
+                    cost_source: None,
+                    modalities_source: None,
+                    provider: provider.clone(),
+                    endpoint_key: if api_provider == ProviderKind::OpencodeGo {
+                        codewhale_config::opencode_go_endpoint_key(&model.id)
+                            .expect("filtered Go roster")
+                    } else {
+                        "chat"
+                    }
+                    .to_string(),
+                    limit: listed_limits.get(&model.id).cloned(),
+                    wire_model_id: model.id,
+                    canonical_model: None,
+                    default_for_provider: false,
+                    family: None,
+                    cost: None,
+                    modalities: None,
+                    attachment: None,
+                    reasoning: None,
+                    tool_call: None,
+                    structured_output: None,
+                    reasoning_options: reasoning_options.cloned().unwrap_or_default(),
+                    reasoning_options_present: reasoning_options.is_some(),
+                    source: CatalogSource::Live {
+                        base_url_fingerprint: fingerprint.clone(),
+                        fetched_at,
+                    },
+                    ..Default::default()
                 }
-                .to_string(),
-                limit: listed_limits.get(&model.id).cloned(),
-                wire_model_id: model.id,
-                canonical_model: None,
-                default_for_provider: false,
-                family: None,
-                cost: None,
-                modalities: None,
-                attachment: None,
-                reasoning: None,
-                tool_call: None,
-                structured_output: None,
-                reasoning_options: Vec::new(),
-                source: CatalogSource::Live {
-                    base_url_fingerprint: fingerprint.clone(),
-                    fetched_at,
-                },
-                ..Default::default()
             })
             .collect()
     };

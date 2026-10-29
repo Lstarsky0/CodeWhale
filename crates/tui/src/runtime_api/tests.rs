@@ -13914,6 +13914,12 @@ fn provider_catalog_keeps_official_deepseek_facts_but_not_custom_proxy_claims() 
             &config,
             &(config).test_identity_for_kind(ProviderKind::Deepseek),
         );
+        let entry = provider_model_entry_for_api(
+            &config,
+            &config.test_identity_for_kind(ProviderKind::Deepseek),
+            "deepseek-v4-pro".to_string(),
+        );
+        assert_eq!(entry.reasoning_effort_levels, ["off", "low", "high", "max"]);
         assert!(
             models
                 .iter()
@@ -13971,6 +13977,12 @@ fn provider_catalog_keeps_official_deepseek_facts_but_not_custom_proxy_claims() 
         codewhale_config::route::CapabilityState::Unknown,
         "same-name custom proxy must not surface first-party vision capability as verified"
     );
+    let proxy = provider_model_entry_for_api(
+        &custom,
+        &custom.test_identity_for_kind(ProviderKind::Deepseek),
+        "deepseek-v4-pro".to_string(),
+    );
+    assert!(proxy.reasoning_effort_levels.is_empty());
 }
 
 #[test]

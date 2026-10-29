@@ -181,6 +181,7 @@ pub(super) fn apply_engine_session_projection(
                 return false;
             }
         };
+        let projection = saved_work_projection(app, &session);
         session.make_storage_compatible();
         if let Err(error) = request.validate_prefix(
             &session.metadata.id,
@@ -198,17 +199,27 @@ pub(super) fn apply_engine_session_projection(
             request.fail("terminal persistence actor is unavailable");
             return false;
         }
-        if app
-            .runtime_services
-            .work
-            .as_ref()
-            .is_some_and(|work| work.has_pending_publish())
-            && let Err(error) = app.publish_pending_work_state()
+        if let Some(work) = app.runtime_services.work.as_ref()
+            && work.has_pending_publish()
         {
-            request.fail(format!(
-                "checkpoint queued but Work projection failed: {error}"
-            ));
-            return false;
+            match work.publish_pending_sync_matching(
+                projection.owner.as_deref(),
+                projection
+                    .state
+                    .as_ref()
+                    .and_then(|state| state.graph.as_ref()),
+            ) {
+                Ok(false) if work.has_pending_publish() => {
+                    app.status_message = Some("A newer Work update remains pending".to_string());
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    request.fail(format!(
+                        "checkpoint queued but Work projection failed: {error}"
+                    ));
+                    return false;
+                }
+            }
         }
         codewhale_util::utils::spawn_supervised(
             "terminal-session-checkpoint",
@@ -235,15 +246,18 @@ pub(super) fn apply_engine_session_projection(
         && let Ok(manager) = SessionManager::default_location()
     {
         if let Ok(session) = build_session_snapshot(app, &manager) {
+            let projection = saved_work_projection(app, &session);
             app.session_title = Some(session.metadata.title.clone());
             // The engine's session id was pinned above, so
             // every checkpoint of this session lands in the
             // same per-session file.
-            if let Err(err) =
-                persist_with_pending_work_boundary(app, PersistRequest::SaveCheckpoint { session })
-            {
+            if let Err(err) = persist_with_pending_work_boundary(
+                app,
+                PersistRequest::SaveCheckpoint { session },
+                &projection,
+            ) {
                 app.status_message = Some(format!(
-                    "To-do list update pending: checkpoint could not be queued ({err})"
+                    "To-do list update pending while saving checkpoint ({err})"
                 ));
             }
         }
@@ -662,8 +676,19 @@ pub(super) fn flush_paste_burst_before_composer(app: &mut App, now: Instant) -> 
         {
             true
         }
+        crate::tui::paste_burst::FlushResult::Typed(_) if app.vim_is_visual_mode() => true,
         crate::tui::paste_burst::FlushResult::Typed(ch) => {
-            app.insert_char(ch);
+            let mention_menu_limit = app.mention_menu_limit;
+            if app.vim_is_normal_mode()
+                && visible_slash_menu_entries(app, SLASH_MENU_LIMIT).is_empty()
+                && crate::tui::file_mention::visible_mention_menu_entries(app, mention_menu_limit)
+                    .is_empty()
+            {
+                vim_mode::handle_vim_normal_key(app, ch);
+                app.needs_redraw = true;
+            } else {
+                app.insert_char(ch);
+            }
             true
         }
         crate::tui::paste_burst::FlushResult::SuppressionExpired => {
@@ -2239,7 +2264,7 @@ pub(crate) async fn run_event_loop(
             // Transient toast for immediate visibility, plus a durable
             // in-transcript notice so the prompt survives the toast TTL and
             // stays actionable during a busy session (#3961). The persistent
-            // header chip keeps a quiet affordance after both (#14).
+            // metrics-line notice keeps a quiet affordance after both (#14).
             // Which command to advertise depends on who owns this binary on
             // disk, so resolve that here rather than hardcoding our own
             // updater into the wording.
@@ -2667,6 +2692,20 @@ pub(crate) async fn run_event_loop(
                 let turn_end_lifecycle = TurnEndLifecycleReceipt::capture(&event);
                 match event {
                     EngineEvent::MessageStarted { .. } => {
+                        // #7123: deliver a live reasoning block's tail BEFORE
+                        // `flush_active_cell`, which clears
+                        // `streaming_thinking_active_entry` on every path
+                        // (`App::flush_active_cell`). It only marks the cell
+                        // finished; a delta that never reached it is not
+                        // delivered by the flush, so draining afterwards would
+                        // be dead code and the tail would be lost by the reset
+                        // below.
+                        if app.streaming_thinking_active_entry.is_some() {
+                            if streaming_thinking::finalize_current(app) {
+                                transcript_batch_updated = true;
+                            }
+                            streaming_thinking::stash_reasoning_buffer_into_last_reasoning(app);
+                        }
                         // Assistant text starting after parallel tool work
                         // means the tool group is done. Flush the active
                         // cell first so the message lands BELOW the
@@ -2720,7 +2759,7 @@ pub(crate) async fn run_event_loop(
                         if let Some(index) = app.streaming_message_index.take() {
                             completed_message_index = Some(index);
                             stream_display_clock.flush_now(Instant::now());
-                            let remaining = app.streaming_state.finalize_block_text(0);
+                            let remaining = drain_text_block(&mut app.streaming_state);
                             if !remaining.is_empty() {
                                 append_streaming_text(app, index, &remaining);
                                 accrue_streaming_token_estimate(app, &remaining);
@@ -2844,7 +2883,12 @@ pub(crate) async fn run_event_loop(
                                 .streaming_thinking_active_entry
                                 .map(|entry_idx| app.history.len() + entry_idx);
                             let original_thinking = app.reasoning_buffer.clone();
-                            let _ = app.streaming_state.finalize_block_text(0);
+                            // #7123: only the reasoning block may be drained
+                            // here. A text block that lost its boundary event
+                            // would otherwise be consumed and dropped.
+                            if app.streaming_state.block_is_thinking(0) {
+                                let _ = app.streaming_state.finalize_block_text(0);
+                            }
                             let duration = app
                                 .thinking_started_at
                                 .take()
@@ -3050,10 +3094,10 @@ pub(crate) async fn run_event_loop(
                             tracing::warn!(
                                 tool = %name,
                                 error = %err,
-                                "Work Graph checkpoint was not enqueued; projections remain unpublished"
+                                "Work Graph checkpoint did not complete; projections remain unpublished"
                             );
                             app.status_message = Some(format!(
-                                "To-do list update pending: checkpoint could not be queued ({err})"
+                                "To-do list update pending: checkpoint or Work update did not complete ({err})"
                             ));
                         }
 
@@ -3653,6 +3697,7 @@ pub(crate) async fn run_event_loop(
                         if let Ok(manager) = SessionManager::default_location()
                             && let Ok(session) = build_session_snapshot(app, &manager)
                         {
+                            let projection = saved_work_projection(app, &session);
                             app.current_session_id = Some(session.metadata.id.clone());
                             // Compound completion commit: the actor writes the
                             // completed snapshot and clears this session's
@@ -3664,7 +3709,9 @@ pub(crate) async fn run_event_loop(
                                     session,
                                 });
                             if queued {
-                                if let Err(err) = publish_pending_work_projection(app).await {
+                                if let Err(err) =
+                                    publish_saved_work_projection(app, &projection).await
+                                {
                                     tracing::warn!(
                                         error = %err,
                                         "completed-turn Work projections remain unpublished"
@@ -4633,7 +4680,7 @@ pub(crate) async fn run_event_loop(
                                 transcript_batch_updated = true;
                             }
                             if let Some(index) = app.streaming_message_index.take() {
-                                let remaining = app.streaming_state.finalize_block_text(0);
+                                let remaining = drain_text_block(&mut app.streaming_state);
                                 if !remaining.is_empty() {
                                     append_streaming_text(app, index, &remaining);
                                     accrue_streaming_token_estimate(app, &remaining);
@@ -7572,10 +7619,10 @@ pub(crate) async fn run_event_loop(
                 }
                 // Vim composer: Normal-mode motion / operator keys.
                 // Only fires when vim is enabled, the input is focused (no modal
-                // open on top), and the key has no modifier (pure char).
+                // open on top), and the key is a plain char (Shift allowed).
                 KeyCode::Char(c)
                     if app.vim_is_normal_mode()
-                        && key.modifiers.is_empty()
+                        && is_plain_char
                         && !slash_menu_open
                         && !mention_menu_open
                         && app.view_stack.is_empty() =>
@@ -7586,9 +7633,7 @@ pub(crate) async fn run_event_loop(
                 // Vim composer: in Visual mode plain chars are ignored
                 // (no text insertion until `i` / `a` enters Insert).
                 KeyCode::Char(_)
-                    if app.vim_is_visual_mode()
-                        && key.modifiers.is_empty()
-                        && app.view_stack.is_empty() =>
+                    if app.vim_is_visual_mode() && is_plain_char && app.view_stack.is_empty() =>
                 {
                     // absorb — Visual mode not yet fully implemented
                 }
@@ -7722,7 +7767,16 @@ pub(super) async fn adopt_live_local_ollama_catalog(
             return;
         }
     };
-    let switched = switch_provider(app, engine_handle, config, identity, Some(tag.clone())).await;
+    let switched = super::provider_routes::switch_provider_with_ollama_probe(
+        app,
+        engine_handle,
+        config,
+        identity,
+        tag.clone(),
+        &catalog.endpoint_v1,
+        &catalog.ticket,
+    )
+    .await;
     if !switched {
         return;
     }

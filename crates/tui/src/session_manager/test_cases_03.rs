@@ -567,6 +567,57 @@
                 .any(|r| r.source == CheckpointSource::Session(session.metadata.id.clone()))
         );
         assert!(refs.iter().any(|r| r.source == CheckpointSource::Legacy));
+        let (sessions, recovery, warning) =
+            manager.list_sessions_with_recovery().expect("recovery list");
+        assert!(warning.is_some());
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, session.metadata.id);
+        assert!(recovery.contains(&session.metadata.id));
+        assert!(
+            manager
+                .load_recovery_checkpoint(&session.metadata.id)
+                .unwrap()
+                .is_some()
+        );
+        let mut collision = session.clone();
+        collision.metadata.id = format!("{}-other", session.metadata.id);
+        manager.save_checkpoint(&collision).expect("save colliding checkpoint");
+        assert_eq!(
+            manager
+                .resolve_recoverable_session_id_prefix(&session.metadata.id)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        manager.clear_session_checkpoint(&collision.metadata.id).unwrap();
+        let (restored, lease) = manager
+            .attach_session_by_prefix(&session.metadata.id[..8])
+            .expect("attach checkpoint-only session");
+        assert_eq!(restored.session.metadata.id, session.metadata.id);
+        drop(lease);
+        let mut legacy = session.clone();
+        legacy.metadata.id = "legacy-only".to_string();
+        let damaged = manager.save_checkpoint(&legacy).expect("save checkpoint");
+        fs::write(&damaged, b"{").expect("damage checkpoint");
+        fs::write(
+            checkpoints.join("latest.json"),
+            serde_json::to_vec(&legacy).unwrap(),
+        )
+        .expect("write legacy checkpoint");
+        let (sessions, recovery, warning) =
+            manager.list_sessions_with_recovery().expect("recovery list");
+        assert!(warning.is_some());
+        assert!(sessions.iter().any(|entry| entry.id == "legacy-only"));
+        assert!(recovery.contains("legacy-only"));
+        assert_eq!(
+            manager.load_recovery_checkpoint("legacy-only").unwrap().unwrap().metadata.id,
+            "legacy-only"
+        );
+        assert!(manager.attach_session("legacy-only").is_err());
+        assert_eq!(fs::read(&damaged).unwrap(), b"{");
+        assert!(manager.load_session("legacy-only").is_err());
+        assert!(manager.attach_session("legacy-only").is_err());
+        assert_eq!(fs::read(&damaged).unwrap(), b"{");
     }
 
     /// A session owned by a *prior* process instance with a crash-recovery
@@ -703,6 +754,14 @@
         manager
             .save_checkpoint(&interrupted)
             .expect("save checkpoint");
+        let (listed, recovery, warning) =
+            manager.list_sessions_with_recovery().expect("list recovery");
+        assert!(warning.is_none());
+        assert_eq!(listed.iter().filter(|session| session.id == id).count(), 1);
+        assert!(recovery.contains(&id));
+        let foreign = tmp.path().join("another-workspace");
+        assert!(manager.attach_session_in_workspace(&id, Some(&foreign)).is_err());
+        assert!(manager.load_session_checkpoint(&id).unwrap().is_some());
 
         let (recovery, lease) = manager.attach_session(&id).expect("attach");
         assert_eq!(
@@ -955,35 +1014,6 @@
 
         // The live session's own checkpoint is never reported as prior work.
         assert!(session_recovery_hint(&workspace, Some("sess-prior")).is_none());
-    }
-
-    #[test]
-    fn legacy_migration_never_overwrites_existing_per_session_checkpoint() {
-        let tmp = tempdir().expect("tempdir");
-        let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
-        let mut session = create_saved_session(
-            &[make_test_message("user", "original")],
-            "test-model",
-            tmp.path(),
-            0,
-            None,
-        );
-        manager.save_checkpoint(&session).expect("save checkpoint");
-
-        session.messages = vec![make_test_message("user", "stale legacy copy")];
-        let written = manager
-            .write_session_checkpoint_if_absent(&session)
-            .expect("migration attempt");
-        assert!(!written, "migration must not overwrite an existing file");
-        let loaded = manager
-            .load_session_checkpoint(&session.metadata.id)
-            .expect("load")
-            .expect("checkpoint exists");
-        assert_eq!(
-            loaded.messages,
-            vec![make_test_message("user", "original")],
-            "existing per-session checkpoint content must be preserved"
-        );
     }
 
     #[test]

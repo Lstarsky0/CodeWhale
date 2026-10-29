@@ -804,6 +804,27 @@ async fn write_file_over_crlf_file_preserves_crlf_line_endings() {
         written, b"gamma\r\ndelta\r\n",
         "write_file must preserve the existing CRLF style, like edit_file"
     );
+    WriteFileTool
+        .execute(
+            json!({"path": "crlf.txt", "content": "one\r\ntwo\rthree\n", "line_ending": "lf"}),
+            &ctx,
+        )
+        .await
+        .expect("explicit LF");
+    assert_eq!(fs::read(&path).expect("read LF"), b"one\ntwo\nthree\n");
+    let wrapper = crate::tools::file_tool::FileTool::with_patch("File");
+    wrapper.execute(json!({"action": "write", "path": "crlf.txt", "content": "one\ntwo\n", "line_ending": "crlf"}), &ctx).await.expect("File CRLF");
+    assert_eq!(fs::read(&path).expect("read CRLF"), b"one\r\ntwo\r\n");
+    assert!(
+        WriteFileTool
+            .execute(
+                json!({"path": "crlf.txt", "content": "bad", "line_ending": null}),
+                &ctx
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(fs::read(&path).expect("unchanged"), b"one\r\ntwo\r\n");
 }
 
 #[tokio::test]
@@ -828,6 +849,36 @@ async fn contract_write_over_crlf_file_preserves_crlf_line_endings() {
         written, b"gamma\r\ndelta\r\n",
         "contract write must preserve the existing CRLF style, like edit_file"
     );
+    let result = WriteFileTool::execute_contract_write(
+        json!({"path": "crlf.txt", "content": "é\r\nbeta\r", "line_ending": "lf"}),
+        &ctx,
+    )
+    .await
+    .expect("explicit LF");
+    assert_eq!(fs::read(&path).expect("LF bytes"), "é\nbeta\n".as_bytes());
+    assert!(result.content.contains("8 bytes"));
+    assert!(result.content.contains("used LF line endings"));
+    WriteFileTool::execute_contract_write(
+        json!({"path": "new.txt", "content": "one\ntwo\r", "line_ending": "crlf"}),
+        &ctx,
+    )
+    .await
+    .expect("new CRLF");
+    assert_eq!(
+        fs::read(tmp.path().join("new.txt")).expect("CRLF bytes"),
+        b"one\r\ntwo\r\n"
+    );
+    for value in [json!("invalid"), json!(null), json!(1)] {
+        assert!(
+            WriteFileTool::execute_contract_write(
+                json!({"path": "crlf.txt", "content": "bad", "line_ending": value}),
+                &ctx
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(fs::read(&path).expect("unchanged"), "é\nbeta\n".as_bytes());
+    }
 }
 
 #[test]

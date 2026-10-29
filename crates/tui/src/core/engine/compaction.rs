@@ -598,6 +598,7 @@ impl Engine {
                 >= auto_compaction_config.token_threshold
         {
             let mut prepared = self.prepare_compaction_envelope(auto_compaction_config);
+            prepared.input_token_ratio = turn.input_token_ratio;
             prepared.tools = active_tools.map(<[Tool]>::to_vec);
             Some(prepared)
         } else {
@@ -663,6 +664,14 @@ impl Engine {
         if let Some(prepared) = prepared
             && compaction_go
         {
+            if let Some(message) = turn.compaction_thrash_message() {
+                let _ = self
+                    .send_event(Event::error(ErrorEnvelope::context_overflow(
+                        message.clone(),
+                    )))
+                    .await;
+                return AutoCompactionStep::EndTurn(TurnOutcomeStatus::Failed, Some(message));
+            }
             let compaction_id = format!("compact_{}", &uuid::Uuid::new_v4().to_string()[..8]);
             turn.stop_diagnostics.automatic_compaction_attempts = turn
                 .stop_diagnostics
@@ -755,6 +764,8 @@ impl Engine {
                         }
                         self.session.replace_messages(result.messages);
                         turn.clear_parent_input_tokens();
+                        self.session.latest_parent_input_tokens = None;
+                        turn.last_compaction_step = Some(turn.step);
                         if let Some(pm) = self.session.prefix_stability.as_mut() {
                             pm.note_history_reset("compaction");
                         }
@@ -804,7 +815,6 @@ impl Engine {
                 Err(err) => {
                     *auto_compaction_suppressed = true;
                     self.learn_summary_image_cap(&prepared, &err);
-                    // Log error but continue with original messages (never corrupt)
                     let message = crate::compaction::report_compaction_failure(
                         "Making room failed",
                         &compaction_id,
@@ -813,7 +823,9 @@ impl Engine {
                     );
                     self.emit_compaction_failed(compaction_id.clone(), true, message.clone())
                         .await;
-                    let _ = self.send_event(Event::status(message)).await;
+                    let _ = self.send_event(Event::status(message.clone())).await;
+                    self.finish_compaction(&compaction_id);
+                    return AutoCompactionStep::EndTurn(TurnOutcomeStatus::Failed, Some(message));
                 }
             }
             self.finish_compaction(&compaction_id);
@@ -843,6 +855,10 @@ impl Engine {
         ) else {
             return false;
         };
+        if let Some(message) = turn.compaction_thrash_message() {
+            turn.context_recovery_rejection = Some(anyhow::anyhow!(message));
+            return false;
+        }
         // Nothing to summarize or prune: a pass cannot help, so do not make
         // the user wait on a model call before the failure the caller will
         // report anyway.
@@ -873,10 +889,12 @@ impl Engine {
         // Measured with the estimator `after_tokens` and the preflight guard
         // use, so `recovered` compares like with like and the receipt reads
         // ~before → ~after on one scale.
-        let before_tokens = crate::compaction::estimate_input_tokens_for_pressure(
-            &self.session.messages,
-            self.session.system_prompt.as_ref(),
-        );
+        let before_tokens =
+            turn.calibrated_input_tokens(crate::compaction::estimate_request_input_tokens(
+                &self.session.messages,
+                self.session.system_prompt.as_ref(),
+                tools,
+            ));
         let before_count = self.session.messages.len();
 
         let mut forced_config = self.config.compaction.clone();
@@ -886,6 +904,7 @@ impl Engine {
             .min(target_budget.saturating_sub(1))
             .max(1);
         let mut prepared = self.prepare_compaction_envelope(forced_config);
+        prepared.input_token_ratio = turn.input_token_ratio;
         prepared.tools = tools.map(<[Tool]>::to_vec);
 
         let started = Instant::now();
@@ -992,10 +1011,12 @@ impl Engine {
         // Validate the complete candidate before the only history swap. Bare
         // front-trimming after a failed summary silently lost user state and
         // could leave orphan tool results in an apparently recovered session.
-        let after_tokens = crate::compaction::estimate_input_tokens_for_pressure(
-            &compacted_messages,
-            self.session.system_prompt.as_ref(),
-        );
+        let after_tokens =
+            turn.calibrated_input_tokens(crate::compaction::estimate_request_input_tokens(
+                &compacted_messages,
+                self.session.system_prompt.as_ref(),
+                tools,
+            ));
         let after_count = compacted_messages.len();
         let recovered = after_tokens <= target_budget && after_tokens < before_tokens;
 
@@ -1011,6 +1032,8 @@ impl Engine {
             }
             self.session.replace_messages(compacted_messages);
             turn.clear_parent_input_tokens();
+            self.session.latest_parent_input_tokens = None;
+            turn.last_compaction_step = Some(turn.step);
             if let Some(pm) = self.session.prefix_stability.as_mut() {
                 pm.note_history_reset("compaction");
             }

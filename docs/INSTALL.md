@@ -173,9 +173,11 @@ What it does (verified):
   a temporary copy otherwise.
 * It **never uses sudo and never edits your shell profile.** It refuses to
   install into system or package-manager directories (`/usr/bin`,
-  `~/.cargo/bin`, Homebrew, `node_modules`, `/nix/store`…) and refuses to
-  overwrite a *different* existing `codewhale` unless you ask for it with
-  `CODEWHALE_FORCE_REINSTALL=1` (see [re-running the
+  `~/.cargo/bin`, Homebrew and MacPorts bin directories, `node_modules`,
+  `/nix/store`…), into your home directory or `/`, or into a directory that
+  other users or groups can write (`chmod go-w <dir>` fixes one you own). It
+  also refuses to overwrite a *different* existing `codewhale` unless you ask
+  for it with `CODEWHALE_FORCE_REINSTALL=1` (see [re-running the
   installer](#re-running-the-installer)).
 
 Expected output:
@@ -342,8 +344,9 @@ tar -xzf codewhale-linux-x64.tar.gz
 cd codewhale-linux-x64 && ./install.sh               # -> ~/.local/bin; PREFIX=/some/dir ./install.sh -> /some/dir/bin
 ```
 
-The archive's `install.sh` behaves like the website installer: no sudo, it
-leaves differing existing files alone, and it prints the same PATH hint.
+The archive's `install.sh` never uses sudo, leaves differing existing files
+alone, never edits a shell profile, and asks nothing; it prints only the
+current-shell `export` line.
 
 **Upgrade:** `codewhale update` works for both 3a and 3b, because they're
 "direct binary" installs. **Uninstall:** delete the two files (see §12).
@@ -693,8 +696,10 @@ go back further than one version, replace the files:
 
 ```bash
 dir="$(dirname "$(command -v codewhale)")"     # the install PATH actually selects
-rm "$dir/codewhale" "$dir/codew"
-curl -fsSL https://codewhale.net/install.sh | CODEWHALE_VERSION=v0.9.13 CODEWHALE_INSTALL_DIR="$dir" sh
+mkdir -p "$dir/.keep" && mv "$dir/codewhale" "$dir/codew" "$dir/.keep/"
+curl -fsSL https://codewhale.net/install.sh | CODEWHALE_VERSION=v0.9.13 CODEWHALE_INSTALL_DIR="$dir" sh \
+  && rm -r "$dir/.keep" \
+  || mv "$dir/.keep/codewhale" "$dir/.keep/codew" "$dir/"   # restore on failure
 hash -r; codewhale --version      # codewhale 0.9.13 (a0b81f619b66)
 ```
 
@@ -1020,7 +1025,7 @@ codewhale auth clear --provider deepseek
 | Windows setup (NSIS) | Settings > Apps > CodeWhale > Uninstall, or `%LOCALAPPDATA%\Programs\CodeWhale\Uninstall.exe`. `codewhale uninstall` prints this path. |
 | WinGet | `winget uninstall --id HunterBown.CodeWhale` |
 | Scoop | `scoop uninstall codewhale` |
-| older `curl \| sh` install without a receipt | `~/.local/bin/codewhale uninstall --yes`: in an install.sh default directory (`~/.local/bin`, `~/.local/codewhale/bin`, `~/.local/codewhale-release.*`, or `%USERPROFILE%\bin` on Windows) it records a receipt for the commands that are byte-identical to the running program, then removes only those. |
+| older `curl \| sh` install without a receipt | `~/.local/bin/codewhale uninstall --yes`: in a known older curl-installer directory (`~/.local/bin`, `~/.local/codewhale/bin`, `~/.local/codewhale-release.*`, or `%USERPROFILE%\bin` on Windows) it records a receipt for the commands whose bytes match the running program, then removes only those. A symlink, a hard link, or a file you do not own among them stops it before any receipt is written. |
 | manual copy elsewhere (§3) | Inspect the exact command paths and provenance before removing them manually; automatic uninstall preserves them. |
 | npm | `npm uninstall -g codewhale` (`codewhale uninstall` prints the `--prefix` for this copy) |
 | Cargo | `cargo uninstall codewhale-cli` (`codewhale uninstall` prints the owning `--root`) |
@@ -1030,7 +1035,7 @@ Not sure which one you have? Run `codewhale doctor --installs`: it lists every c
 
 The Unix installers and the Windows archive installer write `.codewhale-install.sha256` beside the commands. Uninstall accepts only existing regular, single-link files whose bytes match that receipt. On Unix, receipts, selected files and their retained parent directory must belong to the current user and must not be writable by group or others. Optional compiled-host files use their existing release receipt. All selected files pass preflight before any removal; the executing command is removed last. Modified files, symlinks, ambiguous receipts, shared writable directories, legacy unreceipted installs and unrelated files are preserved. No recursive directory removal is performed. A failed removal reports which entries were unlinked, any remaining recovery paths, and any durability failure. If the command receipt was unlinked while the executable remains, recovery republishes it only to a vacant receipt name.
 
-The command runs before configuration, credential migration and telemetry, so malformed config does not block it. It preserves data, credentials, workspaces, shell profiles, completions and services. Package-managed copies get removal guidance; custom Cargo roots with local Cargo metadata are recognized. Other command copies still on PATH are listed without running them. Refresh the shell command cache with `hash -r` and inspect the remaining entries.
+The command runs before configuration, credential migration and telemetry, so malformed config does not block it. It preserves data, credentials, workspaces, shell profiles, completions and services. It never edits a shell profile; for a receipted release copy, it reports recognizable Codewhale PATH blocks in accessible profiles so you can delete those lines yourself. Package-managed copies get removal guidance; custom Cargo roots with local Cargo metadata are recognized. Other command copies still on PATH are listed without running them. Refresh the shell command cache with `hash -r` and inspect the remaining entries.
 
 Successful self-update renews an existing command receipt, and writes one for a pre-receipt directory whose commands it just installed; it never claims unknown siblings. This command does not remove a remote-setup service or a desktop application.
 
@@ -1040,7 +1045,7 @@ Repeating `uninstall` after removal is safe: the removed copy is gone, and any o
 
 ### Step 3: remove data. Program removal never does this.
 
-`codewhale uninstall --purge-data` previews deleting `~/.codewhale` (or `$CODEWHALE_HOME`) and `~/.deepseek/snapshots`. Add `--yes` to delete exactly those directories. It refuses a path that is a symlink, your home directory or one of its parents, or (on Unix) a directory owned by another user. It also refuses an explicit `CODEWHALE_HOME` not named `.codewhale`; delete that one by hand after you review it. It does not search for per-workspace `.codewhale` directories, keyring entries, shell profile lines or completion files. Run `codewhale auth clear --provider <id>` first to remove keyring entries. To remove data by hand instead:
+`codewhale uninstall --purge-data` previews deleting `~/.codewhale` (or `$CODEWHALE_HOME`) and `~/.deepseek/snapshots`. Add `--yes` to delete exactly those directories. The purge runs only in the same `--yes` run that removed a receipted installation; a package-managed copy, a plan-only run, or a failed removal keeps all data. It refuses a path that is a symlink, your home directory or one of its parents, or (on Unix) a directory owned by another user. It also refuses an explicit `CODEWHALE_HOME` not named `.codewhale`; delete that one by hand after you review it. It does not search for per-workspace `.codewhale` directories, keyring entries, shell profile lines or completion files. Run `codewhale auth clear --provider <id>` first to remove keyring entries. To remove data by hand instead:
 
 | Path | What it is | Size seen |
 |---|---|---|
@@ -1048,7 +1053,7 @@ Repeating `uninstall` after removal is safe: the removed copy is gone, and any o
 | `~/.deepseek/snapshots/` | v0.10.0 stores its per-turn **copies of your workspaces** here (a legacy path). Contains the contents of every repo you ran it in. | 0.2–0.6 MB here; grows with repo size |
 | `<every repo you used>/.codewhale/` | per-workspace state/lock dir | tiny |
 | completion files | `~/.local/share/bash-completion/completions/codewhale`, `~/.zfunc/_codewhale`, `~/.config/fish/completions/codewhale.fish` | – |
-| PATH lines you added | `~/.bashrc`, `~/.zshrc`, `~/.profile` | – |
+| PATH lines or Codewhale PATH blocks you added | `~/.bashrc`, `~/.zshrc`, `~/.profile`, `~/.config/fish/conf.d/codewhale.fish` | – |
 
 ```bash
 rm -rf ~/.codewhale ~/.deepseek/snapshots

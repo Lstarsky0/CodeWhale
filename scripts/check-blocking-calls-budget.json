@@ -23,8 +23,8 @@
     "thread_sleep": 1
   },
   "crates/cli/src/update/uninstall.rs": {
-    "path_canonicalize": 3,
-    "std_fs": 7
+    "path_canonicalize": 5,
+    "std_fs": 5
   },
   "crates/cloud-facts/src/lib.rs": {
     "std_fs": 1

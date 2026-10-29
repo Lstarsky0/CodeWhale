@@ -2,18 +2,20 @@
 
 Schema version 2.
 
-The protected last round means the current user instructions and the two
-most recent complete tool exchanges (including their assistant output).
-Short rounds remain intact. Older completed steps within a long uninterrupted
-task may be summarized; otherwise a single user request could grow forever.
+The protected history means the current user instructions and a recent
+conversation tail selected by token budget, including assistant output.
+The tail receives one fifth of the compaction threshold remaining after the
+fixed system and tool prefix, capped at 20,000 estimated tokens. Provider
+usage calibration applies to both that allowance and the request guard.
+One complete exchange can exceed the allowance; pairing takes precedence.
+Older completed steps within a long uninterrupted task may be summarized.
 Tool-call batches and their results are never split, and unresolved calls
 prevent a split across them. Original history is saved before any rewrite.
 
 Language-invariant schema for session-tree journal entry types. Compaction
 may summarize older turns; it must not drop the fields marked **survive**
 below. The B1 strategy (Rust `codewhale-tui` compaction path) enforces this
-over the live journal / API transcript. Later TS/Go strategies validate
-against the same field names.
+over the live journal / API transcript.
 
 Failed compact must not replace live history. A second compact must replace
 the prior summary instead of stacking it, and must not grow the cacheable
@@ -73,12 +75,13 @@ work.
 
 Rust now:
 
-- `last_round::build_replacement_history` keeps the bounded protected last round
-  (assistant + tool results) and appends one checkpoint receipt. A trailing
-  toolless user/assistant tail still walks back to the last tool-bearing
-  round; chat-only sessions keep only the latest user turn.
-- `validate_last_round_coverage` refuses the rewrite if any of that round's
-  user texts, protected tool-call ids, tool-result ids, or assistant texts would vanish.
+- `last_round::build_replacement_history` keeps the bounded selected tail,
+  current user instructions, older user text within its configured budget,
+  and one checkpoint receipt. The summary request contains the older selected
+  span plus previous checkpoints, so retained messages do not need to be
+  paraphrased and prior state is carried forward.
+- `validate_retained_coverage` uses the same selection and refuses the rewrite
+  if its user texts, tool-call ids, tool-result ids, or assistant texts would vanish.
   Every user turn in the round is checked, not just the first: the round spans
   a tool-bearing turn plus the toolless tail after it, so checking one would
   let the latest turn -- the one this contract exists for -- be dropped. The
@@ -103,9 +106,13 @@ Rust now:
 
 The language-invariant fixture matrix is
 `crates/tui/src/compaction/fixtures/matrix.json`. Rust loads it in
-`last_round` tests. `validate_survival_contract.mjs` is the same coverage
-floor for a later TypeScript strategy (`node validate_survival_contract.mjs`).
-There is no Go runtime in this repository yet; a Go validator remains a
-follow-up when a Go strategy exists.
+`last_round` tests, with each fixture's recent token allowance. The Rust
+validator is the single enforcement path.
 
 `/context` names the compaction path and `/anchor` survival.
+
+## Summary and budget integrity
+
+Reasoning-only or placeholder replies cannot become checkpoints. An unusable reply gets one quality retry before the pass fails with its original history preserved. Incomplete replies and tool calls are rejected. Generated prose is explicitly unverified; retained tool receipts and live state remain the evidence for tests, commits and file state. The complete pre-compaction history is saved before a provider call. An automatic summary failure stops the turn instead of continuing from a full window or retrying the same broken summary through emergency recovery.
+
+The parent turn learns its highest observed input-token ratio from actual request usage and applies it to subsequent request sizing, suffix growth, summary sizing and emergency recovery. Replacing history clears stale billed sizes while retaining that turn's calibration. After two compaction attempts, refilling within two model steps stops the turn with an explicit recovery message. Calibration is scoped to the current turn and cannot predict a tokenizer before a provider supplies usage. Summaries continue on the selected route; no implicit provider escalation or new spend is authorized.

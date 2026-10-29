@@ -108,6 +108,8 @@ pub struct TurnContext {
     /// request are not in the bill; GrokBuild's pre-sampling gate adds a
     /// byte-estimate of that suffix so auto-compact can fire mid-turn.
     pub(crate) messages_len_at_last_parent_prompt: Option<usize>,
+    pub(crate) input_token_ratio: (usize, usize),
+    pub(crate) last_compaction_step: Option<u32>,
 
     /// One-shot latch: an automatic-compaction refusal has already been
     /// surfaced this turn. Pressure is re-checked every step, and repeating
@@ -200,6 +202,8 @@ impl TurnContext {
             routed_usage_dropped_records: 0,
             latest_parent_input_tokens: None,
             messages_len_at_last_parent_prompt: None,
+            input_token_ratio: (1, 1),
+            last_compaction_step: None,
             compaction_refusal_notified: false,
             pending_route: None,
             context_recovery_rejection: None,
@@ -354,12 +358,33 @@ impl TurnContext {
     /// Record how long the transcript was when the latest parent prompt was
     /// billed. Call immediately after `add_parent_usage`, before this
     /// response's assistant/tool messages are appended.
-    pub(crate) fn note_parent_prompt_len(&mut self, message_count: usize) {
+    pub(crate) fn note_parent_prompt_len(&mut self, message_count: usize, estimated_input: usize) {
         self.messages_len_at_last_parent_prompt = Some(message_count);
+        if let Some(reported) = self.latest_parent_input_tokens
+            && estimated_input > 0
+            && u128::from(reported) * self.input_token_ratio.1 as u128
+                > self.input_token_ratio.0 as u128 * estimated_input as u128
+        {
+            self.input_token_ratio = (reported as usize, estimated_input);
+        }
+    }
+
+    pub(crate) fn calibrated_input_tokens(&self, estimate: usize) -> usize {
+        crate::compaction::calibrate_token_estimate(estimate, self.input_token_ratio)
+    }
+
+    pub(crate) fn compaction_thrash_message(&self) -> Option<String> {
+        let attempts = self
+            .stop_diagnostics
+            .automatic_compaction_attempts
+            .saturating_add(self.stop_diagnostics.emergency_compaction_attempts);
+        (attempts >= 2
+            && self.last_compaction_step.is_some_and(|step| self.step.saturating_sub(step) <= 2))
+        .then(|| "Context filled again within two model steps after repeated compaction. The turn was stopped to preserve the task and avoid another summary loop. The conversation is saved; choose a larger context route or reduce the task's retained input before retrying.".to_string())
     }
 
     /// Live context for the auto-compact gate: last billed prompt plus a
-    /// /4 estimate of messages appended since that prompt (tool results,
+    /// calibrated estimate of messages appended since that prompt (tool results,
     /// the assistant reply that will be replayed on the next request).
     ///
     /// `max(billed, estimate(full list))` hides mid-turn growth when the
@@ -383,22 +408,21 @@ impl TurnContext {
         let growth = if suffix.is_empty() {
             0
         } else {
-            u64::try_from(crate::compaction::estimate_input_tokens_for_pressure(
-                suffix, None,
+            u64::try_from(self.calibrated_input_tokens(
+                crate::compaction::estimate_input_tokens_for_pressure(suffix, None),
             ))
             .unwrap_or(u64::MAX)
         };
-        let estimated = u64::try_from(crate::compaction::estimate_input_tokens_for_pressure(
-            messages,
-            system_prompt,
+        let estimated = u64::try_from(self.calibrated_input_tokens(
+            crate::compaction::estimate_input_tokens_for_pressure(messages, system_prompt),
         ))
         .unwrap_or(u64::MAX);
         let live = estimated.max(billed.unwrap_or(0).saturating_add(growth));
         (live > 0).then_some(live)
     }
 
-    /// Drop the turn-local billed receipt after history is rewritten so the
-    /// next step cannot compact again on the pre-compaction prompt.
+    /// Drop the turn-local billed receipt after history is rewritten, retaining
+    /// the learned token ratio for the replacement history and its growth.
     pub(crate) fn clear_parent_input_tokens(&mut self) {
         self.latest_parent_input_tokens = None;
         self.messages_len_at_last_parent_prompt = None;
@@ -542,7 +566,7 @@ mod usage_tests {
                 cache_control: None,
             }],
         }];
-        turn.note_parent_prompt_len(prompt.len());
+        turn.note_parent_prompt_len(prompt.len(), 70_000);
 
         let mut with_tool = prompt;
         with_tool.push(codewhale_models::Message {
@@ -583,6 +607,19 @@ mod usage_tests {
             &config,
             Some(live),
         ));
+        turn.note_parent_prompt_len(1, 35_000);
+        let calibrated = turn
+            .live_input_tokens_for_compaction(&with_tool, None, None)
+            .expect("calibrated live tokens");
+        assert!(calibrated > live);
+        turn.clear_parent_input_tokens();
+        assert_eq!(turn.calibrated_input_tokens(20_000), 40_000);
+        turn.last_compaction_step = Some(3);
+        turn.step = 4;
+        turn.stop_diagnostics.automatic_compaction_attempts = 2;
+        assert!(turn.compaction_thrash_message().is_some());
+        turn.step = 6;
+        assert!(turn.compaction_thrash_message().is_none());
     }
 }
 

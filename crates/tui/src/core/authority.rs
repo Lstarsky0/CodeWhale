@@ -809,6 +809,7 @@ pub fn get_tool_category(name: &str) -> ToolCategory {
             | "git_show"
             | "git_blame"
             | "git_commit_plan"
+            | "git_review_scope"
             | "project"
             | "diagnostics"
     ) || name.starts_with("read_")

@@ -31,7 +31,7 @@ For the separate launcher that runs your own installed `dsh`, see
 | --- | --- | --- |
 | `tools.register` | Engine tool registry; input and output checked against the declared schema; every call goes through an approval card | Verified on macOS over the Runtime API |
 | Plugin tools on the **first** turn | the first tool build waits up to 10 s for the plugin host to finish loading | Verified on macOS over the Runtime API (`25225ef051`); before the fix, `tool_search` could not find the tool on turn one |
-| `commands.register` | thread-scoped Runtime commands with replay-safe operation keys; a command may submit one text prompt with plugin attribution | Verified (command runs and replays) |
+| `commands.register` | thread-scoped Runtime commands with replay-safe operation keys; a command may submit one text prompt with plugin attribution. A collision with a built-in receives a plugin-specific name and does not replace the built-in. | Existing command path verified; namespaced collision fallback requires the focused current-source check |
 | `sessions.flush(exec.agent.session)` | Engine captures the conversation so far and waits for the Runtime, terminal or `exec` store to confirm the save | Verified on macOS over the Runtime API, including reload after an Engine restart (`17ebeb5f61`); other `sessions` methods refused |
 | `userQuestions.ask` | the Engine's own question flow; answers are typed (choice, your own text, or skipped) | Verified on macOS over the Runtime API (`fff5a476f9`); `wait` and timed asks refused |
 | `prompt`, `storage`, `skills`, `avatars`, `mcp`, `shellHooks`, `logger`, `events`, `reflect`, `registry` | provided | Supported subset; full API inventory not qualified |
@@ -42,7 +42,7 @@ For the separate launcher that runs your own installed `dsh`, see
 | `agents`, `systemPrompt` | injectable so plugins that name them activate; `agents` offers nothing and `systemPrompt` methods refuse outside a child's `agent/created` context | Verified with the child-agent probe |
 | `llm`, `approval`, `credentials`, `fs`, `subprocess` | refused by design until each maps to Engine authority | Not implemented |
 | Rich or media tool output | dropped | Not implemented |
-| Direct `git` from a plugin | Native profile denies repository reads | Not implemented |
+| Git review scopes | Bounded `execFile` metadata requests use the Engine Git tool and its approval path; the Native host still cannot read the repository directly | Current-source qualification pending |
 
 ## Surfaces walked through live
 
@@ -107,6 +107,13 @@ required first.
 ## Published plugins
 
 `@michengai/dsh-code-review` 1.0.3 injects `commands`, `subagents`, `agents`,
-`tools`, `systemPrompt`, `sessions` and `userQuestions`, all now provided, so it
-can activate. Its review flow also runs `git` directly, which the Native
-profile denies, so it is not expected to complete a review yet. Not run.
+`tools`, `systemPrompt`, `sessions` and `userQuestions`. Its `review` command
+collides with Codewhale's built-in command; the plugin command is registered
+under a plugin-specific name shown in the command catalog. Base-branch and commit selection use a bounded `execFile('git', ...)` adapter.
+It translates known metadata queries to `Git` action `review_scope` through a
+live `core/call` ticket and the existing approval path. The Engine selects the
+workspace, disables hooks, filters, paging and lazy fetch, caps output, and
+contains the process under a deadline and cancellation. Other Git commands and
+subprocess APIs retain the Native sandbox restrictions. Native v8 requires
+re-review before this additional compatibility path is admitted. The
+published plugin's end-to-end review flow is not yet qualified.

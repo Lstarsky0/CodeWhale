@@ -11,6 +11,7 @@ use crate::client::ollama_catalog::{
     ollama_native_origin, parse_ollama_tags_with_profiles,
 };
 use codewhale_config::ProviderKind;
+use codewhale_config::descriptors::defaults::DEFAULT_TEXT_MODEL;
 use codewhale_runtime::config::Config;
 
 /// Result of a successful local Ollama tags/models probe.
@@ -18,6 +19,7 @@ use codewhale_runtime::config::Config;
 pub(crate) struct LiveLocalOllamaCatalog {
     pub(crate) endpoint_v1: String,
     pub(crate) tags: Vec<String>,
+    pub(crate) ticket: crate::provider_catalog_live::ProviderCatalogRefreshTicket,
     /// The tag adoption may switch to: a model that can hold a conversation.
     /// `None` when every live tag is an embedding/reranker model — adopting
     /// one of those would make every first message fail.
@@ -58,6 +60,46 @@ pub(crate) fn should_adopt_live_local_ollama(
     onboarding_needs_key
 }
 
+#[must_use]
+pub(crate) fn startup_route_configured(config: &Config) -> bool {
+    // First launch writes `default_text_model = DEFAULT_TEXT_MODEL` into
+    // the generated config.toml; that line is the template, not a choice,
+    // so it must not turn off local discovery on a later launch.
+    let generated_default_model = config.provider.is_none()
+        && config.default_text_model.as_deref() == Some(DEFAULT_TEXT_MODEL);
+    config.provider.is_some()
+        || (config.default_text_model.is_some() && !generated_default_model)
+        || config.legacy_model.is_some()
+        || codewhale_runtime::config::explicit_launch_provider_override().is_some()
+        || codewhale_runtime::config::explicit_launch_model_override().is_some()
+        || config
+            .active_provider_identity()
+            .ok()
+            .as_ref()
+            .and_then(|identity| config.provider_config_for(identity))
+            .is_some_and(|entry| entry.model.is_some())
+        || config.active_route_endpoint_configured()
+}
+
+pub(crate) async fn adopt_live_local_ollama_for_run(config: &mut Config) -> Option<String> {
+    let provider = config.active_provider_identity().ok()?.provider;
+    if !should_adopt_live_local_ollama(
+        startup_route_configured(config),
+        provider,
+        false,
+        !crate::provider_readiness::has_api_key(config),
+    ) {
+        return None;
+    }
+    let catalog = spawn_local_ollama_adoption_probe(config, true)?
+        .await
+        .ok()??;
+    let tag = catalog.preferred_tag()?.to_string();
+    config.provider = Some(ProviderKind::Ollama.as_str().to_string());
+    config.default_text_model = Some(tag.clone());
+    Some(tag)
+}
+
 /// Resolve the OpenAI-compat Ollama base URL (`…/v1`) from config defaults.
 #[cfg_attr(
     all(not(test), feature = "test-thread-scoped-state", debug_assertions),
@@ -77,6 +119,7 @@ pub(crate) fn ollama_v1_base_url(config: &Config) -> String {
     expect(dead_code)
 )]
 fn record_ollama_tags_into_lake(
+    ticket: &crate::provider_catalog_live::ProviderCatalogRefreshTicket,
     endpoint_v1: &str,
     tags: &[String],
     profiles: &std::collections::HashMap<String, OllamaTagProfile>,
@@ -88,13 +131,8 @@ fn record_ollama_tags_into_lake(
         .iter()
         .find(|offering| offering.default_for_provider)
         .map(|offering| offering.wire_model_id.clone());
-    let ticket = crate::provider_catalog_live::begin_refresh_for_identity(
-        ProviderKind::Ollama,
-        "ollama",
-        endpoint_v1,
-    );
     if matches!(
-        crate::provider_catalog_live::record_success_if_current(&ticket, delta),
+        crate::provider_catalog_live::record_success_if_current(ticket, delta),
         Some(codewhale_config::catalog::CatalogStatus::Fresh)
     ) {
         chat_tag
@@ -115,6 +153,11 @@ pub(crate) async fn probe_live_local_ollama_catalog(
 ) -> Option<LiveLocalOllamaCatalog> {
     let endpoint_v1 = ollama_v1_base_url(config);
     let origin = ollama_native_origin(&endpoint_v1);
+    let ticket = crate::provider_catalog_live::begin_refresh_for_identity(
+        ProviderKind::Ollama,
+        "ollama",
+        &endpoint_v1,
+    );
     let tags_url = format!("{origin}/api/tags");
     let (tags, mut profiles) = match fetch_text(&tags_url).await {
         Ok(body) => match parse_ollama_tags_with_profiles(&body) {
@@ -144,11 +187,15 @@ pub(crate) async fn probe_live_local_ollama_catalog(
     } else {
         tags
     };
-    let fetched = fetch_tag_profiles(&tags, &profiles, |tag| {
-        let origin = &origin;
-        async move { fetch_tag_profile(origin, &tag).await }
-    })
-    .await;
+    let fetched = tokio::time::timeout(
+        crate::client::NON_STREAMING_HTTP_TIMEOUT,
+        fetch_tag_profiles(&tags, &profiles, |tag| {
+            let origin = &origin;
+            async move { fetch_tag_profile(origin, &tag).await }
+        }),
+    )
+    .await
+    .ok()?;
     for (tag, profile) in fetched {
         profiles
             .entry(tag)
@@ -162,12 +209,36 @@ pub(crate) async fn probe_live_local_ollama_catalog(
             })
             .or_insert(profile);
     }
+    if tags.iter().any(|tag| {
+        profiles
+            .get(tag)
+            .is_none_or(|profile| profile.capabilities.is_none())
+    }) {
+        let delta = ollama_catalog_delta("ollama", &endpoint_v1, &tags, &profiles, None);
+        let chat_tag = delta
+            .offerings
+            .iter()
+            .find(|offering| offering.default_for_provider)
+            .map(|offering| offering.wire_model_id.clone())?;
+        return Some(LiveLocalOllamaCatalog {
+            endpoint_v1,
+            tags,
+            ticket,
+            chat_tag: Some(chat_tag),
+        });
+    }
     let running_body = fetch_text(&format!("{origin}/api/ps")).await.ok();
-    let chat_tag =
-        record_ollama_tags_into_lake(&endpoint_v1, &tags, &profiles, running_body.as_deref());
+    let chat_tag = record_ollama_tags_into_lake(
+        &ticket,
+        &endpoint_v1,
+        &tags,
+        &profiles,
+        running_body.as_deref(),
+    );
     Some(LiveLocalOllamaCatalog {
         endpoint_v1,
         tags,
+        ticket,
         chat_tag,
     })
 }
@@ -274,6 +345,11 @@ mod tests {
         assert_eq!(choose_chat_tag(&tags, &HashMap::new()), None);
         let catalog = LiveLocalOllamaCatalog {
             endpoint_v1: "http://localhost:11434/v1".into(),
+            ticket: crate::provider_catalog_live::begin_refresh_for_identity(
+                ProviderKind::Ollama,
+                "ollama",
+                "http://localhost:11434/v1",
+            ),
             chat_tag: choose_chat_tag(&tags, &HashMap::new()),
             tags,
         };
@@ -389,5 +465,90 @@ mod tests {
         assert_eq!(catalog.endpoint_v1, endpoint);
         assert_eq!(catalog.tags, vec!["qwen2.5:0.5b".to_string()]);
         assert_eq!(catalog.preferred_tag(), Some("qwen2.5:0.5b"));
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/api/tags"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "models": [
+                        {"name": "confirmed:tag", "capabilities": ["completion"]},
+                        {"name": "unknown:tag"}
+                    ]
+                })),
+            )
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/show"))
+            .respond_with(wiremock::ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        let partial_endpoint = format!("{}/v1", server.uri());
+        config
+            .provider_config_for_mut(&config.test_identity_for_kind(ProviderKind::Ollama))
+            .unwrap()
+            .base_url = Some(partial_endpoint.clone());
+        let partial = probe_live_local_ollama_catalog(&config)
+            .await
+            .expect("confirmed tag is available for this session");
+        assert_eq!(partial.preferred_tag(), Some("confirmed:tag"));
+        assert!(
+            crate::provider_catalog_live::cached_entry_for_route(
+                ProviderKind::Ollama,
+                "ollama",
+                &partial_endpoint,
+            )
+            .unwrap()
+            .is_none()
+        );
+
+        let server = wiremock::MockServer::start().await;
+        let models: Vec<_> = (0..12)
+            .map(|index| serde_json::json!({"name": format!("model-{index:02}:tag")}))
+            .collect();
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/api/tags"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"models": models})),
+            )
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/show"))
+            .respond_with(|request: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                let capability = if body["model"] == "model-00:tag" {
+                    "embedding"
+                } else {
+                    "completion"
+                };
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"capabilities": [capability]}))
+            })
+            .mount(&server)
+            .await;
+        let endpoint = format!("{}/v1", server.uri());
+        config
+            .provider_config_for_mut(&config.test_identity_for_kind(ProviderKind::Ollama))
+            .unwrap()
+            .base_url = Some(endpoint.clone());
+        let complete = probe_live_local_ollama_catalog(&config).await.unwrap();
+        assert!(complete.preferred_tag().is_some());
+        let cached = crate::provider_catalog_live::cached_entry_for_route(
+            ProviderKind::Ollama,
+            "ollama",
+            &endpoint,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(cached.offerings.len(), 11);
+        assert!(
+            cached
+                .offerings
+                .iter()
+                .all(|row| row.wire_model_id != "model-00:tag")
+        );
     }
 }

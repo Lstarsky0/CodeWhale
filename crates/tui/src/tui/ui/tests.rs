@@ -663,7 +663,7 @@ async fn runtime_chat_queues_local_composer_input_without_starting_a_second_turn
 }
 
 #[tokio::test]
-async fn stale_remote_control_turn_never_cancels_the_current_engine_turn() {
+async fn remote_control_events_preserve_current_turn_and_surface_failures() {
     let mut app = create_test_app();
     app.remote_control
         .force_mirror_connected_for_tests("run_fixture", "turn_current");
@@ -685,6 +685,113 @@ async fn stale_remote_control_turn_never_cancels_the_current_engine_turn() {
         !mock.cancel_token.is_cancelled(),
         "a delayed command for an older turn must not cancel the current provider lifecycle"
     );
+
+    for (event, previous_status, reason) in [
+        (
+            crate::remote_control::RemoteEvent::FailedPreLease(
+                "fixture enrollment rejected: accessToken = fixture_remote_secret".to_string(),
+            ),
+            "Remote control: connecting",
+            "fixture enrollment rejected",
+        ),
+        (
+            crate::remote_control::RemoteEvent::Failed("fixture relay disconnected".to_string()),
+            "Remote control: connected",
+            "fixture relay disconnected",
+        ),
+    ] {
+        let mut app = create_test_app();
+        app.ui_locale = codewhale_localization::Locale::En;
+        app.launch.visible = true;
+        app.status_message = Some(previous_status.to_string());
+        app.status_toasts.clear();
+        app.sticky_status = Some(StatusToast::new(
+            previous_status,
+            StatusToastLevel::Warning,
+            None,
+        ));
+        if matches!(&event, crate::remote_control::RemoteEvent::Failed(_)) {
+            let phase = crate::tui::underwater::ShellPhase::from_app(&app);
+            assert_eq!(
+                app.active_status_toast(phase)
+                    .expect("prior remote status")
+                    .text,
+                previous_status
+            );
+            app.remote_control
+                .force_mirror_connected_for_tests("run_fixture", "turn_current");
+        }
+        app.remote_control.queue_remote_event_for_tests(event);
+
+        drain_remote_control_events(&mut app, &Config::default(), &mock.handle)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            app.remote_control.status(),
+            crate::remote_control::Status::Failed
+        );
+        assert!(app.remote_control.status_line().contains(reason));
+        assert!(app.status_message.is_none());
+        let phase = crate::tui::underwater::ShellPhase::from_app(&app);
+        let toast = app
+            .active_status_toast(phase)
+            .expect("remote failure toast");
+        assert_eq!(toast.level, StatusToastLevel::Error);
+        assert!(toast.text.contains(reason), "{}", toast.text);
+        assert!(!toast.text.contains(previous_status), "{}", toast.text);
+        assert!(
+            !toast.text.contains("fixture_remote_secret"),
+            "{}",
+            toast.text
+        );
+        assert!(toast.ttl_ms.is_some());
+        assert!(app.history.iter().any(|cell| matches!(
+            cell,
+            HistoryCell::System { content }
+                if content.contains(reason) && !content.contains("fixture_remote_secret")
+        )));
+
+        app.sticky_status
+            .as_mut()
+            .expect("remote failure sticky")
+            .created_at = Instant::now() - Duration::from_secs(20);
+        assert!(app.active_status_toast(phase).is_none());
+        for locale in [
+            codewhale_localization::Locale::En,
+            codewhale_localization::Locale::ZhHans,
+            codewhale_localization::Locale::De,
+        ] {
+            app.ui_locale = locale;
+            for width in [40, 80] {
+                let facts = crate::tui::phase_strip::tideline_footer_from_app(&mut app, width);
+                let (text, ink) = facts.right.expect("remote failure footer");
+                assert!(text.starts_with("/rc status"), "{locale:?} {width}: {text}");
+                assert_eq!(ink, codewhale_palette::ChromeInk::Failure);
+            }
+        }
+        assert!(app.history.iter().any(|cell| matches!(
+            cell,
+            HistoryCell::System { content } if content.contains(reason)
+        )));
+    }
+
+    let mut app = create_test_app();
+    app.ui_locale = codewhale_localization::Locale::En;
+    app.launch.visible = true;
+    app.status_message = None;
+    app.status_toasts.clear();
+    app.sticky_status = None;
+    app.remote_control
+        .record_start_failure("fixture start rejected: accessToken = fixture_remote_secret");
+    let status = app.remote_control.status_line();
+    assert!(status.contains("fixture start rejected"), "{status}");
+    assert!(!status.contains("fixture_remote_secret"), "{status}");
+    let facts = crate::tui::phase_strip::tideline_footer_from_app(&mut app, 40);
+    let (text, ink) = facts.right.expect("synchronous failure footer");
+    assert!(text.starts_with("/rc status"), "{text}");
+    assert_eq!(ink, codewhale_palette::ChromeInk::Failure);
+    assert!(!mock.cancel_token.is_cancelled());
 }
 
 fn test_mailbox_route(
@@ -11112,11 +11219,44 @@ async fn adopting_a_local_model_closes_the_connect_picker_and_names_it() {
     app.onboarding_needs_api_key = true;
     app.view_stack
         .push(ProviderPickerView::new(ProviderKind::Deepseek, &config));
+    let endpoint_v1 = crate::local_ollama::ollama_v1_base_url(&config);
     let catalog = crate::local_ollama::LiveLocalOllamaCatalog {
-        endpoint_v1: "http://localhost:11434/v1".to_string(),
+        ticket: crate::provider_catalog_live::begin_refresh_for_identity(
+            ProviderKind::Ollama,
+            "ollama",
+            &endpoint_v1,
+        ),
+        endpoint_v1,
         tags: vec!["fixture-local:tag".to_string()],
         chat_tag: Some("fixture-local:tag".to_string()),
     };
+
+    let mut changed_endpoint = catalog.clone();
+    changed_endpoint.endpoint_v1 = "http://127.0.0.1:9/v1".to_string();
+    super::event_loop::adopt_live_local_ollama_catalog(
+        &mut app,
+        &mut engine.handle,
+        &mut config,
+        changed_endpoint,
+    )
+    .await;
+    assert_ne!(app.api_provider, ProviderKind::Ollama);
+
+    let stale = catalog.clone();
+    let ticket = crate::provider_catalog_live::begin_refresh_for_identity(
+        ProviderKind::Ollama,
+        "ollama",
+        &catalog.endpoint_v1,
+    );
+    super::event_loop::adopt_live_local_ollama_catalog(
+        &mut app,
+        &mut engine.handle,
+        &mut config,
+        stale,
+    )
+    .await;
+    assert_ne!(app.api_provider, ProviderKind::Ollama);
+    let catalog = crate::local_ollama::LiveLocalOllamaCatalog { ticket, ..catalog };
 
     super::event_loop::adopt_live_local_ollama_catalog(
         &mut app,
@@ -11227,6 +11367,11 @@ async fn first_run_route_keeps_explicit_choice_when_credentials_are_missing() {
             &mut config,
             crate::local_ollama::LiveLocalOllamaCatalog {
                 endpoint_v1: "http://127.0.0.1:11434/v1".into(),
+                ticket: crate::provider_catalog_live::begin_refresh_for_identity(
+                    ProviderKind::Ollama,
+                    "ollama",
+                    "http://127.0.0.1:11434/v1",
+                ),
                 tags: vec!["qwen3:4b".into()],
                 chat_tag: Some("qwen3:4b".into()),
             },
@@ -11310,8 +11455,14 @@ fn first_run_route_env_guards() -> Vec<crate::test_support::EnvVarGuard> {
 }
 
 fn first_run_route_catalog() -> crate::local_ollama::LiveLocalOllamaCatalog {
+    let endpoint_v1 = crate::local_ollama::ollama_v1_base_url(&Config::default());
     crate::local_ollama::LiveLocalOllamaCatalog {
-        endpoint_v1: "http://127.0.0.1:11434/v1".into(),
+        ticket: crate::provider_catalog_live::begin_refresh_for_identity(
+            ProviderKind::Ollama,
+            "ollama",
+            &endpoint_v1,
+        ),
+        endpoint_v1,
         tags: vec!["qwen3:4b".into()],
         chat_tag: Some("qwen3:4b".into()),
     }
@@ -23921,6 +24072,7 @@ fn session_snapshot_and_resume_round_trip_work_state() {
     let manager =
         crate::session_manager::SessionManager::new(tmp.path().join("sessions")).expect("manager");
     let mut app = create_test_app();
+    app.current_session_id = None;
     app.api_messages_mut()
         .push(text_message("user", "keep my work"));
     app.api_messages_mut()
@@ -23949,14 +24101,21 @@ fn session_snapshot_and_resume_round_trip_work_state() {
     }
 
     let snapshot = build_session_snapshot(&mut app, &manager).expect("session snapshot");
+    let projection = saved_work_projection(&app, &snapshot);
     let expected = snapshot.work_state.clone().expect("persisted Work state");
     manager.save_session(&snapshot).expect("save session");
+    app.current_session_id = Some(snapshot.metadata.id.clone());
+    assert!(
+        app.publish_saved_work_state(projection.owner.as_deref(), projection.state.as_ref())
+            .expect("publish the unsaved owner’s Work")
+    );
 
     let loaded = manager
         .load_session(&snapshot.metadata.id)
         .expect("load session");
     let mut restored = create_test_app();
     apply_loaded_session(&mut restored, &mut Config::default(), &loaded).expect("restore session");
+    assert_eq!(restored.last_known_work_state, Some(Some(expected.clone())));
     assert_eq!(
         restored.work_state_snapshot().expect("restored snapshot"),
         Some(expected)
@@ -23996,11 +24155,15 @@ async fn session_snapshot_prefers_newer_memory_over_stale_disk_when_lock_is_busy
         crate::tools::todo::TodoStatus::Completed,
     );
     let disk_snapshot = build_session_snapshot(&mut app, &manager).expect("disk snapshot");
+    let stale_projection = saved_work_projection(&app, &disk_snapshot);
     manager
         .save_session(&disk_snapshot)
         .expect("save disk snapshot");
-    app.publish_pending_work_state()
-        .expect("publish saved disk state");
+    app.publish_saved_work_state(
+        Some("work-cache-newer-than-disk"),
+        disk_snapshot.work_state.as_ref(),
+    )
+    .expect("publish saved disk state");
 
     let mut desired = crate::tools::todo::TodoList::from_snapshot(
         &app.todos.try_lock().expect("todos lock").snapshot(),
@@ -24021,6 +24184,19 @@ async fn session_snapshot_prefers_newer_memory_over_stale_disk_when_lock_is_busy
         )
         .await
         .expect("graph-backed memory update");
+    assert!(
+        publish_saved_work_projection(&mut app, &stale_projection)
+            .await
+            .expect_err("newer Work must stay pending")
+            .contains("newer Work update")
+    );
+    assert!(
+        app.runtime_services
+            .work
+            .as_ref()
+            .expect("Work Graph runtime")
+            .has_pending_publish()
+    );
     let memory_snapshot = build_session_snapshot(&mut app, &manager).expect("memory snapshot");
     assert_ne!(memory_snapshot.work_state, disk_snapshot.work_state);
 
@@ -35138,5 +35314,62 @@ fn ended_parent_turn_retires_approvals_and_elevations_but_keeps_child_requests()
     assert!(
         app.view_stack
             .contains_approval_id("agent:child-wait:approval:boot:1")
+    );
+}
+
+/// #7123: a reasoning block that opens *after* assistant prose has already
+/// streamed must not deliver its text into the assistant cell. The display
+/// beat used to route by `streaming_message_index` first, so a live thinking
+/// block was written into the message body — splitting one sentence across
+/// the thinking card and the prose that follows it.
+#[test]
+fn issue_7123_reasoning_after_prose_stays_in_the_thinking_cell() {
+    use crate::tui::streaming::StreamDisplayClock;
+    use crate::tui::ui::frame::{
+        append_streaming_text, commit_streaming_display_tick,
+        ensure_streaming_assistant_history_cell,
+    };
+
+    let mut app = create_test_app();
+
+    // 1. Assistant prose streams first (MessageStarted + MessageDelta).
+    app.streaming_state.reset();
+    app.streaming_state.start_text(0);
+    app.streaming_state.push_content(0, "answer text");
+    let message_index = ensure_streaming_assistant_history_cell(&mut app);
+    let prose = app.streaming_state.commit_text(0, usize::MAX);
+    append_streaming_text(&mut app, message_index, &prose);
+
+    // 2. The same response now opens a thinking block (ThinkingStarted).
+    let entry = crate::tui::streaming_thinking::ensure_active_entry(&mut app);
+    app.streaming_state.reset();
+    app.streaming_state.start_thinking(0);
+    app.streaming_state.push_content(0, "reasoning tail");
+
+    // 3. A display beat commits the buffered delta.
+    let mut clock = StreamDisplayClock::new(Duration::from_millis(33));
+    let now = Instant::now();
+    clock.note_delta(now);
+    let _ = commit_streaming_display_tick(&mut app, &mut clock, now + Duration::from_millis(50));
+
+    let thinking = match app
+        .active_cell
+        .as_ref()
+        .and_then(|active| active.entries().get(entry))
+    {
+        Some(HistoryCell::Thinking { content, .. }) => content.clone(),
+        other => panic!("expected a thinking entry at {entry}: {other:?}"),
+    };
+    let prose = match app.history.get(message_index) {
+        Some(HistoryCell::Assistant { content, .. }) => content.clone(),
+        other => panic!("expected the assistant cell at {message_index}: {other:?}"),
+    };
+    assert_eq!(
+        thinking, "reasoning tail",
+        "reasoning must land in the thinking cell"
+    );
+    assert_eq!(
+        prose, "answer text",
+        "the assistant cell must not absorb reasoning text"
     );
 }

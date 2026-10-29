@@ -2028,7 +2028,10 @@ pub(crate) async fn handle_view_events(
                     });
                 }
             }
-            ViewEvent::SessionSelected { session_id } => {
+            ViewEvent::SessionSelected {
+                session_id,
+                workspace,
+            } => {
                 let manager = match SessionManager::default_location() {
                     Ok(manager) => manager,
                     Err(err) => {
@@ -2040,7 +2043,7 @@ pub(crate) async fn handle_view_events(
 
                 // Another window's open session is refused, not attached
                 // as a second autosaving writer.
-                match manager.attach_session(&session_id) {
+                match manager.attach_session_in_workspace(&session_id, Some(&workspace)) {
                     Ok((recovery, lease)) => {
                         let session = recovery.session;
                         let next_config = config.clone();
@@ -2138,14 +2141,16 @@ pub(crate) async fn handle_view_events(
                 {
                     match build_session_snapshot(app, &manager) {
                         Ok(session) => {
+                            let projection = saved_work_projection(app, &session);
                             if let Err(err) = persist_with_pending_work_boundary(
                                 app,
                                 PersistRequest::SessionSnapshot(session),
+                                &projection,
                             ) {
                                 tracing::warn!(
                                     session_id = %session_id,
                                     error = %err,
-                                    "Could not queue active session rename Work snapshot"
+                                    "Could not complete active session rename Work boundary"
                                 );
                                 work_snapshot_warning = Some(format!(
                                     "Session renamed, but Work snapshot is pending ({err})"

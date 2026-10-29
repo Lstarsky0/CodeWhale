@@ -134,7 +134,7 @@ curl -fsSL https://codewhale.net/install.sh | sh
 * 使用校验过的发布内容分别安装 `~/.local/bin/codewhale` 和
   `~/.local/bin/codew`。当两个清单摘要相同时，下载暂存阶段尽量使用硬链接，
   失败时使用临时副本。
-* **从不使用 sudo，也从不修改你的 shell 配置文件。** 它拒绝安装到系统或包管理器目录（`/usr/bin`、`~/.cargo/bin`、Homebrew、`node_modules`、`/nix/store` 等），也拒绝覆盖一个*不同的*已有 `codewhale`。
+* **从不使用 sudo，也从不修改你的 shell 配置文件。** 它拒绝安装到系统或包管理器目录（`/usr/bin`、`~/.cargo/bin`、Homebrew 与 MacPorts 的 bin 目录、`node_modules`、`/nix/store` 等）、你的主目录或 `/`，以及其他用户或用户组可写的目录（你自己的目录可用 `chmod go-w <目录>` 修复）；也拒绝覆盖一个*不同的*已有 `codewhale`。
 
 预期输出：
 
@@ -262,7 +262,7 @@ cd codewhale-linux-x64 && ./install.sh               # -> ~/.local/bin; PREFIX=/
 
 （注意：校验清单是 *bundles*，不是 *artifacts*。）
 
-压缩包里的 `install.sh` 与网站上的安装器行为一致：不用 sudo，不动内容不同的已有文件，并打印同样的 PATH 提示。
+压缩包里的 `install.sh` 不用 sudo，不动内容不同的已有文件，从不修改 shell 配置文件，也不提问；它只打印针对当前 shell 的 `export` 行。
 
 **升级：** `codewhale update` 对 3a 和 3b 都适用，因为它们都属于"直接二进制"安装。**卸载：** 删除那两个文件（见 §12）。
 
@@ -679,7 +679,7 @@ codewhale auth clear --provider deepseek
 | Cargo | `cargo uninstall codewhale-cli` |
 | Homebrew | `brew uninstall codewhale && brew untap Hmbown/deepseek-tui`（同时会移除它的 node 依赖） |
 
-### 第 3 步：删除数据。没有任何卸载器会替你做这件事。
+### 第 3 步：删除数据。程序删除从不做这件事。
 
 | 路径 | 内容 | 所见大小 |
 |---|---|---|
@@ -687,7 +687,7 @@ codewhale auth clear --provider deepseek
 | `~/.deepseek/snapshots/` | v0.10.0 把每个回合的**工作区副本**存在这里（一个旧路径）。里面包含你运行过它的每个仓库的内容。 | 这里为 0.2–0.6 MB；随仓库大小增长 |
 | `<你用过的每个仓库>/.codewhale/` | 每个工作区的状态/锁目录 | 很小 |
 | 补全文件 | `~/.local/share/bash-completion/completions/codewhale`、`~/.zfunc/_codewhale`、`~/.config/fish/completions/codewhale.fish` | – |
-| 你添加的 PATH 行 | `~/.bashrc`、`~/.zshrc`、`~/.profile` | – |
+| 你添加的 PATH 行或 Codewhale PATH 代码块 | `~/.bashrc`、`~/.zshrc`、`~/.profile`、`~/.config/fish/conf.d/codewhale.fish` | – |
 
 ```bash
 rm -rf ~/.codewhale ~/.deepseek/snapshots
@@ -699,6 +699,8 @@ find ~ -type d -name .codewhale -prune -print     # review, then delete the ones
 （注释含义：仅当父目录已为空时才会删除它；逐个仓库的目录，先查看再删除想删的。）
 
 Codewhale 没有在 `$HOME` 和它被使用过的仓库之外写入任何东西：没有系统文件、服务或 cron 任务。（我检查了测试用户在其主目录之外拥有的每一个文件。）上面的命令只删除 `~/.deepseek/snapshots`。如果你仍在使用较早的 DeepSeek-TUI，`~/.deepseek` 里的其余部分（它的配置和会话）不会被动。
+
+`codewhale uninstall --purge-data --yes` 只会在同一次运行中成功删除了一个带收据的安装之后，才删除数据目录（`~/.codewhale` 或 `$CODEWHALE_HOME`，以及 `~/.deepseek/snapshots`）。包管理器安装、仅预览的运行或删除失败时，数据都会保留。它也不会删除钥匙串条目、每个工作区的 `.codewhale` 目录、shell 配置行或补全文件。
 
 ---
 

@@ -4736,6 +4736,8 @@ mod tests {
         let base = provider.provider().default_base_url();
         let id_only = "deepseek-roster-bare";
         let detailed = "deepseek-roster-detailed";
+        let narrow = "deepseek-roster-narrow";
+        let future = "deepseek-roster-future";
         record_roster(
             base,
             vec![
@@ -4748,7 +4750,40 @@ mod tests {
                     reasoning: Some(false),
                     ..roster_row(base, detailed)
                 },
+                CatalogOffering {
+                    reasoning_options: vec![
+                        serde_json::json!({"type": "toggle"}),
+                        serde_json::json!({"type": "effort", "values": ["low", "max"], "default": "max"}),
+                    ],
+                    reasoning_options_present: true,
+                    ..roster_row(base, narrow)
+                },
+                CatalogOffering {
+                    reasoning_options: vec![
+                        serde_json::json!({"type": "toggle"}),
+                        serde_json::json!({"type": "effort", "values": []}),
+                    ],
+                    reasoning_options_present: true,
+                    ..roster_row(base, future)
+                },
             ],
+        );
+        use crate::reasoning_preference::ReasoningEffort;
+        assert_eq!(
+            ReasoningEffort::High.normalize_for_route(provider, base, narrow),
+            ReasoningEffort::Max
+        );
+        assert_eq!(
+            ReasoningEffort::Off.normalize_for_route(provider, base, narrow),
+            ReasoningEffort::Off
+        );
+        assert_eq!(
+            ReasoningEffort::High.normalize_for_route(provider, base, future),
+            ReasoningEffort::Auto
+        );
+        assert_eq!(
+            ReasoningEffort::High.normalize_for_route(provider, "https://proxy.example/v1", narrow),
+            ReasoningEffort::High
         );
         let signed = |id: &str| ModelFact {
             max_output: Some(8_192),

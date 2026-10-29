@@ -66,7 +66,7 @@ static CACHE: LazyLock<RwLock<ProviderCatalogCache>> =
 static REFRESH_GENERATIONS: LazyLock<RwLock<BTreeMap<String, u64>>> =
     LazyLock::new(|| RwLock::new(BTreeMap::new()));
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderCatalogRefreshTicket {
     provider: String,
     provider_kind: ProviderKind,
@@ -1454,6 +1454,21 @@ fn with_current_ticket<T>(
     let result = operation();
     drop(generations);
     Some(result)
+}
+
+pub(crate) fn with_current_route_ticket<T>(
+    ticket: &ProviderCatalogRefreshTicket,
+    provider_kind: ProviderKind,
+    provider: &str,
+    base_url: &str,
+    operation: impl FnOnce() -> T,
+) -> Option<T> {
+    if ticket.provider_kind != provider_kind
+        || ticket.fingerprint.as_deref() != Some(base_url_fingerprint(base_url).as_str())
+    {
+        return None;
+    }
+    with_current_ticket(ticket, provider, operation)
 }
 
 /// Record a successful refresh only if no newer refresh superseded it.

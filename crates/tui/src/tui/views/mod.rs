@@ -774,6 +774,7 @@ pub enum ViewEvent {
     },
     SessionSelected {
         session_id: String,
+        workspace: std::path::PathBuf,
     },
     SessionRenamed {
         metadata: Box<crate::session_manager::SessionMetadata>,

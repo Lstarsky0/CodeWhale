@@ -133,23 +133,7 @@ impl App {
         }
         let selected = startup_config.apply_saved_selection(&settings);
         let config = &startup_config;
-        // First launch writes `default_text_model = DEFAULT_TEXT_MODEL` into
-        // the generated config.toml; that line is the template, not a choice,
-        // so it must not turn off local discovery on a later launch.
-        let generated_default_model = config.provider.is_none()
-            && config.default_text_model.as_deref() == Some(DEFAULT_TEXT_MODEL);
-        let startup_route_configured = config.provider.is_some()
-            || (config.default_text_model.is_some() && !generated_default_model)
-            || config.legacy_model.is_some()
-            || codewhale_runtime::config::explicit_launch_provider_override().is_some()
-            || codewhale_runtime::config::explicit_launch_model_override().is_some()
-            || config
-                .active_provider_identity()
-                .ok()
-                .as_ref()
-                .and_then(|identity| config.provider_config_for(identity))
-                .is_some_and(|entry| entry.model.is_some())
-            || config.active_route_endpoint_configured();
+        let startup_route_configured = crate::local_ollama::startup_route_configured(config);
         // Provider and model come from the same resolved config, even on the
         // first run. An options default must not replace a configured model.
         let model = if selected || startup_route_configured {

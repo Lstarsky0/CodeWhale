@@ -6249,21 +6249,92 @@ impl Engine {
         let mcp_tool_names: Vec<String> = mcp_tools.iter().map(|tool| tool.name.clone()).collect();
         if self.child_host.is_none() && matches!(mcp_state, McpToolState::Live { .. }) {
             let native_names = tool_registry.names();
-            for entry in &self.config.tools_always_load {
-                let selects = |name: &str| match entry.strip_suffix('*') {
-                    Some(prefix) => name.starts_with(prefix),
-                    None => name == entry,
+            let mut dead: Vec<&str> = self
+                .config
+                .tools_always_load
+                .iter()
+                .map(String::as_str)
+                .filter(|entry| {
+                    let selects = |name: &str| match entry.strip_suffix('*') {
+                        Some(prefix) => name.starts_with(prefix),
+                        None => name == *entry,
+                    };
+                    !native_names.iter().any(|name| selects(name))
+                        && !mcp_tool_names.iter().any(|name| selects(name))
+                })
+                .collect();
+            dead.sort_unstable();
+            let cu_prefix = crate::mcp::McpPool::mcp_model_tool_name(
+                &crate::mcp::qualified_plugin_server_name(
+                    crate::mcp::COMPUTER_USE_PLUGIN_NAME,
+                    "computer",
+                ),
+                "",
+            );
+            let (cu_dead, other_dead): (Vec<&str>, Vec<&str>) = dead
+                .into_iter()
+                .partition(|entry| entry.starts_with(cu_prefix.as_str()));
+            if !cu_dead.is_empty() {
+                let count = cu_dead.len();
+                let plugin = crate::mcp::COMPUTER_USE_PLUGIN_NAME;
+                let message = match self.plugin_registry.get(plugin) {
+                    None => Some(format!(
+                        "Computer Use is not installed, so {count} saved [tools] always_load tool(s) are unavailable. Install it with `/plugin marketplace install codewhale {plugin}`; it stays off until you review and enable it."
+                    )),
+                    Some(loaded) if !loaded.trusted() => Some(format!(
+                        "Computer Use needs review ({}), so {count} saved [tools] always_load tool(s) are unavailable. Review it with `/plugin trust {plugin}`, then enable it with `/plugin enable {plugin}`.",
+                        loaded.trust_status.as_str()
+                    )),
+                    Some(loaded) if !loaded.enabled => Some(format!(
+                        "Computer Use is installed but off, so {count} saved [tools] always_load tool(s) are unavailable. Turn it on with `/plugin enable {plugin}`."
+                    )),
+                    Some(loaded) if !loaded.active() => Some(format!(
+                        "Computer Use is enabled but cannot start, so {count} saved [tools] always_load tool(s) are unavailable. Check it with `/plugin doctor`."
+                    )),
+                    Some(_)
+                        if mcp_tool_names
+                            .iter()
+                            .any(|name| name.starts_with(cu_prefix.as_str())) =>
+                    {
+                        let names = cu_dead
+                            .iter()
+                            .map(|entry| format!("`{}`", &entry[cu_prefix.len()..]))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let renamed = if cu_dead
+                            .iter()
+                            .any(|entry| &entry[cu_prefix.len()..] == "left_click")
+                        {
+                            " `left_click` is now `click`."
+                        } else {
+                            ""
+                        };
+                        Some(format!(
+                            "Computer Use does not offer {names} from [tools] always_load.{renamed} Update those entries to tools it lists."
+                        ))
+                    }
+                    Some(_) => None,
                 };
-                if !native_names.iter().any(|name| selects(name))
-                    && !mcp_tool_names.iter().any(|name| selects(name))
-                    && first_notice(&format!("always_load:{entry}"))
-                {
-                    let _ = self
-                        .send_event(Event::status(format!(
-                            "always_load entry `{entry}` matches no tool; MCP tool names carry a plugin-N prefix that renumbers when plugins change."
-                        )))
-                        .await;
+                if let Some(message) = message {
+                    let key = format!("always_load:{plugin}:{}", cu_dead.join(","));
+                    if first_notice(&key) {
+                        let _ = self.send_event(Event::status(message)).await;
+                    }
                 }
+            }
+            if !other_dead.is_empty()
+                && first_notice(&format!("always_load:{}", other_dead.join(",")))
+            {
+                let names = other_dead
+                    .iter()
+                    .map(|entry| format!("`{entry}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let _ = self
+                    .send_event(Event::status(format!(
+                        "[tools] always_load entries match no tool: {names}. MCP tools are named mcp_<server>_<tool>; check that the server is enabled and connected."
+                    )))
+                    .await;
             }
         }
         // The surface budget belongs to the route the request would go to,
@@ -7287,6 +7358,7 @@ impl Engine {
 
         // Update session usage
         self.session.total_usage.add(&turn.usage);
+        record_model_turn_telemetry(self.api_provider, &self.session.model, &turn, status);
         if !self.is_acp_turn() {
             self.record_goal_usage_for_turn(&turn.usage, turn.started_at);
         }
@@ -11003,3 +11075,33 @@ use codewhale_tools::names::{REQUEST_USER_INPUT_NAME, is_tool_search_tool};
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+fn record_model_turn_telemetry(
+    provider: ProviderKind,
+    model: &str,
+    turn: &TurnContext,
+    status: TurnOutcomeStatus,
+) {
+    let usage = &turn.parent_route_usage;
+    if usage.input_tokens == 0 && usage.output_tokens == 0 && status == TurnOutcomeStatus::Completed
+    {
+        return;
+    }
+    let outcome = match status {
+        TurnOutcomeStatus::Completed => codewhale_telemetry::TurnOutcome::Ok,
+        TurnOutcomeStatus::Failed => codewhale_telemetry::TurnOutcome::Failed,
+        TurnOutcomeStatus::Interrupted => codewhale_telemetry::TurnOutcome::Interrupted,
+    };
+    codewhale_telemetry::session_counters().record_model_turn(
+        provider,
+        model,
+        outcome,
+        codewhale_telemetry::TurnTokens {
+            input: u64::from(usage.input_tokens),
+            output: u64::from(usage.output_tokens),
+            cache_read: u64::from(usage.prompt_cache_hit_tokens.unwrap_or(0)),
+            cache_write: u64::from(usage.prompt_cache_write_tokens.unwrap_or(0)),
+        },
+        turn.started_at.elapsed().as_secs(),
+    );
+}

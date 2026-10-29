@@ -596,7 +596,9 @@ impl Engine {
             request.system.as_ref(),
             request.tools.as_deref(),
         );
-        let request_input = request_input.max(estimated_input);
+        let request_input = turn
+            .calibrated_input_tokens(request_input)
+            .max(estimated_input);
         let output_cap = crate::route_budget::request_output_cap_for_input(
             self.api_provider,
             &self.session.model,
@@ -714,6 +716,14 @@ impl Engine {
         estimated_input: usize,
         input_budget: usize,
     ) -> PhaseResult<PreparedModelStep> {
+        if let Some(message) = turn.compaction_thrash_message() {
+            let _ = self
+                .send_event(Event::error(ErrorEnvelope::context_overflow(
+                    message.clone(),
+                )))
+                .await;
+            return PhaseResult::Return((TurnOutcomeStatus::Failed, Some(message)));
+        }
         if progress.context_recovery_attempts >= MAX_CONTEXT_RECOVERY_ATTEMPTS {
             let message = context_overflow_exhausted_message(
                 self.config.terminal_chrome_enabled,

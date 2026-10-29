@@ -855,6 +855,11 @@ impl Engine {
         // counted here for the same reason — one site, not one per tool.
         let telemetry = codewhale_telemetry::session_counters();
         telemetry.bump(codewhale_telemetry::Counter::ToolCalls);
+        telemetry.record_tool_call(
+            &tool_name,
+            dispatch == "mcp",
+            !outcome.as_ref().is_ok_and(|result| result.result.success),
+        );
         if tool_name == "memory_search" {
             telemetry.bump(codewhale_telemetry::Counter::MemorySearch);
         }

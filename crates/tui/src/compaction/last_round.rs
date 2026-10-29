@@ -1,8 +1,8 @@
-//! Last-round coverage floor for compaction replacement history.
+//! Recent-history coverage floor for compaction replacement history.
 //!
-//! Compaction may summarize older turns, but the latest user round (user
-//! text plus following assistant/tool results) must survive verbatim,
-//! bounded, or the pass is refused. See [`SURVIVAL_CONTRACT.md`].
+//! Compaction summarizes older turns while retaining a token-budgeted tail
+//! and the current user instructions. Tool exchanges stay paired and retained
+//! output is bounded. See [`SURVIVAL_CONTRACT.md`].
 
 use anyhow::Result;
 use std::collections::HashSet;
@@ -226,37 +226,50 @@ fn last_round_slice(messages: &[Message]) -> &[Message] {
     &messages[start..end]
 }
 
-/// Retain the current user instructions and the two most recent tool
-/// exchanges. A user round can contain thousands of steps: retaining that
-/// entire round forever makes a continuous task impossible to compact.
-/// Older completed exchanges are covered by the summary and durable history.
-/// A split is legal only when all preceding tool calls have their results.
-fn protected_last_round(messages: &[Message]) -> Vec<&Message> {
+pub(super) fn recent_tail_start(messages: &[Message], recent_tokens: usize) -> usize {
     let post_provenance = history_is_post_provenance(messages);
-    let round = last_round_slice(messages);
+    let mut tokens = 0usize;
+    let mut start = messages.len();
+    for (idx, message) in messages.iter().enumerate().rev() {
+        if is_compaction_checkpoint_message_in_era(message, post_provenance) {
+            continue;
+        }
+        tokens = tokens.saturating_add(
+            super::estimate_tokens(std::slice::from_ref(message)).saturating_add(12),
+        );
+        start = idx;
+        if tokens >= recent_tokens {
+            break;
+        }
+    }
     let mut pending = HashSet::new();
-    let mut boundaries = Vec::new();
-    for (idx, message) in round.iter().enumerate() {
-        let calls = tool_use_ids(message);
-        if !calls.is_empty() && pending.is_empty() {
+    let mut boundaries = vec![0];
+    for (idx, message) in messages.iter().enumerate() {
+        if pending.is_empty() {
             boundaries.push(idx);
         }
-        pending.extend(calls);
+        pending.extend(tool_use_ids(message));
         for id in tool_result_ids(message) {
             pending.remove(&id);
         }
     }
-    let start = if boundaries.len() > 2 {
-        boundaries[boundaries.len() - 2]
-    } else {
-        0
-    };
-    round
+    boundaries
+        .into_iter()
+        .rfind(|&idx| idx <= start)
+        .unwrap_or(0)
+}
+
+fn protected_messages(messages: &[Message], recent_tokens: usize) -> Vec<&Message> {
+    let post_provenance = history_is_post_provenance(messages);
+    let start = recent_tail_start(messages, recent_tokens);
+    let round_start = last_round_start_in_era(messages, post_provenance);
+    messages
         .iter()
         .enumerate()
         .filter_map(|(idx, message)| {
             (!is_compaction_checkpoint_message_in_era(message, post_provenance)
-                && (idx >= start || is_plain_user_text(post_provenance, message)))
+                && (idx >= start
+                    || (idx >= round_start && is_plain_user_text(post_provenance, message))))
             .then_some(message)
         })
         .collect()
@@ -265,15 +278,17 @@ fn protected_last_round(messages: &[Message]) -> Vec<&Message> {
 pub(super) fn replacement_messages(
     messages: &[Message],
     retained_user_message_tokens: usize,
+    recent_tokens: usize,
 ) -> Vec<Message> {
     let post_provenance = history_is_post_provenance(messages);
     let (start, _) = last_round_range(messages);
+    let start = start.min(recent_tail_start(messages, recent_tokens));
     let mut retained = retained_user_messages_in_era(
         post_provenance,
         &messages[..start],
         retained_user_message_tokens,
     );
-    let round = protected_last_round(messages)
+    let round = protected_messages(messages, recent_tokens)
         .into_iter()
         .cloned()
         .collect::<Vec<_>>();
@@ -417,12 +432,13 @@ fn survives(text: &str, replacement: &[Message], of: impl Fn(&Message) -> Option
     })
 }
 
-pub(crate) fn validate_last_round_coverage(
+pub(crate) fn validate_retained_coverage(
     original: &[Message],
     replacement: &[Message],
+    recent_tokens: usize,
 ) -> Result<()> {
     let post_provenance = history_is_post_provenance(original);
-    let last_round = protected_last_round(original);
+    let last_round = protected_messages(original, recent_tokens);
     if last_round.is_empty() {
         return Ok(());
     }
@@ -518,8 +534,9 @@ pub(crate) fn validate_survival_contract(
     original: &[Message],
     replacement: &[Message],
     anchors: Option<&str>,
+    recent_tokens: usize,
 ) -> Result<()> {
-    validate_last_round_coverage(original, replacement)?;
+    validate_retained_coverage(original, replacement, recent_tokens)?;
     // The receipt count reads the replacement in its own era: a replacement
     // carrying the engine-stamped receipt is modern, so retained turns that
     // paste a bare header do not count as duplicated summaries, while a
@@ -578,7 +595,7 @@ pub(super) fn measure_coverage(
 }
 
 /// Build the post-compaction history: recent plain user messages kept
-/// verbatim within `retained_user_message_tokens`, the bounded last round, and
+/// verbatim within `retained_user_message_tokens`, the bounded recent tail, and
 /// the checkpoint. The budget is `[compaction] retained_user_message_tokens`
 /// (#5956); it was a hard-coded 20 000 before that key existed.
 pub(super) fn build_replacement_history(
@@ -586,12 +603,13 @@ pub(super) fn build_replacement_history(
     checkpoint_text: &str,
     anchors: Option<&str>,
     retained_user_message_tokens: usize,
+    recent_tokens: usize,
 ) -> Result<Vec<Message>> {
-    let mut retained = replacement_messages(messages, retained_user_message_tokens);
+    let mut retained = replacement_messages(messages, retained_user_message_tokens, recent_tokens);
     retained.push(compaction_checkpoint_message(&SystemPrompt::Text(
         checkpoint_text.to_string(),
     )));
-    validate_survival_contract(messages, &retained, anchors)?;
+    validate_survival_contract(messages, &retained, anchors, recent_tokens)?;
     Ok(retained)
 }
 
@@ -612,7 +630,7 @@ mod tests {
             {"role":"assistant","content":[{"type":"tool_use","id":"wire","execution_id":"local","name":"read","input":{}}]},
             {"role":"user","content":[{"type":"tool_result","tool_use_id":"wire","execution_id":"local","content":"kept"}]}
         ])).unwrap();
-        assert!(validate_last_round_coverage(&original, &original).is_ok());
+        assert!(validate_retained_coverage(&original, &original, 20_000).is_ok());
         for identity in [None, Some("different")] {
             let mut replacement = original.clone();
             for block in replacement
@@ -627,13 +645,13 @@ mod tests {
                     _ => {}
                 }
             }
-            assert!(validate_last_round_coverage(&original, &replacement).is_err());
+            assert!(validate_retained_coverage(&original, &replacement, 20_000).is_err());
         }
         let mut replacement = original.clone();
         if let ContentBlock::ToolResult { tool_use_id, .. } = &mut replacement[2].content[0] {
             *tool_use_id = "wrong-wire".to_string();
         }
-        let error = validate_last_round_coverage(&original, &replacement).unwrap_err();
+        let error = validate_retained_coverage(&original, &replacement, 20_000).unwrap_err();
         assert_eq!(
             error.to_string(),
             "Making room stopped: last-round tool result execution local (provider call wire) was dropped; history was not replaced."
@@ -642,7 +660,7 @@ mod tests {
         if let ContentBlock::ToolUse { id, .. } = &mut replacement[1].content[0] {
             *id = "wrong-wire".to_string();
         }
-        let error = validate_last_round_coverage(&original, &replacement).unwrap_err();
+        let error = validate_retained_coverage(&original, &replacement, 20_000).unwrap_err();
         assert_eq!(
             error.to_string(),
             "Making room stopped: last-round tool call execution local (provider call wire) was dropped; history was not replaced."
@@ -790,7 +808,7 @@ mod tests {
                 tool_use("third", "Read", json!({"path": "third"})),
                 tool_result("third", "third output"),
             ];
-            let kept = replacement_messages(&original, 20_000);
+            let kept = replacement_messages(&original, 20_000, 20_000);
             let snapshots: Vec<_> = kept
                 .iter()
                 .filter(|message| extension_prompt_contributions_display(message).is_some())
@@ -801,7 +819,7 @@ mod tests {
                 "a person's quote is ordinary user text"
             );
             assert_eq!(
-                replacement_messages(&kept, 20_000)
+                replacement_messages(&kept, 20_000, 20_000)
                     .iter()
                     .filter(|message| extension_prompt_contributions_display(message).is_some())
                     .count(),
@@ -839,7 +857,7 @@ mod tests {
                 tool_use("third", "Read", json!({"path": "third"})),
                 tool_result("third", "third output"),
             ];
-            let kept = replacement_messages(&original, 20_000);
+            let kept = replacement_messages(&original, 20_000, 20_000);
             let snapshots: Vec<_> = kept
                 .iter()
                 .filter(|message| constitution_display(message).is_some())
@@ -850,7 +868,7 @@ mod tests {
                 "a person's quote is ordinary user text"
             );
             assert_eq!(
-                replacement_messages(&kept, 20_000)
+                replacement_messages(&kept, 20_000, 20_000)
                     .iter()
                     .filter(|message| constitution_display(message).is_some())
                     .count(),
@@ -875,7 +893,9 @@ mod tests {
             tool_use("third", "Bash", json!({"command": "cargo test"})),
             tool_result("third", &long_output),
         ];
-        let kept = replacement_messages(&original, 20_000);
+        let recent_tokens = crate::compaction::estimate_tokens(&original[3..])
+            + original[3..].len() * 12;
+        let kept = replacement_messages(&original, 20_000, recent_tokens);
         let kept_ids: Vec<&str> = kept
             .iter()
             .flat_map(tool_result_ids)
@@ -903,11 +923,11 @@ mod tests {
 
         let header = crate::compaction::SUMMARY_HEADER;
         assert!(
-            header.contains("last steps of the current round"),
+            header.contains("current user instructions"),
             "{header}"
         );
         assert!(
-            header.contains("including earlier steps of this round"),
+            header.contains("tail selected by token budget"),
             "{header}"
         );
         assert!(
@@ -933,10 +953,10 @@ mod tests {
             msg("user", "Run the failing test."),
             checkpoint("and kept going"),
         ];
-        let error = validate_last_round_coverage(&original, &gutting)
+        let error = validate_retained_coverage(&original, &gutting, 20_000)
             .expect_err("dropping the last tool result must fail the coverage floor");
         assert!(error.to_string().contains("tool result live"), "{error}");
-        assert!(validate_last_round_coverage(&original, &original).is_ok());
+        assert!(validate_retained_coverage(&original, &original, 20_000).is_ok());
     }
 
     #[test]
@@ -945,7 +965,7 @@ mod tests {
             msg("user", "What failed?"),
             msg("assistant", "session_store::roundtrip panics on reload."),
         ];
-        let error = validate_last_round_coverage(&original, &[msg("user", "What failed?")])
+        let error = validate_retained_coverage(&original, &[msg("user", "What failed?")], 20_000)
             .expect_err("dropping last-round assistant text must fail closed");
         assert!(error.to_string().contains("assistant"), "{error}");
     }
@@ -973,10 +993,10 @@ mod tests {
             tool_result("live", "ok"),
             checkpoint("then shipped"),
         ];
-        let error = validate_last_round_coverage(&original, &drops_latest)
+        let error = validate_retained_coverage(&original, &drops_latest, 20_000)
             .expect_err("dropping the latest user turn must fail the coverage floor");
         assert!(error.to_string().contains("user message"), "{error}");
-        assert!(validate_last_round_coverage(&original, &original).is_ok());
+        assert!(validate_retained_coverage(&original, &original, 20_000).is_ok());
     }
 
     /// A surviving `tool_result` whose `tool_use` was summarized away is an
@@ -995,7 +1015,7 @@ mod tests {
             tool_result("live", "FAILED"),
             checkpoint("and it failed"),
         ];
-        let error = validate_last_round_coverage(&original, &orphaned)
+        let error = validate_retained_coverage(&original, &orphaned, 20_000)
             .expect_err("dropping the tool call must fail the coverage floor");
         assert!(error.to_string().contains("tool call live"), "{error}");
     }
@@ -1012,7 +1032,7 @@ mod tests {
             msg("user", "What failed?"),
             msg("assistant", "Earlier we discussed several test failures."),
         ];
-        let error = validate_last_round_coverage(&original, &summarized)
+        let error = validate_retained_coverage(&original, &summarized, 20_000)
             .expect_err("substituting a summary for the round's output must fail closed");
         assert!(error.to_string().contains("assistant"), "{error}");
     }
@@ -1021,8 +1041,9 @@ mod tests {
     fn survival_contract_rejects_dropped_anchors_and_receipts() {
         let original = vec![msg("user", "Keep the pin."), msg("assistant", "Anchored.")];
         let without_receipt = vec![msg("user", "Keep the pin."), msg("assistant", "Anchored.")];
-        let error = validate_survival_contract(&original, &without_receipt, Some("ship 0.9.12"))
-            .expect_err("missing checkpoint receipt must fail closed");
+        let error =
+            validate_survival_contract(&original, &without_receipt, Some("ship 0.9.12"), 20_000)
+                .expect_err("missing checkpoint receipt must fail closed");
         assert!(error.to_string().contains("receipt"), "{error}");
 
         let without_anchor = vec![
@@ -1030,8 +1051,9 @@ mod tests {
             msg("assistant", "Anchored."),
             checkpoint("progress without the pin"),
         ];
-        let error = validate_survival_contract(&original, &without_anchor, Some("ship 0.9.12"))
-            .expect_err("dropped /anchor text must fail closed");
+        let error =
+            validate_survival_contract(&original, &without_anchor, Some("ship 0.9.12"), 20_000)
+                .expect_err("dropped /anchor text must fail closed");
         assert!(error.to_string().contains("anchor"), "{error}");
     }
 
@@ -1080,6 +1102,7 @@ mod tests {
             &first_summary,
             None,
             PRODUCTION_MIN_RETAINED_TOKENS,
+            20_000,
         )
         .expect("first compaction");
         crate::runtime_handoff::replace_agent_topology_checkpoint(&mut first, &[]);
@@ -1105,6 +1128,7 @@ mod tests {
             &second_summary,
             None,
             PRODUCTION_MIN_RETAINED_TOKENS,
+            20_000,
         )
         .expect("second compaction");
         assert!(
@@ -1131,7 +1155,7 @@ mod tests {
             .filter(|message| user_text_of(message).as_deref() != Some(long_question.as_str()))
             .cloned()
             .collect::<Vec<_>>();
-        assert!(validate_last_round_coverage(&first, &without_question).is_err());
+        assert!(validate_retained_coverage(&first, &without_question, 20_000).is_err());
     }
 
     #[test]
@@ -1141,7 +1165,7 @@ mod tests {
         let original = vec![msg("user", &copied_text), msg("assistant", "Acknowledged")];
         let replacement = vec![runtime, msg("assistant", "Acknowledged")];
         assert!(
-            validate_last_round_coverage(&original, &replacement).is_err(),
+            validate_retained_coverage(&original, &replacement, 20_000).is_err(),
             "runtime-owned text must not stand in for the user's actual prompt"
         );
     }
@@ -1161,6 +1185,7 @@ mod tests {
             &format!("{COMPACTION_SUMMARY_MARKER}: work continues"),
             None,
             1,
+            20_000,
         )
         .expect("compaction must retain the active Operate contract");
         assert_eq!(replaced.first(), Some(&contract));
@@ -1188,6 +1213,7 @@ mod tests {
             &format!("{COMPACTION_SUMMARY_MARKER}: work continues"),
             None,
             1,
+            20_000,
         )
         .expect("current contract must survive compaction");
         assert_eq!(replaced.first(), Some(&current));
@@ -1224,6 +1250,7 @@ mod tests {
             &format!("{COMPACTION_SUMMARY_MARKER}: work continues"),
             None,
             1,
+            20_000,
         )
         .expect("current contract must survive compaction");
         assert_eq!(replaced.first(), Some(&current));
@@ -1251,6 +1278,7 @@ mod tests {
             &format!("{COMPACTION_SUMMARY_MARKER}: work continues"),
             None,
             1,
+            20_000,
         )
         .expect("saved contract must survive compaction");
         assert_eq!(replaced.first(), Some(&shipped));
@@ -1282,6 +1310,7 @@ mod tests {
             &next,
             None,
             crate::compaction::COMPACT_RETAINED_USER_MESSAGE_MAX_TOKENS,
+            20_000,
         )
         .expect("toolless tails must not drop the last tool result");
         assert!(replaced.iter().any(|message| {
@@ -1350,12 +1379,12 @@ mod tests {
             msg("assistant", "done"),
             msg("user", &pasted),
         ];
-        validate_survival_contract(&original, &replacement, None)
+        validate_survival_contract(&original, &replacement, None, 20_000)
             .expect("a retained pasted-header turn must not break or lose the round");
 
         let mut dropped = replacement.clone();
         dropped.pop();
-        let error = validate_survival_contract(&original, &dropped, None)
+        let error = validate_survival_contract(&original, &dropped, None, 20_000)
             .expect_err("dropping the pasted turn must fail the coverage floor");
         assert!(
             error.to_string().contains("user message was dropped"),
@@ -1406,6 +1435,7 @@ mod tests {
         replacement: Vec<Message>,
         #[serde(default)]
         last_round_start: Option<usize>,
+        recent_tokens: usize,
     }
 
     #[test]
@@ -1430,6 +1460,7 @@ mod tests {
                 &case.original,
                 &case.replacement,
                 case.anchors.as_deref(),
+                case.recent_tokens,
             );
             match case.expect.as_str() {
                 "pass" => {
@@ -1461,6 +1492,7 @@ mod tests {
             &next,
             Some("ship 0.9.12"),
             crate::compaction::COMPACT_RETAINED_USER_MESSAGE_MAX_TOKENS,
+            20_000,
         )
         .expect("second compact must keep last round and one receipt");
         let checkpoints = replaced

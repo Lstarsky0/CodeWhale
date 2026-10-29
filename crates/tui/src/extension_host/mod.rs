@@ -2539,7 +2539,6 @@ impl ExtensionHostManager {
         // scope: a failing entry withdraws its own handles and cleanup, while
         // already-active sibling entries remain usable.
         let mut tools = BTreeSet::new();
-        let mut commands = BTreeSet::new();
         for (path, sha256) in &want.entries {
             let scope = (want.tier == HostTier::Plugin).then(|| EntryRef {
                 path: path.to_string_lossy().into_owned(),
@@ -2579,9 +2578,8 @@ impl ExtensionHostManager {
                     ActivateResult::Failed { diagnostic } => Err(diagnostic),
                 });
             match outcome {
-                Ok((names, slash)) => {
+                Ok((names, _slash)) => {
                     tools.extend(names);
-                    commands.extend(slash);
                     if let Some(scope) = &scope {
                         shared
                             .registry
@@ -2640,11 +2638,23 @@ impl ExtensionHostManager {
         }
         match failure {
             None => {
-                let active = shared
-                    .registry
-                    .lock()
-                    .expect("registry lock")
-                    .mark_active(&owner);
+                let (active, commands) = {
+                    let mut registry = shared.registry.lock().expect("registry lock");
+                    let active = registry.mark_active(&owner);
+                    let mut commands = if active {
+                        registry
+                            .live_commands()
+                            .into_iter()
+                            .filter(|command| command.owner == owner)
+                            .map(|command| command.name)
+                            .collect::<Vec<_>>()
+                    } else {
+                        Vec::new()
+                    };
+                    commands.sort();
+                    commands.dedup();
+                    (active, commands)
+                };
                 if active {
                     shared.plugin_diagnostic(
                         plugin_id,

@@ -651,11 +651,17 @@ fn tree_label(kind: &SessionEntryKind) -> String {
     match kind {
         SessionEntryKind::Message { message } => {
             let role = &message.role;
+            let meta_index = codewhale_models::turn_classify::turn_metadata_text(message)
+                .filter(|_| message.role == Role::User)
+                .map(|(index, _)| index);
             let snippet: String = message
                 .content
                 .iter()
-                .filter_map(|b| match b {
-                    ContentBlock::Text { text, .. } => Some(text.as_str()),
+                .enumerate()
+                .filter_map(|(index, b)| match b {
+                    ContentBlock::Text { text, .. } if Some(index) != meta_index => {
+                        Some(text.as_str())
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>()

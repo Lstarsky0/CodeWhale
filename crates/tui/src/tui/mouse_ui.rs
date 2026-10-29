@@ -546,6 +546,9 @@ pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEv
                 InteractionAction::OpenModelPicker => {
                     vec![ViewEvent::TopbarModelPickerRequested]
                 }
+                InteractionAction::OpenUpdate => {
+                    apply_sidebar_row_action(app, SidebarRowAction::Command("/update".to_string()))
+                }
                 InteractionAction::ShowDockPanel(_) | InteractionAction::DismissDock => {
                     unreachable!("dock targets defer to the strip")
                 }

@@ -31,6 +31,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 
@@ -242,6 +243,22 @@ pub struct PersistActorHandle {
 }
 
 impl PersistActorHandle {
+    async fn flush(&self, timeout: Duration) -> Result<FlushReport, String> {
+        tokio::time::timeout(timeout, async {
+            let (reply, receiver) = oneshot::channel();
+            self.tx
+                .cmd_tx
+                .send(ActorCommand::FlushAndReport { reply })
+                .await
+                .map_err(|_| "session persistence actor is unavailable".to_string())?;
+            receiver
+                .await
+                .map_err(|_| "session persistence stopped before flush acknowledgement".to_string())
+        })
+        .await
+        .map_err(|_| "session persistence flush timed out".to_string())?
+    }
+
     /// Whether the latest save of each session document landed.
     pub(crate) fn session_save_health(&self) -> SaveHealthReading {
         self.tx.health.reading()
@@ -321,6 +338,25 @@ impl PersistActorHandle {
 // ---------------------------------------------------------------------------
 
 static ACTOR_TX: OnceLock<PersistActorHandle> = OnceLock::new();
+
+pub(crate) async fn flush_for_signal_exit() {
+    let Some(handle) = ACTOR_TX.get() else {
+        return;
+    };
+    match handle.flush(Duration::from_secs(2)).await {
+        Ok(report) if !report.failures.is_empty() => tracing::warn!(
+            target: "persistence",
+            failures = ?report.failures,
+            "session persistence reported write failures during signal shutdown",
+        ),
+        Err(error) => tracing::warn!(
+            target: "persistence",
+            %error,
+            "session persistence did not acknowledge flush during signal shutdown",
+        ),
+        Ok(_) => {}
+    }
+}
 
 /// Initialise the global persistence actor handle. Must be called once at
 /// startup, before the event loop starts.
@@ -902,6 +938,36 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_wait_flushes_queued_session_before_returning() {
+        let (tx, paused_receiver) = persistence_request_channel();
+        let paused = PersistActorHandle { tx };
+        assert!(
+            paused
+                .flush(Duration::from_millis(10))
+                .await
+                .expect_err("paused actor must time out awaiting acknowledgement")
+                .contains("timed out")
+        );
+        for _ in 1..ACTOR_COMMAND_CAPACITY {
+            let (reply, _) = oneshot::channel();
+            assert!(paused.try_send(PersistRequest::FlushAndReport { reply }));
+        }
+        assert_eq!(paused.tx.cmd_tx.capacity(), 0);
+        assert!(
+            paused
+                .flush(Duration::from_millis(10))
+                .await
+                .expect_err("full command channel must time out while sending")
+                .contains("timed out")
+        );
+        drop(paused_receiver);
+        assert!(
+            paused
+                .flush(Duration::from_secs(2))
+                .await
+                .expect_err("closed actor must fail without waiting")
+                .contains("unavailable")
+        );
+
         let tmp = tempfile::tempdir().expect("tempdir");
         let sessions_dir = tmp.path().join("sessions");
         let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
@@ -1052,7 +1118,8 @@ mod tests {
     async fn flush_and_report_returns_completed_counts() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let sessions_dir = tmp.path().join("sessions");
-        let manager = SessionManager::new(sessions_dir).expect("manager");
+        let manager = SessionManager::new(sessions_dir.clone()).expect("manager");
+        let verification_manager = SessionManager::new(sessions_dir).expect("verification manager");
         let session = crate::session_manager::create_saved_session_with_mode(
             &[],
             "deepseek-v4-pro",
@@ -1084,20 +1151,31 @@ mod tests {
         }
         let (handle, task) = spawn_persistence_actor(manager);
 
+        assert!(handle.try_send(PersistRequest::SessionSnapshot(session.clone())));
         let (checkpoint_reply, checkpoint_result) = oneshot::channel();
         assert!(handle.try_send(PersistRequest::AcknowledgedCheckpoint {
-            session,
+            session: session.clone(),
             reply: checkpoint_reply
         }));
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        handle.try_send(PersistRequest::FlushAndReport { reply: reply_tx });
-        let report = reply_rx.await.expect("flush report reply");
+        let report = handle
+            .flush(Duration::from_secs(2))
+            .await
+            .expect("flush report reply");
         assert!(checkpoint_result.await.expect("checkpoint reply").is_ok());
-        // Whether the checkpoint was written by an earlier background cycle
-        // or by this flush, the accumulated report must count it and show no
-        // failures — and the actor keeps running afterwards.
-        assert!(report.completed >= 1, "checkpoint write must be counted");
+        // Whether the writes landed in an earlier background cycle or in this
+        // flush, both must be counted with no failures; the actor keeps running.
+        assert!(report.completed >= 2, "both writes must be counted");
         assert!(report.failures.is_empty(), "no failures expected");
+        verification_manager
+            .load_session(&session.metadata.id)
+            .expect("flush must persist the queued session before shutdown");
+        assert!(
+            verification_manager
+                .load_session_checkpoint(&session.metadata.id)
+                .expect("load checkpoint after flush")
+                .is_some(),
+            "flush must retain the in-flight checkpoint"
+        );
         handle.try_send(PersistRequest::Shutdown);
         task.await.expect("persistence actor join");
     }
@@ -1181,9 +1259,10 @@ mod tests {
             session,
             reply: checkpoint_reply
         }));
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        handle.try_send(PersistRequest::FlushAndReport { reply: reply_tx });
-        let report = reply_rx.await.expect("flush report reply");
+        let report = handle
+            .flush(Duration::from_secs(2))
+            .await
+            .expect("flush report reply");
         assert!(checkpoint_result.await.expect("checkpoint reply").is_err());
 
         assert!(

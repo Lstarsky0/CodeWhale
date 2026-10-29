@@ -190,6 +190,7 @@ pub struct CommandRegistration {
     pub content_hash: String,
     /// The slash-command name, without the slash (lower case).
     pub name: String,
+    pub declared_name: String,
     pub description: String,
     pub argument_hint: Option<String>,
 }
@@ -285,6 +286,33 @@ fn valid_command_name(name: &str) -> bool {
     matches!(chars.next(), Some(first) if first.is_ascii_lowercase())
         && name.len() <= 64
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
+fn namespaced_command(plugin_name: &str, plugin_id: &str, name: &str) -> String {
+    let slug: String = plugin_name
+        .chars()
+        .map(|c| {
+            let c = c.to_ascii_lowercase();
+            if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let slug = slug.trim_matches('-');
+    let slug = if slug.is_empty() { "extension" } else { slug };
+    let mut alias = format!("plugin-{slug}-{name}");
+    if alias.len() > 64 {
+        let digest = codewhale_runtime::hashing::sha256_hex(format!("{plugin_id}\0{name}"));
+        alias.truncate(51);
+        while alias.ends_with('-') {
+            alias.pop();
+        }
+        alias.push('-');
+        alias.push_str(&digest[..12]);
+    }
+    alias
 }
 
 /// Why the core would treat a tool called `name` as something other than an
@@ -1149,11 +1177,23 @@ impl OwnerRegistry {
                 "command `/{name}` cannot be checked against the built-in commands: no built-in command catalog is installed, so extension commands are refused"
             ));
         };
-        if catalog.answers_to(name) {
-            return Err(format!(
-                "command `/{name}` collides with a built-in command; extensions never shadow core commands; use a plugin-specific name, for example `/myplugin-{name}`"
-            ));
-        }
+        let alias = if catalog.answers_to(name) {
+            if tier != HostTier::Plugin {
+                return Err(format!(
+                    "command `/{name}` collides with a built-in command"
+                ));
+            }
+            let alias = namespaced_command(&plugin_name, &params.owner.plugin_id, name);
+            if !valid_command_name(&alias) || catalog.answers_to(&alias) {
+                return Err(format!(
+                    "command `/{name}` collides with a built-in command and its namespaced alias is unavailable"
+                ));
+            }
+            Some(alias)
+        } else {
+            None
+        };
+        let published_name = alias.as_deref().unwrap_or(name);
         if spec.input_schema.is_some() {
             return Err(format!("command `/{name}` has no input schema"));
         }
@@ -1188,7 +1228,7 @@ impl OwnerRegistry {
             .commands_by_name
             .get(&codewhale_plugins::composition_scope::name_key(
                 &params.owner.plugin_id,
-                name,
+                published_name,
                 params.scope.as_ref(),
             ))
             .and_then(|handle| self.commands.get(handle))
@@ -1197,6 +1237,11 @@ impl OwnerRegistry {
                 return Err(format!(
                     "command `/{name}` is already registered by extension `{}`; use a plugin-specific name",
                     existing.plugin_name
+                ));
+            }
+            if existing.declared_name != name {
+                return Err(format!(
+                    "command `/{name}` would collide with another command's namespaced alias `/{published_name}`"
                 ));
             }
             // Same owner re-registering a name: the new handle retires the old.
@@ -1232,7 +1277,8 @@ impl OwnerRegistry {
                 tier,
                 plugin_name,
                 content_hash,
-                name: name.to_string(),
+                name: published_name.to_string(),
+                declared_name: name.to_string(),
                 description: description.to_string(),
                 argument_hint: hint.map(str::to_string),
             },
@@ -1240,7 +1286,7 @@ impl OwnerRegistry {
         self.commands_by_name.insert(
             codewhale_plugins::composition_scope::name_key(
                 &params.owner.plugin_id,
-                name,
+                published_name,
                 params.scope.as_ref(),
             ),
             handle,

@@ -1651,11 +1651,9 @@ impl ModelPickerView {
             ..area
         };
 
-        // Column widths are measured over the rows actually on screen, so the
-        // route column lands at one predictable offset for the whole page
-        // instead of drifting with whatever long id happens to be scrolled in.
-        let mut columns =
-            ModelRowColumns::for_page(&rows[start.min(rows.len())..end.min(rows.len())]);
+        // Column widths are measured over all filtered rows so their offsets
+        // remain stable while scrolling.
+        let mut columns = ModelRowColumns::for_rows(rows);
         if header_height == 2 {
             columns.primary = columns.primary.max(7);
             columns.route = columns.route.max(10);
@@ -1720,7 +1718,7 @@ impl ModelPickerView {
             // row's (groups sort contiguously). Unknown groups draw nothing.
             if group_header_before(rows, idx) && pane_height > 1 {
                 lines.push(Line::from(Span::styled(
-                    format!("  ─ {}", row.group.as_deref().unwrap_or_default()),
+                    format!("    {}", row.group.as_deref().unwrap_or_default()),
                     Style::default().fg(palette::TEXT_DIM),
                 )));
             }
@@ -1925,8 +1923,8 @@ const MIN_ROUTE_WIDTH: usize = 6;
 const MIN_META_WIDTH: usize = 4;
 
 impl ModelRowColumns {
-    /// Measure the natural width each column wants, over the rows on screen.
-    fn for_page(rows: &[PaneRow]) -> Self {
+    /// Measure the natural width each column wants, over the supplied rows.
+    fn for_rows(rows: &[PaneRow]) -> Self {
         let widest = |pick: fn(&PaneRow) -> usize| rows.iter().map(pick).max().unwrap_or(0);
         Self {
             primary: widest(|row| unicode_width::UnicodeWidthStr::width(row.primary.as_str())),
@@ -4614,6 +4612,7 @@ impl ModelPickerView {
         // ⇧A and ⇧D are query text while a search is typed; advertise them
         // only when they act.
         let searching = !self.query.is_empty();
+        let show_advanced_hints = inner.width >= 88 && inner.height >= 24;
         let mut footer_hints = vec![
             ActionHint::new("↑↓", tr(self.locale, MessageId::PickerActionMove)),
             ActionHint::new("Tab", tr(self.locale, MessageId::PickerActionSwitch)),
@@ -4637,7 +4636,7 @@ impl ModelPickerView {
                 },
             ));
         }
-        if inner.height >= 16 {
+        if show_advanced_hints {
             footer_hints.push(ActionHint::new(
                 "Ctrl+S",
                 tr(self.locale, MessageId::SessionsActionSort),
@@ -4648,7 +4647,7 @@ impl ModelPickerView {
         }
         // A Fleet row has no startup default to save; the chord is a
         // session-route action only.
-        if self.purpose == ModelPickerPurpose::Session && inner.height >= 16 && !searching {
+        if self.purpose == ModelPickerPurpose::Session && show_advanced_hints && !searching {
             footer_hints.insert(
                 4,
                 ActionHint::new(
@@ -4662,7 +4661,7 @@ impl ModelPickerView {
         // Pin and Fleet act only on a highlighted catalog route. While a
         // search is typed the shifted letters are query text, so the Ctrl
         // chords are advertised instead.
-        if inner.width >= 72 && inner.height >= 16 && self.highlighted_route().is_some() {
+        if show_advanced_hints && self.highlighted_route().is_some() {
             let (fleet_key, pin_key) = if searching {
                 ("Ctrl+F", "Ctrl+P")
             } else {

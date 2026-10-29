@@ -1372,7 +1372,7 @@ async fn apply_conversation_undo(
     app: &mut App,
     engine: &EngineHandle,
     sync: codewhale_command_contract::facets::SessionSyncPayload,
-) -> Result<()> {
+) -> Result<Option<anyhow::Error>> {
     anyhow::ensure!(
         !app.is_loading
             && !app.dispatch_in_flight
@@ -1439,29 +1439,34 @@ async fn apply_conversation_undo(
     app.exploring_entries.clear();
     app.ignored_tool_calls.clear();
     app.mark_history_updated();
-    let manager = tokio::task::spawn_blocking(SessionManager::default_location).await??;
-    let session = build_session_snapshot(app, &manager).map_err(anyhow::Error::msg)?;
-    // CompletedCommit supersedes an older queued checkpoint as well as its
-    // snapshot. A plain snapshot could let crash recovery revive the old turn.
-    anyhow::ensure!(
-        persistence_actor::try_persist(PersistRequest::CompletedCommit { session }),
-        "the session persistence worker is unavailable"
-    );
-    let (reply, receive) = tokio::sync::oneshot::channel();
-    anyhow::ensure!(
-        persistence_actor::try_persist(PersistRequest::FlushAndReport { reply }),
-        "could not request the session save receipt"
-    );
-    let report = receive.await?;
-    anyhow::ensure!(
-        report.failures.is_empty(),
-        "the session save failed: {:?}",
-        report.failures
-    );
-    publish_pending_work_projection(app)
-        .await
-        .map_err(anyhow::Error::msg)?;
-    Ok(())
+    let persistence = async {
+        let manager = tokio::task::spawn_blocking(SessionManager::default_location).await??;
+        let session = build_session_snapshot(app, &manager).map_err(anyhow::Error::msg)?;
+        let projection = saved_work_projection(app, &session);
+        // CompletedCommit supersedes an older queued checkpoint as well as its
+        // snapshot. A plain snapshot could let crash recovery revive the old turn.
+        anyhow::ensure!(
+            persistence_actor::try_persist(PersistRequest::CompletedCommit { session }),
+            "the session persistence worker is unavailable"
+        );
+        let (reply, receive) = tokio::sync::oneshot::channel();
+        anyhow::ensure!(
+            persistence_actor::try_persist(PersistRequest::FlushAndReport { reply }),
+            "could not request the session save receipt"
+        );
+        let report = receive.await?;
+        anyhow::ensure!(
+            report.failures.is_empty(),
+            "the session save failed: {:?}",
+            report.failures
+        );
+        publish_saved_work_projection(app, &projection)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    Ok(persistence.err())
 }
 
 // The event loop awaits this dispatcher at several call sites. In debug
@@ -1848,17 +1853,49 @@ async fn apply_command_result_inner(
                 retry_input,
                 edit_replacement,
             } => {
-                if let Err(error) = apply_conversation_undo(app, engine_handle, sync).await {
-                    // A refused `/edit` rollback has already consumed the
-                    // revision from the composer: hand it back, with edit mode
-                    // re-armed, so the user can retry instead of retyping.
-                    if edit_replacement && let Some(content) = retry_input {
-                        let restored = build_queued_message(app, content);
-                        restore_failed_immediate_submit(app, restored, &error);
-                        app.edit_in_progress = true;
+                let persistence_error = match apply_conversation_undo(app, engine_handle, sync)
+                    .await
+                {
+                    Ok(error) => error,
+                    Err(error) => {
+                        // A refused `/edit` rollback has already consumed the
+                        // revision from the composer: hand it back, with edit mode
+                        // re-armed, so the user can retry instead of retyping.
+                        if edit_replacement && let Some(content) = retry_input {
+                            let restored = build_queued_message(app, content);
+                            restore_failed_immediate_submit(app, restored, &error);
+                            app.edit_in_progress = true;
+                        }
+                        app.push_status_toast(
+                            format!("Conversation rollback failed; retry was not sent: {error:#}"),
+                            StatusToastLevel::Error,
+                            None,
+                        );
+                        return Ok(false);
+                    }
+                };
+                if let Some(error) = persistence_error {
+                    let mut retry_note = "";
+                    let mut recovery = "";
+                    if let Some(message) = conversation_message {
+                        app.add_message(HistoryCell::System { content: message });
+                    }
+                    if let Some(content) = retry_input {
+                        retry_note = "; retry was not sent";
+                        if edit_replacement {
+                            let restored = build_queued_message(app, content);
+                            restore_failed_immediate_submit(app, restored, &error);
+                            app.edit_in_progress = false;
+                            recovery = " The replacement is in the composer.";
+                        } else {
+                            app.add_message(HistoryCell::System {
+                                content: format!("Retry prompt was not sent. Copy it from here to retry:\n{content}"),
+                            });
+                            recovery = " The retry prompt is in the conversation above; copy it before leaving this session.";
+                        }
                     }
                     app.push_status_toast(
-                        format!("Conversation rollback failed; retry was not sent: {error:#}"),
+                        format!("Conversation was rewound, but its save or Work update needs attention{retry_note}: {error:#}.{recovery}"),
                         StatusToastLevel::Error,
                         None,
                     );

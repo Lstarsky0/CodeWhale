@@ -1647,6 +1647,7 @@ fn native_composition_files(
     entries: &[Value],
     mut document: Json,
     output: &mut OutputFiles,
+    client_outcomes: &mut Vec<DshOutcome>,
 ) -> Result<Vec<String>> {
     fn modules(rows: &[Value], names: &mut Vec<String>) -> Result<()> {
         for row in rows {
@@ -1736,6 +1737,61 @@ fn native_composition_files(
         files.insert(relative.clone(), json!(sha256_hex(&bytes)));
         output.add(format!("source/{relative}"), bytes)
     })?;
+    let mut selected_manifests = std::collections::BTreeSet::new();
+    let mut client_paths: Vec<_> = paths
+        .iter()
+        .map(|(name, path)| (name.clone(), path.clone()))
+        .collect();
+    for name in &names {
+        if name == presets::AGENT_PRESETS || host_hook_bridge(name) {
+            let manifest = format!("source/node_modules/{name}/package.json");
+            if output.files.contains_key(&manifest) {
+                client_paths.push((
+                    name.clone(),
+                    package.root.join(format!("node_modules/{name}/index.js")),
+                ));
+            }
+        }
+    }
+    for (name, path) in client_paths {
+        let mut directory = path.parent();
+        while let Some(parent) = directory.filter(|parent| parent.starts_with(&package.root)) {
+            let manifest_path = relative_slash(&parent.join("package.json"), &package.root);
+            let key = format!("source/{manifest_path}");
+            if let Some(bytes) = output.files.get(&key) {
+                if selected_manifests.insert(manifest_path) {
+                    require(
+                        bytes.len() <= MAX_DOCUMENT,
+                        "Package manifest exceeds the conversion size limit.",
+                    )?;
+                    let text = std::str::from_utf8(bytes).map_err(|_| {
+                        anyhow::Error::msg("Configuration and skill entrypoints must be UTF-8.")
+                    })?;
+                    let manifest = parse_json(text)?;
+                    if manifest
+                        .get("dsh")
+                        .and_then(|dsh| dsh.get("client"))
+                        .is_some_and(|client| !matches!(client, Value::Null))
+                    {
+                        client_outcomes.push(DshOutcome {
+                            row: Some(refusal_text(&name)),
+                            package: Some(refusal_text(
+                                manifest.get("name").and_then(Value::str).unwrap_or(&name),
+                            )),
+                            kind: "client".into(),
+                            outcome: "skipped".into(),
+                            reason: "Plugin-provided UI is not imported or run by Codewhale."
+                                .into(),
+                            layer: None,
+                            patch: None,
+                        });
+                    }
+                }
+                break;
+            }
+            directory = parent.parent();
+        }
+    }
     let mut selected = Vec::new();
     for name in &names {
         if name == presets::AGENT_PRESETS || host_hook_bridge(name) {
@@ -1817,11 +1873,13 @@ pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
     }
     let loaded = load_bundle(&package)?;
     let mut output_files = OutputFiles::default();
+    let mut client_outcomes = Vec::new();
     let native_rows = native_composition_files(
         &package,
         &loaded.entries,
         loaded.composition,
         &mut output_files,
+        &mut client_outcomes,
     )?;
     let requires_native = !native_rows.is_empty();
     let mut notes = loaded.notes;
@@ -1835,6 +1893,7 @@ pub fn convert_package(package: &Path, output: &Path) -> Result<DshConversion> {
     )?;
     let mut outcomes = loaded.outcomes;
     outcomes.append(&mut components.outcomes);
+    outcomes.append(&mut client_outcomes);
     notes.append(&mut components.notes);
 
     let package_name = loaded

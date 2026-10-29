@@ -29,10 +29,18 @@ use crate::config::Config;
 use codewhale_config::ProviderKind;
 
 /// OAuth token payload stored in `auth.json`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct AuthTokens {
     access_token: Option<String>,
+}
+
+impl std::fmt::Debug for AuthTokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthTokens")
+            .field("access_token", &redacted(self.access_token.is_some()))
+            .finish()
+    }
 }
 
 /// Top-level structure of Codex CLI's `auth.json`.
@@ -43,9 +51,17 @@ struct CodexAuthFile {
 }
 
 /// Resolved OAuth credentials ready for API use.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CodexCredentials {
     pub access_token: String,
+}
+
+impl std::fmt::Debug for CodexCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CodexCredentials")
+            .field("access_token", &"<redacted>")
+            .finish()
+    }
 }
 
 /// JWT claims subset for expiry extraction.
@@ -8244,6 +8260,18 @@ consent_version = 1
 
     #[test]
     fn debug_impls_redact_secrets() {
+        let file = CodexAuthFile {
+            tokens: Some(AuthTokens {
+                access_token: Some("synthetic-codex-bearer".into()),
+            }),
+        };
+        let credentials = CodexCredentials {
+            access_token: "synthetic-codex-bearer".into(),
+        };
+        for rendered in [format!("{file:?}"), format!("{credentials:?}")] {
+            assert!(rendered.contains("<redacted>"));
+            assert!(!rendered.contains("synthetic-codex-bearer"));
+        }
         let entry = OwnedAuthEntry {
             access_token: Some("secret-access".into()),
             refresh_token: Some("secret-refresh".into()),

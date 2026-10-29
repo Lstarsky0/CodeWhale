@@ -41,20 +41,32 @@ fn enrich_reasoning_from_catalog(roster: &mut CodexModelRoster) {
     }
 }
 
+fn prepare_chatgpt_refresh(
+    config: &Config,
+) -> Result<(std::path::PathBuf, crate::client::CodewhaleClient, Config), &'static str> {
+    let mut selected = config.clone();
+    let identity = selected
+        .builtin_provider_identity(ProviderKind::OpenaiCodex)
+        .map_err(|_| "chatgpt_plan_permission_required")?;
+    selected
+        .scope_to_provider_identity(&identity)
+        .map_err(|_| "chatgpt_plan_permission_required")?;
+    let path = snapshot_path(&selected).ok_or("chatgpt_plan_permission_required")?;
+    let client = crate::client::CodewhaleClient::for_catalog_refresh(&selected)
+        .map_err(|_| "chatgpt_plan_credentials_unavailable")?;
+    Ok((path, client, selected))
+}
+
 /// Fetch through the existing provider client. A registration change during
 /// the request cannot publish an old account's models under a new account.
 pub(crate) async fn update_from_chatgpt(config: &Config) -> Result<CodexModelRoster, &'static str> {
-    let config = config.clone();
     let prepared = config.clone();
     #[cfg(test)]
     let ticket = crate::test_support::env_scope_ticket();
-    let (path, client) = tokio::task::spawn_blocking(move || {
+    let (path, client, config) = tokio::task::spawn_blocking(move || {
         #[cfg(test)]
         let _membership = crate::test_support::join_env_scope(ticket);
-        let path = snapshot_path(&prepared).ok_or("chatgpt_plan_permission_required")?;
-        let client = crate::client::CodewhaleClient::for_catalog_refresh(&prepared)
-            .map_err(|_| "chatgpt_plan_credentials_unavailable")?;
-        Ok::<_, &'static str>((path, client))
+        prepare_chatgpt_refresh(&prepared)
     })
     .await
     .map_err(|_| "chatgpt_plan_credentials_unavailable")??;
@@ -150,18 +162,61 @@ mod tests {
         let directory_path = directory.path().canonicalize().unwrap();
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &directory_path);
         let mut account_a = Config::default();
+        account_a.provider = Some(ProviderKind::Deepseek.as_str().to_string());
         codewhale_runtime::oauth::install_test_chatgpt_registration_for(
             &mut account_a,
             "account-a",
             "oaiapp_workspace_a",
         )
         .unwrap();
-        install_test_chatgpt_roster(&account_a, &["z-first", "a-second"]).unwrap();
         let path_a = snapshot_path(&account_a).unwrap();
+        let legacy_name = path_a.file_name().unwrap().to_string_lossy().replacen(
+            "chatgpt-plan-v2-",
+            "chatgpt-plan-",
+            1,
+        );
+        let legacy_path = path_a.with_file_name(legacy_name);
+        let legacy = CatalogSnapshot {
+            fetched_at: Utc::now(),
+            models: vec![CodexModelMetadata {
+                id: "deepseek-flash".to_string(),
+                display_name: None,
+                context_window: None,
+                reasoning: None,
+                efforts: Vec::new(),
+            }],
+        };
+        codewhale_config::persistence::atomic_write(
+            &legacy_path,
+            &serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
+        assert!(model_roster_for(&account_a).models.is_empty());
+        let (refresh_path, client, selected) = prepare_chatgpt_refresh(&account_a).unwrap();
+        assert_eq!(refresh_path, path_a);
+        assert_eq!(client.api_provider(), ProviderKind::OpenaiCodex);
+        assert_eq!(client.base_url(), "https://api.openai.com/v1");
+        assert_eq!(
+            selected.active_provider_identity().unwrap().provider,
+            ProviderKind::OpenaiCodex
+        );
+        assert_eq!(
+            account_a.active_provider_identity().unwrap().provider,
+            ProviderKind::Deepseek
+        );
+        let mut proxy = account_a.clone();
+        let identity = proxy
+            .builtin_provider_identity(ProviderKind::OpenaiCodex)
+            .unwrap();
+        proxy.provider_config_for_mut(&identity).unwrap().base_url =
+            Some("https://relay.example/v1".to_string());
+        assert!(prepare_chatgpt_refresh(&proxy).is_err());
+        install_test_chatgpt_roster(&account_a, &["z-first", "a-second"]).unwrap();
         assert_eq!(
             model_roster_for(&account_a).model_ids(),
             ["z-first", "a-second"]
         );
+        assert!(legacy_path.exists());
 
         let mut account_b = Config::default();
         codewhale_runtime::oauth::install_test_chatgpt_registration_for(

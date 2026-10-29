@@ -1324,6 +1324,7 @@ fn default_runtime_capabilities() -> RuntimeCapabilities {
         turn_operation_idempotency: true,
         turn_operation_lookup: true,
         structured_review_turns: true,
+        structured_review_version: 2,
         automation_mutation_preconditions: true,
         turn_image_inputs: true,
         turn_output_token_limit: true,
@@ -11486,7 +11487,8 @@ fn provider_model_entry_for_api(
     {
         entry.reasoning_effort_levels = efforts
             .into_iter()
-            .filter(|effort| !matches!(effort, ReasoningEffort::Off | ReasoningEffort::Auto))
+            .filter(|effort| *effort != ReasoningEffort::Auto)
+            .filter(|effort| *effort != ReasoningEffort::Off || provider == ProviderKind::Deepseek)
             .map(|effort| effort.as_setting().to_string())
             .collect();
         entry.reasoning_effort_source = Some("catalog");
@@ -11682,6 +11684,7 @@ pub(crate) fn runtime_chat_relay_catalog(
             "capabilities": {
                 "relay_chat_v1": true,
                 "structured_review_turns": true,
+                "structured_review_version": 2,
                 "isolated_chat_threads": true,
                 "turn_operation_idempotency": true,
                 "turn_image_inputs": true,
