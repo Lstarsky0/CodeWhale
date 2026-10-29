@@ -1424,12 +1424,10 @@ fn render_list_line_tagged(
 /// Render a `>` quote line: a vertical-rule rail per nesting depth plus the
 /// quote text with inline formatting (bold, code, links).
 ///
-/// The rail is display chrome, not source markup. On the first row the
+/// The rail is display chrome, not source markup. On every row the
 /// transcript rail-scan (`compute_rail_prefix_width`) already strips it along
-/// with the assistant glyph, so `copy_prefix_width` must be `0` there — like
-/// list items — or selection copy would strip the rail twice and lose quote
-/// text. Wrapped continuation rows have no rail scan (plain spaces), so they
-/// report the rail width so selection copy skips their alignment.
+/// with the assistant glyph, so `copy_prefix_width` must be `0` or selection
+/// copy would strip the rail twice and lose quote text.
 fn render_quote_line_tagged(
     text: &str,
     depth: usize,
@@ -1444,26 +1442,19 @@ fn render_quote_line_tagged(
     let wrapped = render_line_with_links_tagged(text, available, text_style, link_style());
 
     let mut out = Vec::new();
-    for (idx, rendered) in wrapped.into_iter().enumerate() {
+    for rendered in wrapped {
         let links = rendered
             .links
             .iter()
             .map(|link| link.shifted(rail_width))
             .collect();
-        let mut spans = if idx == 0 {
-            (0..depth).map(|_| Span::styled("│ ", rail_style)).collect()
-        } else {
-            vec![Span::raw(" ".repeat(rail_width))]
-        };
+        let mut spans: Vec<_> = (0..depth).map(|_| Span::styled("│ ", rail_style)).collect();
         spans.extend(rendered.line.spans);
         out.push(RenderedMarkdownLine {
             line: Line::from(spans),
             links,
             is_code: false,
-            // First row: the transcript rail-scan strips the visible rail
-            // (mirror `render_list_line_tagged`); continuation rows: report
-            // the alignment width so selection copy skips it.
-            copy_prefix_width: if idx == 0 { 0 } else { rail_width },
+            copy_prefix_width: 0,
             copy_separator_after: rendered.copy_separator_after,
         });
     }
@@ -3253,23 +3244,14 @@ mod tests {
         let rendered = render_markdown_tagged(source, 12, Style::default());
         let visible = tagged_visible(&rendered);
         assert!(visible.len() > 1, "fixture must wrap: {visible:?}");
-        assert!(visible[0].starts_with("│ "), "first row starts with rail");
-        // Copy-prefix accounting: first row reports 0 (rail-scan strips it),
-        // continuation rows report the rail width (plain spaces are not
-        // stripped by the rail-scan).
-        assert_eq!(rendered[0].copy_prefix_width, 0);
-        for row in rendered.iter().skip(1) {
-            assert_eq!(row.copy_prefix_width, 2);
+        for row in &visible {
+            assert!(
+                row.starts_with("│ "),
+                "every row starts with the rail: {row:?}"
+            );
         }
-        for row in &visible[1..] {
-            assert!(
-                row.starts_with("  "),
-                "continuation rows keep the rail width indent: {row:?}"
-            );
-            assert!(
-                !row.starts_with('│'),
-                "rail appears only on the first row: {row:?}"
-            );
+        for row in &rendered {
+            assert_eq!(row.copy_prefix_width, 0);
         }
         for width in rendered.iter().map(|row| {
             row.line
