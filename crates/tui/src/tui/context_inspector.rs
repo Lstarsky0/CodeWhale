@@ -267,11 +267,7 @@ pub fn build_context_inspector_text(app: &App, locale: Locale) -> String {
 }
 
 fn context_usage(app: &App) -> (usize, u32, f64) {
-    let max = crate::route_budget::route_context_window_tokens(
-        app.api_provider,
-        app.effective_model_for_budget(),
-        app.active_route_limits,
-    );
+    let max = app.effective_context_window();
     // The meter must show the SAME pressure signal the auto-compaction trigger
     // decides on (compaction::estimate_input_tokens_for_pressure, the
     // non-inflated estimate with framing overhead). The old conservative

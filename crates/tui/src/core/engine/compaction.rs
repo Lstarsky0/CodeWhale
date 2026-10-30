@@ -209,10 +209,11 @@ impl Engine {
         }
         let input_tokens =
             self.active_input_tokens_with_current_text(current_text, system_prompt, messages);
-        let budget = route_context_budget_for_route(
+        let budget = crate::route_budget::route_context_budget_with_window(
             prompt_context.provider,
             &prompt_context.model,
             prompt_context.route_limits,
+            prompt_context.context_window.map(|window| window.tokens),
             input_tokens,
         )?;
         context_pressure_message(budget.usage_percent()).map(|warning| format!(
@@ -878,12 +879,14 @@ impl Engine {
             .await;
             return false;
         }
-        let Some(target_budget) = context_input_budget_for_route(
+        let Some(target_budget) = crate::route_budget::route_context_budget_with_window(
             self.api_provider,
             &self.session.model,
             self.active_route_limits,
+            self.active_context_window.map(|window| window.tokens),
             0,
-        ) else {
+        )
+        .and_then(|budget| usize::try_from(budget.available_input_tokens).ok()) else {
             return false;
         };
         if let Some(message) = turn.compaction_thrash_message() {

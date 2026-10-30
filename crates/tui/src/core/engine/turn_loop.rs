@@ -229,7 +229,7 @@ pub(super) async fn preserve_tool_output_before_fanout(
     result: Result<RichToolResult, ToolError>,
     provider: ProviderKind,
     model: &str,
-    route_limits: Option<codewhale_config::route::RouteLimits>,
+    route_budget: (Option<codewhale_config::route::RouteLimits>, Option<u32>),
     session_id: &str,
     tool_call: (&str, &str),
     child_output_cap: Option<std::num::NonZeroU32>,
@@ -360,10 +360,11 @@ pub(super) async fn preserve_tool_output_before_fanout(
                 "path": path.display().to_string(),
             }));
         }
-        if super::context::tool_result_context_view(
+        if super::context::tool_result_context_view_with_window(
             provider,
             &model,
-            route_limits,
+            route_budget.0,
+            route_budget.1,
             &tool_name,
             &rich.result,
         )
@@ -2916,6 +2917,7 @@ impl Engine {
                     let provider = self.api_provider;
                     let model = self.session.model.clone();
                     let route_limits = self.active_route_limits;
+                    let route_window = self.active_context_window.map(|window| window.tokens);
                     let child_output_cap = self.child_tool_result_token_cap();
                     let started_at = Instant::now();
                     let shell_permits = shell_permits.clone();
@@ -2978,7 +2980,7 @@ impl Engine {
                             result,
                             provider,
                             &model,
-                            route_limits,
+                            (route_limits, route_window),
                             &session_id,
                             (&plan.id, &plan.name),
                             child_output_cap,
@@ -3646,7 +3648,10 @@ impl Engine {
                         result,
                         self.api_provider,
                         &self.session.model,
-                        self.active_route_limits,
+                        (
+                            self.active_route_limits,
+                            self.active_context_window.map(|window| window.tokens),
+                        ),
                         &self.session.id,
                         (&tool_id, &tool_name),
                         self.child_tool_result_token_cap(),
@@ -4516,13 +4521,15 @@ impl Engine {
                         "status": terminal_status.as_str(),
                         "success": output.success,
                     }));
-                    let output_for_context = compact_tool_result_for_route(
-                        self.api_provider,
-                        &self.session.model,
-                        self.active_route_limits,
-                        &outcome.name,
-                        &output,
-                    );
+                    let output_for_context =
+                        super::context::compact_tool_result_for_route_with_window(
+                            self.api_provider,
+                            &self.session.model,
+                            self.active_route_limits,
+                            self.active_context_window.map(|window| window.tokens),
+                            &outcome.name,
+                            &output,
+                        );
                     let tool_was_executed = output
                         .metadata
                         .as_ref()

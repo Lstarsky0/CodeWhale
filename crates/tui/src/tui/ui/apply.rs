@@ -995,6 +995,7 @@ pub(crate) async fn apply_model_picker_choice(
     let model_changed = model != previous_model || app.auto_model != model_is_auto;
     let mut resolved_model = model.clone();
     let mut route_base_url = config.active_route_base_url();
+    let mut resolved_budget = None;
     if !model_is_auto {
         match crate::route_runtime::resolve_runtime_route_for_identity(
             config,
@@ -1005,12 +1006,8 @@ pub(crate) async fn apply_model_picker_choice(
                 resolved_model = resolution.candidate.wire_model_id().as_str().to_string();
                 route_base_url = resolution.candidate.endpoint().base_url.clone();
                 if model_changed {
-                    app.set_active_context_window_override(config, &current_identity);
-                    app.set_active_route_resolution(
-                        route_base_url.clone(),
-                        resolution.candidate.limits(),
-                        resolution.context_window.source,
-                    );
+                    resolved_budget =
+                        Some((resolution.candidate.limits(), resolution.context_window));
                 }
             }
             Err(reason) => {
@@ -1019,14 +1016,6 @@ pub(crate) async fn apply_model_picker_choice(
                 return;
             }
         }
-    } else if model_changed {
-        app.set_active_context_window_override(config, &current_identity);
-        app.active_route_limits = app.context_window_override_limits();
-        app.active_route_base_url = route_base_url.clone();
-        app.active_context_window_source = app
-            .configured_context_window_for(&app.model)
-            .map(|resolution| resolution.source)
-            .unwrap_or(crate::route_runtime::ContextWindowSource::Fallback);
     }
 
     let effective_effort = if model_is_auto {
@@ -1043,6 +1032,17 @@ pub(crate) async fn apply_model_picker_choice(
 
     if model_changed {
         app.set_model_selection(resolved_model.clone());
+        app.set_active_context_window_override(config, &current_identity);
+        if let Some((limits, context_window)) = resolved_budget {
+            app.set_active_route_resolution(route_base_url.clone(), limits, context_window);
+        } else {
+            app.active_route_limits = app.context_window_override_limits();
+            app.active_route_base_url = route_base_url.clone();
+            app.active_context_window_source = app.active_context_window.map_or(
+                crate::route_runtime::ContextWindowSource::Fallback,
+                |window| window.source,
+            );
+        }
         let provider_identity = app.provider_identity_for_persistence().to_string();
         app.provider_models
             .insert(provider_identity.clone(), resolved_model.clone());
@@ -1242,7 +1242,7 @@ pub(crate) async fn apply_provider_fallback_switch(
     let resolved_endpoint = resolved_route.candidate.endpoint().base_url.clone();
     let next_config = resolved_route.config;
     let new_model = resolved_route.model;
-    let context_window_source = resolved_route.context_window.source;
+    let context_window = resolved_route.context_window;
 
     if let Err(err) = CodewhaleClient::from_candidate(&next_config, &resolved_route.candidate) {
         app.set_provider_identity_record(previous_identity);
@@ -1273,7 +1273,7 @@ pub(crate) async fn apply_provider_fallback_switch(
     app.set_active_route_resolution(
         new_base_url.clone(),
         resolved_route.candidate.limits(),
-        context_window_source,
+        context_window,
     );
     app.update_model_compaction_budget();
     if cache_scope_changed {
@@ -3051,7 +3051,7 @@ fn apply_validated_profile_config(
     app.set_active_route_resolution(
         route.candidate.endpoint().base_url.clone(),
         route.candidate.limits(),
-        route.context_window.source,
+        route.context_window,
     );
     app.update_model_compaction_budget();
     app.session.last_prompt_tokens = None;

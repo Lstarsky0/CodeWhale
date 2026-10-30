@@ -59,11 +59,7 @@ impl CommandDebugDiagnosticsContext for DebugDiagnosticsAdapter<'_> {
 
     fn token_projection(&self) -> DebugTokenProjection {
         let app = self.host.app.borrow();
-        let window = crate::route_budget::route_context_window_tokens(
-            app.api_provider,
-            app.effective_model_for_budget(),
-            app.active_route_limits,
-        );
+        let window = app.effective_context_window();
         let estimated = crate::compaction::estimate_input_tokens_conservative(
             &app.api_messages,
             app.system_prompt.as_ref(),

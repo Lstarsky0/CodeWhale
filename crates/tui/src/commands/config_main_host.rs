@@ -266,12 +266,8 @@ pub(crate) fn show_single_setting(app: &App, key: &str) -> ConfigReply {
             "{} (effective {} from {})",
             config_context_window_override(app)
                 .map_or_else(|| "not set".to_string(), |tokens| tokens.to_string()),
-            crate::route_budget::route_context_window_tokens(
-                app.api_provider,
-                app.effective_model_for_budget(),
-                app.active_route_limits,
-            ),
-            app.active_context_window_source.display_label(),
+            app.effective_context_window(),
+            app.effective_context_window_source().display_label(),
         )),
         "stream_chunk_timeout_secs" => Some(app.stream_chunk_timeout_secs.to_string()),
         "posture_bar" => Some(app.posture_bar.as_setting().to_string()),
@@ -770,12 +766,8 @@ pub(crate) fn config_editability_audit(
             "effective_context_window",
             format!(
                 "{} ({})",
-                crate::route_budget::route_context_window_tokens(
-                    app.api_provider,
-                    app.effective_model_for_budget(),
-                    app.active_route_limits,
-                ),
-                app.active_context_window_source.display_label(),
+                app.effective_context_window(),
+                app.effective_context_window_source().display_label(),
             ),
             "runtime",
             "/config context_window",

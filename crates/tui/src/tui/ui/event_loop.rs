@@ -164,7 +164,23 @@ pub(super) fn apply_engine_session_projection(
     if app.auto_model {
         app.last_effective_model = Some(model);
     } else {
+        let accepted_route =
+            app.pending_turn_route
+                .as_ref()
+                .is_some_and(|(provider, accepted_model, auto)| {
+                    !auto && *provider == app.api_provider && accepted_model == &model
+                });
+        let budget = accepted_route.then_some((
+            app.active_route_limits,
+            app.active_context_window,
+            app.active_context_window_source,
+        ));
         app.set_model_selection(model);
+        if let Some((limits, window, source)) = budget {
+            app.active_route_limits = limits;
+            app.active_context_window = window;
+            app.active_context_window_source = source;
+        }
     }
     app.update_model_compaction_budget();
     if app.workspace != workspace {
@@ -1013,7 +1029,7 @@ pub async fn run_tui(
     // messages reach the user's terminal. We accept the init failing (e.g.,
     // read-only $HOME) and continue without the redirect rather than refusing
     // to start the TUI.
-    let _tui_log_guard = match crate::runtime_log::init() {
+    let _tui_log_guard = match codewhale_runtime::runtime_log::init() {
         Ok(guard) => Some(guard),
         Err(err) => {
             tracing::warn!(target: "runtime_log", ?err, "TUI log init failed; stderr leaks may render as scroll-demon");

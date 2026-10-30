@@ -195,13 +195,15 @@ impl Engine {
             &self.api_config.active_route_base_url(),
             &self.config.model,
         );
-        let mut output_tokens = crate::route_budget::effective_max_output_tokens_for_turn(
-            self.api_provider,
-            &self.session.model,
-            self.active_route_limits,
-            turn.max_output_tokens,
-            guard_effort.as_deref(),
-        );
+        let mut output_tokens =
+            crate::route_budget::effective_max_output_tokens_for_turn_with_window(
+                self.api_provider,
+                &self.session.model,
+                self.active_route_limits,
+                self.active_context_window.map(|window| window.tokens),
+                turn.max_output_tokens,
+                guard_effort.as_deref(),
+            );
         if turn.max_output_tokens.is_some() {
             output_tokens =
                 output_tokens.min(client.effective_max_output_tokens(&self.session.model));
@@ -256,17 +258,19 @@ impl Engine {
             )
             .and_then(|tokens| usize::try_from(tokens).ok())
             .unwrap_or(0);
-        if let Some(budget) = route_context_budget_for_route(
+        if let Some(budget) = crate::route_budget::route_context_budget_with_window(
             self.api_provider,
             &self.session.model,
             self.active_route_limits,
+            self.active_context_window.map(|window| window.tokens),
             estimated_input,
         ) {
             let input_budget = usize::try_from(
-                crate::route_budget::route_admission_input_ceiling(
+                crate::route_budget::route_admission_input_ceiling_with_window(
                     self.api_provider,
                     &self.session.model,
                     self.active_route_limits,
+                    self.active_context_window.map(|window| window.tokens),
                 )
                 .unwrap_or(budget.input_budget_ceiling),
             )
@@ -291,10 +295,11 @@ impl Engine {
                 resolved_route_window_tokens = budget.window_tokens,
                 resolved_model_output_ceiling_tokens = ?output_ceiling.clamp_tokens(),
                 resolved_model_output_ceiling_source = output_ceiling.as_str(),
-                effective_request_output_cap_tokens = crate::route_budget::effective_max_output_tokens_for_turn(
+                effective_request_output_cap_tokens = crate::route_budget::effective_max_output_tokens_for_turn_with_window(
                     self.api_provider,
                     &self.session.model,
                     self.active_route_limits,
+                    self.active_context_window.map(|window| window.tokens),
                     turn.max_output_tokens,
                     effective_reasoning_effort.as_deref(),
                 ),
@@ -520,10 +525,11 @@ impl Engine {
                 }
                 messages
             },
-            max_tokens: crate::route_budget::effective_max_output_tokens_for_turn(
+            max_tokens: crate::route_budget::effective_max_output_tokens_for_turn_with_window(
                 self.api_provider,
                 &self.session.model,
                 self.active_route_limits,
+                self.active_context_window.map(|window| window.tokens),
                 turn.max_output_tokens,
                 effective_reasoning_effort.as_deref(),
             ),
@@ -597,10 +603,11 @@ impl Engine {
         let request_input = turn
             .calibrated_input_tokens(request_input)
             .max(estimated_input);
-        let output_cap = crate::route_budget::request_output_cap_for_input(
+        let output_cap = crate::route_budget::request_output_cap_for_input_with_window(
             self.api_provider,
             &self.session.model,
             self.active_route_limits,
+            self.active_context_window.map(|window| window.tokens),
             request.max_tokens,
             u64::try_from(request_input).unwrap_or(u64::MAX),
         )
@@ -610,10 +617,11 @@ impl Engine {
         });
         let Some(output_cap) = output_cap else {
             progress.reasoning_only_nudge = request_nudge;
-            let input_budget = crate::route_budget::route_admission_input_ceiling(
+            let input_budget = crate::route_budget::route_admission_input_ceiling_with_window(
                 self.api_provider,
                 &self.session.model,
                 self.active_route_limits,
+                self.active_context_window.map(|window| window.tokens),
             )
             .map_or(0, |ceiling| usize::try_from(ceiling).unwrap_or(usize::MAX));
             return self
@@ -820,13 +828,15 @@ impl Engine {
             &self.api_config.active_route_base_url(),
             &self.config.model,
         );
-        let mut planned_output_tokens = crate::route_budget::effective_max_output_tokens_for_turn(
-            self.api_provider,
-            &self.session.model,
-            self.active_route_limits,
-            turn.max_output_tokens,
-            reasoning_effort.as_deref(),
-        );
+        let mut planned_output_tokens =
+            crate::route_budget::effective_max_output_tokens_for_turn_with_window(
+                self.api_provider,
+                &self.session.model,
+                self.active_route_limits,
+                self.active_context_window.map(|window| window.tokens),
+                turn.max_output_tokens,
+                reasoning_effort.as_deref(),
+            );
         if turn.max_output_tokens.is_some() {
             planned_output_tokens =
                 planned_output_tokens.min(client.effective_max_output_tokens(&self.session.model));
@@ -844,18 +854,20 @@ impl Engine {
                 self.session.latest_parent_input_tokens,
             )
             .unwrap_or(0);
-        if route_context_budget_for_route(
+        if crate::route_budget::route_context_budget_with_window(
             self.api_provider,
             &self.session.model,
             self.active_route_limits,
+            self.active_context_window.map(|window| window.tokens),
             usize::try_from(estimated).unwrap_or(usize::MAX),
         )
         .is_some_and(|budget| {
             estimated
-                > crate::route_budget::route_admission_input_ceiling(
+                > crate::route_budget::route_admission_input_ceiling_with_window(
                     self.api_provider,
                     &self.session.model,
                     self.active_route_limits,
+                    self.active_context_window.map(|window| window.tokens),
                 )
                 .unwrap_or(budget.input_budget_ceiling)
         }) {
@@ -864,10 +876,11 @@ impl Engine {
         let mut request = prepare_primary_turn_request(PrimaryTurnRequest {
             model: self.session.model.clone(),
             messages: self.messages_with_turn_metadata(),
-            max_tokens: crate::route_budget::effective_max_output_tokens_for_turn(
+            max_tokens: crate::route_budget::effective_max_output_tokens_for_turn_with_window(
                 self.api_provider,
                 &self.session.model,
                 self.active_route_limits,
+                self.active_context_window.map(|window| window.tokens),
                 turn.max_output_tokens,
                 reasoning_effort.as_deref(),
             ),
@@ -876,10 +889,11 @@ impl Engine {
             tool_choice: None,
             reasoning_effort,
         });
-        let Some(output_cap) = crate::route_budget::request_output_cap_for_input(
+        let Some(output_cap) = crate::route_budget::request_output_cap_for_input_with_window(
             self.api_provider,
             &self.session.model,
             self.active_route_limits,
+            self.active_context_window.map(|window| window.tokens),
             request.max_tokens,
             estimated,
         ) else {

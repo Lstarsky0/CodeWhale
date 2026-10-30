@@ -514,7 +514,7 @@
   "crates/tui/src/voice.rs": {
     "std_fs": 3
   },
-  "crates/tui/src/working_set.rs": {
+  "crates/runtime/src/working_set.rs": {
     "path_canonicalize": 1,
     "std_fs": 1
   },

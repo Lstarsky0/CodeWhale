@@ -457,6 +457,10 @@ pub(crate) fn enforce_read_denylist(path: &Path, tool: &str) -> Result<(), ToolE
     }
 }
 
+pub(crate) fn working_set_read_allowed(path: &Path) -> bool {
+    enforce_read_denylist(path, "working_set").is_ok()
+}
+
 /// Return whether `read_file` must refuse a CodeWhale-owned credential file.
 ///
 /// This is deliberately scoped to the active config, the two conventional

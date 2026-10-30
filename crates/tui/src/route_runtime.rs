@@ -277,14 +277,16 @@ impl ResolvedRuntimeRoute {
         self.config.verify_provider_identity(&self.identity)?;
         if self.preflighted_client.is_none() {
             self.preflighted_client = Some(Box::new(
-                CodewhaleClient::from_candidate(&self.config, &self.candidate).map_err(|err| {
-                    format_provider_route_preflight_error(
-                        self.identity.key.as_str(),
-                        &self.model,
-                        &err,
-                        RouteErrorSurface::Interactive,
-                    )
-                })?,
+                CodewhaleClient::from_candidate(&self.config, &self.candidate)
+                    .map_err(|err| {
+                        format_provider_route_preflight_error(
+                            self.identity.key.as_str(),
+                            &self.model,
+                            &err,
+                            RouteErrorSurface::Interactive,
+                        )
+                    })?
+                    .with_context_window(self.context_window),
             ));
         }
         Ok(self)
@@ -312,7 +314,8 @@ impl ResolvedRuntimeRoute {
                     )
                 })?
             }
-        };
+        }
+        .with_context_window(self.context_window);
         if client.admitted_provider_identity() != &self.identity {
             return Err("preflighted client does not match captured provider identity".into());
         }
@@ -1242,6 +1245,18 @@ mod tests {
             assert_eq!(unknown.candidate.limits().context_tokens, None);
             assert_eq!(unknown.candidate.limits().output_tokens, None);
             assert_eq!(unknown.context_window.source, ContextWindowSource::Fallback);
+            let budget = crate::route_budget::route_context_budget_with_window(
+                provider,
+                model,
+                crate::route_budget::known_route_limits(unknown.candidate.limits()),
+                Some(unknown.context_window.tokens),
+                0,
+            )
+            .unwrap();
+            assert_eq!(
+                budget.window_tokens,
+                u64::from(unknown.context_window.tokens)
+            );
         }
     }
 

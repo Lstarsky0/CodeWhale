@@ -949,15 +949,18 @@ pub(crate) async fn build_preview_request_inputs(
                 app.translation_enabled,
                 app.verbosity.clone(),
             );
+            prompt_context.context_window = Some(planned.route.context_window);
             let effort = planned.effective_reasoning_effort.as_deref();
-            prompt_context.planned_output_tokens =
-                Some(crate::route_budget::effective_max_output_tokens_for_turn(
+            prompt_context.planned_output_tokens = Some(
+                crate::route_budget::effective_max_output_tokens_for_turn_with_window(
                     planned.route.identity.provider,
                     &planned.route.model,
                     crate::route_budget::known_route_limits(planned.route.candidate.limits()),
+                    Some(planned.route.context_window.tokens),
                     None,
                     effort,
-                ));
+                ),
+            );
             posture(
                 Some(Box::new(PreviewNextTurn {
                     content,
@@ -1173,21 +1176,21 @@ pub(crate) fn build_app_system_prompt_with_goal(
     let budgets = crate::project_context::InstructionBudgets::resolve_or_default(
         &settings.budget,
         crate::route_runtime::ContextWindowResolution {
-            tokens: crate::route_budget::route_context_window_tokens(
-                app.api_provider,
-                &app.model,
-                app.active_route_limits,
-            ),
-            source: app.active_context_window_source,
+            tokens: app.effective_context_window(),
+            source: app.effective_context_window_source(),
         }
         .instruction_budget_tokens(),
-        Some(crate::route_budget::effective_max_output_tokens_for_turn(
-            app.api_provider,
-            &app.model,
-            app.active_route_limits,
-            None,
-            effort.as_deref(),
-        ) as usize),
+        Some({
+            let (provider, model, limits, window) = app.effective_budget_route();
+            crate::route_budget::effective_max_output_tokens_for_turn_with_window(
+                provider,
+                model,
+                limits,
+                window.map(|window| window.tokens),
+                None,
+                effort.as_deref(),
+            ) as usize
+        }),
     );
     prompts::system_prompt_with_instruction_assembly_for_host(
         &app.workspace,
@@ -1201,11 +1204,7 @@ pub(crate) fn build_app_system_prompt_with_goal(
             locale_tag: app.ui_locale.tag(),
             translation_enabled: app.translation_enabled,
             model_id: &app.model,
-            context_window_override: Some(crate::route_budget::route_context_window_tokens(
-                app.api_provider,
-                &app.model,
-                app.active_route_limits,
-            )),
+            context_window_override: Some(app.effective_context_window()),
             verbosity: app.verbosity.as_deref(),
             recovery_hint: recovery_hint.as_deref(),
             skills_config: app.skills_config.clone(),
@@ -2349,11 +2348,7 @@ pub(crate) fn estimated_context_tokens(app: &App) -> Option<i64> {
 }
 
 pub(crate) fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
-    let max = crate::route_budget::route_context_window_tokens(
-        app.api_provider,
-        app.effective_model_for_budget(),
-        app.active_route_limits,
-    );
+    let max = app.effective_context_window();
     context_usage_snapshot_for_window(app, max)
 }
 

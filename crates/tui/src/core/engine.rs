@@ -56,7 +56,6 @@ use crate::tools::subagent::{
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tools::user_input::{UserInputRequest, UserInputResponse};
 use crate::tools::{ToolContext, ToolRegistryBuilder};
-use crate::working_set::WorkingSet;
 use codewhale_agent_contract::role::FleetRole;
 use codewhale_agent_contract::worker_profile::WorkerRuntimeProfile;
 use codewhale_config::AppMode;
@@ -74,6 +73,7 @@ use codewhale_models::{
 };
 use codewhale_runtime::config::{Config, DEFAULT_MAX_SUBAGENTS};
 use codewhale_runtime::features::{Feature, Features};
+use codewhale_runtime::working_set::WorkingSet;
 use codewhale_snapshot::{WorkspaceSnapshotKind, WorkspaceSnapshotRef};
 use codewhale_util::utils::spawn_supervised;
 
@@ -194,7 +194,8 @@ impl StructuredState {
         subagents: Option<&SharedSubAgentManager>,
         active_session_id: &str,
     ) -> Self {
-        let working_set_summary = working_set.summary_block(&workspace);
+        let working_set_summary =
+            working_set.summary_block(&workspace, &crate::tools::file::working_set_read_allowed);
 
         let subagent_snapshots = if let Some(handle) = subagents {
             let mut guard = handle.write().await;
@@ -1101,6 +1102,7 @@ pub struct Engine {
     /// it; a changed table cannot be blessed by reinterpreting those strings.
     api_provider_identity: Option<codewhale_runtime::config::ProviderIdentity>,
     active_route_limits: Option<codewhale_config::route::RouteLimits>,
+    active_context_window: Option<crate::route_runtime::ContextWindowResolution>,
     active_route_capabilities: codewhale_config::route::RouteCapabilities,
     /// The endpoint the current client was built from: base URL, endpoint
     /// key, and wire protocol. Part of the route identity the input-bill
@@ -1975,6 +1977,7 @@ impl Engine {
     /// No identity guessing or config re-resolution is allowed at this
     /// boundary: the descriptor is the single authority for the turn.
     fn install_validated_runtime_route(&mut self, route: ValidatedRuntimeRoute) {
+        let context_window = route.context_window;
         let provider = route.identity.provider;
         let identity = route.identity;
         let model = route.model;
@@ -1996,6 +1999,10 @@ impl Engine {
         self.api_provider_identity = Some(identity);
         self.api_config = api_config;
         self.active_route_limits = limits;
+        if self.active_context_window != Some(context_window) {
+            self.session.latest_parent_input_tokens = None;
+        }
+        self.active_context_window = Some(context_window);
         self.active_route_capabilities = capabilities;
         self.api_key_env_only_recovery = Self::env_only_api_key_recovery_hint(&self.api_config);
         self.codewhale_client = Some(client.clone());
@@ -2021,6 +2028,7 @@ impl Engine {
             return Ok(());
         }
 
+        let context_window = route.context_window;
         let preflighted_client = route.take_preflighted_client();
         let provider = route.identity.provider;
         let identity = route.identity;
@@ -2030,7 +2038,8 @@ impl Engine {
         let api_config = *route.config;
         let concrete_client = preflighted_client
             .map(Ok)
-            .unwrap_or_else(|| CodewhaleClient::from_candidate(&api_config, &route.candidate));
+            .unwrap_or_else(|| CodewhaleClient::from_candidate(&api_config, &route.candidate))
+            .map(|client| client.with_context_window(context_window));
 
         let endpoint = route.candidate.endpoint().clone();
         self.forget_input_bill_if_route_changes(
@@ -2045,6 +2054,10 @@ impl Engine {
         self.api_provider_identity = Some(identity);
         self.api_config = api_config;
         self.active_route_limits = limits;
+        if self.active_context_window != Some(context_window) {
+            self.session.latest_parent_input_tokens = None;
+        }
+        self.active_context_window = Some(context_window);
         self.active_route_capabilities = capabilities;
         self.api_key_env_only_recovery = Self::env_only_api_key_recovery_hint(&self.api_config);
         match concrete_client {
@@ -2584,6 +2597,7 @@ impl Engine {
             api_provider,
             api_provider_identity,
             active_route_limits,
+            active_context_window: None,
             active_route_capabilities: codewhale_config::route::RouteCapabilities::default(),
             active_route_endpoint: None,
             learned_image_caps: HashMap::new(),
@@ -4185,6 +4199,9 @@ impl Engine {
                             );
                             self.session.auto_model = model.trim().eq_ignore_ascii_case("auto");
                             let switched = self.session.model != model;
+                            if switched || self.active_route_limits != route_limits {
+                                self.active_context_window = None;
+                            }
                             self.session.model = model;
                             self.config.model.clone_from(&self.session.model);
                             self.active_route_limits = route_limits;
@@ -4445,10 +4462,11 @@ impl Engine {
                         }
                         Op::GetContextBudget { tx } => {
                             let input_tokens = self.estimated_input_tokens() as u64;
-                            let budget = route_context_budget_for_route(
+                            let budget = crate::route_budget::route_context_budget_with_window(
                                 self.api_provider,
                                 &self.session.model,
                                 self.active_route_limits,
+                                self.active_context_window.map(|window| window.tokens),
                                 usize::try_from(input_tokens).unwrap_or(usize::MAX),
                             );
                             let snapshot = budget.map(|budget| SessionContextBudget {
@@ -4982,7 +5000,10 @@ impl Engine {
         } = snapshot;
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         let working_set_summary = working_set
-            .summary_block(&self.config.workspace)
+            .summary_block(
+                &self.config.workspace,
+                &crate::tools::file::working_set_read_allowed,
+            )
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
@@ -6772,20 +6793,23 @@ impl Engine {
             translation_enabled,
             verbosity.clone(),
         );
+        prompt_context.context_window = self.active_context_window;
         let planned_effort = turn_loop::resolve_auto_effort(
             reasoning_effort.as_deref(),
             effective_provider,
             &route_api_config.active_route_base_url(),
             &model,
         );
-        prompt_context.planned_output_tokens =
-            Some(crate::route_budget::effective_max_output_tokens_for_turn(
+        prompt_context.planned_output_tokens = Some(
+            crate::route_budget::effective_max_output_tokens_for_turn_with_window(
                 effective_provider,
                 &model,
                 route_limits,
+                self.active_context_window.map(|window| window.tokens),
                 max_output_tokens,
                 planned_effort.as_deref(),
-            ));
+            ),
+        );
         if max_output_tokens.is_some()
             && let Some(client) = self.model_client.as_ref()
         {
@@ -7946,10 +7970,15 @@ impl Engine {
             let mut context = child
                 .authority
                 .context()
-                .with_route_context_window(crate::route_budget::route_context_window_tokens(
-                    route.provider,
-                    &route.model,
-                    route.limits,
+                .with_route_context_window(route.context_window().map_or_else(
+                    || {
+                        crate::route_budget::route_context_window_tokens(
+                            route.provider,
+                            &route.model,
+                            route.limits,
+                        )
+                    },
+                    |window| window.tokens,
                 ))
                 .with_session_objects(crate::rlm::session::SessionObjectSnapshot::new(
                     self.session.id.clone(),
@@ -7993,10 +8022,15 @@ impl Engine {
             authority.auto_approve,
         )
         .with_state_namespace(self.session.id.clone())
-        .with_route_context_window(crate::route_budget::route_context_window_tokens(
-            route.provider,
-            &route.model,
-            route.limits,
+        .with_route_context_window(route.context_window().map_or_else(
+            || {
+                crate::route_budget::route_context_window_tokens(
+                    route.provider,
+                    &route.model,
+                    route.limits,
+                )
+            },
+            |window| window.tokens,
         ))
         .with_features(self.config.features.clone())
         .with_shell_manager(self.shell_manager.clone())
@@ -9684,10 +9718,15 @@ impl Engine {
                 locale_tag: &self.config.locale_tag,
                 translation_enabled: context.translation_enabled,
                 model_id: &context.model,
-                context_window_override: Some(crate::route_budget::route_context_window_tokens(
-                    context.provider,
-                    &context.model,
-                    context.route_limits,
+                context_window_override: Some(context.context_window.map_or_else(
+                    || {
+                        crate::route_budget::route_context_window_tokens(
+                            context.provider,
+                            &context.model,
+                            context.route_limits,
+                        )
+                    },
+                    |window| window.tokens,
                 )),
                 verbosity: context.verbosity.as_deref(),
                 recovery_hint: recovery_hint.as_deref(),
@@ -9706,14 +9745,18 @@ impl Engine {
     ) -> crate::project_context::InstructionBudgets {
         crate::project_context::InstructionBudgets::resolve_or_default(
             &self.instruction_settings.budget,
-            crate::route_runtime::resolve_context_window(
-                context.provider,
-                &context.model,
-                context.route_limits,
-                None,
-                None,
-            )
-            .instruction_budget_tokens(),
+            context
+                .context_window
+                .unwrap_or_else(|| {
+                    crate::route_runtime::resolve_context_window(
+                        context.provider,
+                        &context.model,
+                        context.route_limits,
+                        None,
+                        None,
+                    )
+                })
+                .instruction_budget_tokens(),
             context.planned_output_tokens.map(|tokens| tokens as usize),
         )
     }
@@ -9843,20 +9886,23 @@ impl Engine {
             self.config.translation_enabled,
             self.config.verbosity.clone(),
         );
+        context.context_window = self.active_context_window;
         let effort = turn_loop::resolve_auto_effort(
             self.session.reasoning_effort.as_deref(),
             self.api_provider,
             &self.api_config.active_route_base_url(),
             &self.config.model,
         );
-        context.planned_output_tokens =
-            Some(crate::route_budget::effective_max_output_tokens_for_turn(
+        context.planned_output_tokens = Some(
+            crate::route_budget::effective_max_output_tokens_for_turn_with_window(
                 self.api_provider,
                 &self.config.model,
                 self.active_route_limits,
+                self.active_context_window.map(|window| window.tokens),
                 None,
                 effort.as_deref(),
-            ));
+            ),
+        );
         context
     }
 }
@@ -10558,7 +10604,7 @@ pub(crate) struct TurnMetadataSnapshot<'a> {
     pub(crate) prompt_context: &'a NextTurnPromptContext,
     pub(crate) system_prompt: Option<&'a SystemPrompt>,
     pub(crate) approval_mode: ApprovalMode,
-    pub(crate) working_set: &'a crate::working_set::WorkingSet,
+    pub(crate) working_set: &'a codewhale_runtime::working_set::WorkingSet,
     pub(crate) policy_narrowing: Option<&'a PolicyNarrowingEvent>,
     pub(crate) messages: &'a [Message],
 }
@@ -10576,6 +10622,7 @@ pub(crate) struct NextTurnPromptContext {
     pub(crate) provider: ProviderKind,
     pub(crate) model: String,
     pub(crate) route_limits: Option<codewhale_config::route::RouteLimits>,
+    pub(crate) context_window: Option<crate::route_runtime::ContextWindowResolution>,
     pub(crate) planned_output_tokens: Option<u32>,
     pub(crate) mode: AppMode,
     pub(crate) goal_objective: Option<String>,
@@ -10589,6 +10636,7 @@ impl PartialEq for NextTurnPromptContext {
         self.provider == other.provider
             && self.model == other.model
             && self.route_limits == other.route_limits
+            && self.context_window == other.context_window
             && self.mode == other.mode
             && self.goal_objective == other.goal_objective
             && self.goal_token_budget == other.goal_token_budget
@@ -10612,7 +10660,7 @@ pub(crate) fn explicit_prompt_context_change_reason(
     if pinned.model != next.model {
         fields.push("model");
     }
-    if pinned.route_limits != next.route_limits {
+    if pinned.route_limits != next.route_limits || pinned.context_window != next.context_window {
         fields.push("route");
     }
     if pinned.mode != next.mode {
@@ -10660,6 +10708,7 @@ impl NextTurnPromptContext {
             )),
             model,
             route_limits,
+            context_window: None,
             mode,
             goal_objective: (goal_status == GoalStatus::Active)
                 .then(|| normalized_goal_objective(goal_objective.as_deref()))
@@ -10841,6 +10890,12 @@ pub(crate) struct TurnRouteContext {
 }
 
 impl TurnRouteContext {
+    fn context_window(&self) -> Option<crate::route_runtime::ContextWindowResolution> {
+        self.client
+            .as_ref()
+            .and_then(|client| client.context_window_resolution_for_model(&self.model))
+    }
+
     pub(crate) fn capability_profile(&self) -> crate::model_profile::CapabilityProfile {
         crate::model_profile::resolved_capability_profile_for_route(
             self.provider,
@@ -10958,16 +11013,20 @@ pub mod preview;
 use crate::compaction::estimate_input_tokens_conservative;
 #[cfg(test)]
 pub(crate) use context::compact_tool_result_for_context;
+#[cfg(test)]
 pub(crate) use context::compact_tool_result_for_route;
+pub(crate) use context::compact_tool_result_for_route_with_window;
 /// Public so external hosts/wrappers can reuse the engine's input-budget math
 /// (see `context_input_budget_for_route`'s doc) instead of re-deriving it.
 pub use context::context_input_budget_for_route;
 #[cfg(test)]
 use context::route_context_budget_for_provider;
+#[cfg(test)]
+use context::route_context_budget_for_route;
 use context::{
     MAX_CONTEXT_RECOVERY_ATTEMPTS, context_overflow_exhausted_message,
     extract_compaction_summary_prompt, is_context_length_error_message,
-    is_image_input_rejection_message, route_context_budget_for_route, summarize_text,
+    is_image_input_rejection_message, summarize_text,
 };
 #[cfg(test)]
 use context::{

@@ -92,7 +92,6 @@ mod route_runtime;
 mod runtime_api;
 mod runtime_chat_relay;
 mod runtime_handoff;
-mod runtime_log;
 mod runtime_threads;
 #[cfg(test)]
 mod sandbox_stay_tests;
@@ -131,7 +130,6 @@ mod vision;
 mod voice;
 pub mod whats_new;
 mod work_graph;
-mod working_set;
 mod workspace_lease;
 mod workspace_trust;
 

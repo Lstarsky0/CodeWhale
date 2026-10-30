@@ -34,12 +34,12 @@ use crate::tui::shell_key_routing::{
 };
 use crate::tui::views::ConfigView;
 use crate::tui::views::{HelpView, ModalView, ViewAction};
-use crate::working_set::Workspace;
 use codewhale_config::ProviderKind;
 use codewhale_config::descriptors::defaults::{
     DEFAULT_OPENROUTER_MODEL, DEFAULT_TEXT_MODEL, DEFAULT_ZAI_MODEL,
 };
 use codewhale_runtime::config::{Config, ProviderConfig, ProvidersConfig};
+use codewhale_runtime::working_set::Workspace;
 use codewhale_tui_kit::ui_text::{line_to_plain, truncate_line_to_width};
 use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -12875,8 +12875,12 @@ async fn paused_dispatch_at_compaction_threshold_enqueues_one_atomic_send() {
     app.auto_compact_threshold_percent = 10.0;
     app.api_messages =
         std::sync::Arc::new(vec![text_message("assistant", &"context ".repeat(240_000))]);
-    let planned_compaction =
-        app.compaction_config_for_route(app.api_provider, &app.model, app.active_route_limits);
+    let planned_compaction = app.compaction_config_for_route(
+        app.api_provider,
+        &app.model,
+        app.active_route_limits,
+        app.active_context_window,
+    );
     let fixture_used =
         estimated_context_tokens(&app).expect("fixture context estimate should be available");
     assert!(
@@ -13523,8 +13527,12 @@ fn auto_routed_turn_compaction_uses_selected_route_not_stale_app_route() {
         .expect("preflight auto-selected route");
     let route_limits = crate::route_budget::known_route_limits(route.candidate.limits());
 
-    let compaction =
-        app.compaction_config_for_route(route.identity.provider, &route.model, route_limits);
+    let compaction = app.compaction_config_for_route(
+        route.identity.provider,
+        &route.model,
+        route_limits,
+        Some(route.context_window),
+    );
 
     assert_eq!(compaction.model, "vendor/model-b");
     assert_eq!(compaction.effective_context_window, Some(196_000));
@@ -33847,6 +33855,14 @@ fn stale_session_projection_cannot_rewind_a_host_launch() {
     }
     app.runtime_turn_id = None;
     app.is_loading = false;
+    let accepted_window = crate::route_runtime::ContextWindowResolution {
+        tokens: 128_000,
+        source: crate::route_runtime::ContextWindowSource::Fallback,
+    };
+    app.active_route_limits = None;
+    app.active_context_window = Some(accepted_window);
+    app.active_context_window_source = accepted_window.source;
+    app.pending_turn_route = Some((app.api_provider, "canonical-model".into(), false));
     assert!(super::event_loop::apply_engine_session_projection(
         &mut app,
         &Config::default(),
@@ -33858,7 +33874,7 @@ fn stale_session_projection_cannot_rewind_a_host_launch() {
             ]),
             system_prompt: None,
             instruction_assembly: None,
-            model,
+            model: "canonical-model".into(),
             workspace,
         }
     ));
@@ -33868,6 +33884,8 @@ fn stale_session_projection_cannot_rewind_a_host_launch() {
         vec![text_message("user", "expected engine transcript")]
     );
     assert_eq!(app.input, "typing remains responsive");
+    assert_eq!(app.active_context_window, Some(accepted_window));
+    assert_eq!(app.effective_context_window(), 128_000);
 }
 
 #[test]

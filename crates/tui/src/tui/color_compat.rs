@@ -321,7 +321,7 @@ impl RenderDebugLog {
             return None;
         }
 
-        let log_dir = crate::runtime_log::log_directory()?;
+        let log_dir = codewhale_runtime::runtime_log::log_directory()?;
         if let Err(err) = fs::create_dir_all(&log_dir) {
             tracing::debug!(?err, "failed to create TUI render debug log directory");
             return None;

@@ -1178,6 +1178,7 @@ pub(crate) struct ChatWireBody {
 /// `stream` selects the streaming shape (`stream` + `stream_options`) and, to
 /// preserve historical behavior exactly, also gates the thinking-mode replay
 /// sanitizer — the blocking path has never run it.
+#[cfg(test)]
 pub(crate) fn build_chat_wire_body(
     request: &MessageRequest,
     provider: ProviderKind,
@@ -1185,10 +1186,22 @@ pub(crate) fn build_chat_wire_body(
     stream: bool,
     route_limits: Option<RouteLimits>,
 ) -> Result<ChatWireBody> {
+    build_chat_wire_body_with_window(request, provider, base_url, stream, route_limits, None)
+}
+
+pub(crate) fn build_chat_wire_body_with_window(
+    request: &MessageRequest,
+    provider: ProviderKind,
+    base_url: &str,
+    stream: bool,
+    route_limits: Option<RouteLimits>,
+    effective_window: Option<u32>,
+) -> Result<ChatWireBody> {
     let messages = PromptBuilder::for_request(request).build_for_provider_and_route(
         provider,
         base_url,
         route_limits,
+        effective_window,
     );
     let model = {
         let wire = wire_model_for_provider_route(provider, base_url, &request.model);
@@ -1807,7 +1820,7 @@ pub(super) fn build_chat_messages_for_request_and_provider_and_route(
     provider: ProviderKind,
     base_url: &str,
 ) -> Vec<Value> {
-    PromptBuilder::for_request(request).build_for_provider_and_route(provider, base_url, None)
+    PromptBuilder::for_request(request).build_for_provider_and_route(provider, base_url, None, None)
 }
 
 pub(crate) fn inspect_prompt_for_request(request: &MessageRequest) -> PromptInspection {
@@ -1853,15 +1866,20 @@ impl<'a> PromptBuilder<'a> {
         provider: ProviderKind,
         base_url: &str,
         route_limits: Option<RouteLimits>,
+        effective_window: Option<u32>,
     ) -> Vec<Value> {
         let mut messages = build_chat_messages_with_reasoning(
             self.system,
             self.messages,
-            crate::route_budget::route_inline_char_budget_for_route(
-                provider,
-                self.model,
-                route_limits,
-            ),
+            crate::route_budget::route_inline_char_budget(Some(effective_window.unwrap_or_else(
+                || {
+                    crate::route_budget::route_context_window_tokens(
+                        provider,
+                        self.model,
+                        route_limits,
+                    )
+                },
+            ))),
             should_replay_reasoning_content_for_provider_on_route(
                 provider,
                 base_url,

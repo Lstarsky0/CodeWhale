@@ -372,44 +372,51 @@ impl App {
             .as_ref()
             .and_then(|identity| config.model_context_windows_for(identity).cloned());
         let configured_route_base_url = effective_auth_config.active_route_base_url();
-        let (active_route_limits, active_route_base_url, active_context_window_source) =
-            if auto_model {
-                (
-                    active_context_window_override.map(|window| RouteLimits {
-                        context_tokens: Some(u64::from(window)),
-                        ..RouteLimits::default()
-                    }),
+        let (
+            active_route_limits,
+            active_route_base_url,
+            active_context_window_source,
+            active_context_window,
+        ) = if auto_model {
+            (
+                active_context_window_override.map(|window| RouteLimits {
+                    context_tokens: Some(u64::from(window)),
+                    ..RouteLimits::default()
+                }),
+                configured_route_base_url,
+                if active_context_window_override.is_some() {
+                    crate::route_runtime::ContextWindowSource::Configured
+                } else {
+                    crate::route_runtime::ContextWindowSource::Fallback
+                },
+                None,
+            )
+        } else {
+            provider_identity
+                .as_ref()
+                .ok_or_else(|| "provider identity unavailable".to_string())
+                .and_then(|identity| {
+                    crate::route_runtime::resolve_runtime_route_for_identity(
+                        &effective_auth_config,
+                        identity,
+                        Some(&model),
+                    )
+                })
+                .map(|resolution| {
+                    (
+                        crate::route_budget::known_route_limits(resolution.candidate.limits()),
+                        resolution.candidate.endpoint().base_url.clone(),
+                        resolution.context_window.source,
+                        Some(resolution.context_window),
+                    )
+                })
+                .unwrap_or((
+                    None,
                     configured_route_base_url,
-                    if active_context_window_override.is_some() {
-                        crate::route_runtime::ContextWindowSource::Configured
-                    } else {
-                        crate::route_runtime::ContextWindowSource::Fallback
-                    },
-                )
-            } else {
-                provider_identity
-                    .as_ref()
-                    .ok_or_else(|| "provider identity unavailable".to_string())
-                    .and_then(|identity| {
-                        crate::route_runtime::resolve_runtime_route_for_identity(
-                            &effective_auth_config,
-                            identity,
-                            Some(&model),
-                        )
-                    })
-                    .map(|resolution| {
-                        (
-                            crate::route_budget::known_route_limits(resolution.candidate.limits()),
-                            resolution.candidate.endpoint().base_url.clone(),
-                            resolution.context_window.source,
-                        )
-                    })
-                    .unwrap_or((
-                        None,
-                        configured_route_base_url,
-                        crate::route_runtime::ContextWindowSource::Fallback,
-                    ))
-            };
+                    crate::route_runtime::ContextWindowSource::Fallback,
+                    None,
+                ))
+        };
         let reasoning_effort_explicit = config.fleet_operator_reasoning_applied
             || settings.reasoning_effort.is_some()
             || config.reasoning_effort_is_explicit();
@@ -429,12 +436,14 @@ impl App {
         } else {
             model.as_str()
         };
-        let compact_threshold = crate::route_budget::compaction_threshold_for_route_at_percent(
-            provider,
-            threshold_model,
-            active_route_limits,
-            auto_compact_threshold_percent,
-        );
+        let compact_threshold =
+            crate::route_budget::compaction_threshold_for_route_at_percent_with_window(
+                provider,
+                threshold_model,
+                active_route_limits,
+                active_context_window.map(|window| window.tokens),
+                auto_compact_threshold_percent,
+            );
         let auto_compact = if auto_compact_user_configured {
             settings_auto_compact
         } else {
@@ -844,6 +853,7 @@ impl App {
             pinned_models: settings.pinned_models.clone(),
             auto_model,
             last_effective_model: None,
+            last_effective_budget: None,
             last_effective_provider: None,
             last_effective_provider_identity: None,
             last_auto_route_receipt: None,
@@ -860,6 +870,7 @@ impl App {
             active_route_limits,
             active_route_base_url,
             active_context_window_source,
+            active_context_window,
             active_context_window_override,
             active_model_context_windows,
             pending_provider_switch: None,

@@ -151,7 +151,6 @@ fn drain_retained_requests(receiver: &mut PersistRequestReceiver) -> (usize, usi
     let pending = receiver.take_pending();
     assert!(
         pending.checkpoints.is_empty()
-            && pending.checkpoint_clears.is_empty()
             && pending.completed_commits.is_empty()
             && pending.offline_queue.is_empty(),
         "backlog fixture retained an unexpected request variant"

@@ -6,10 +6,10 @@
 //! - a compact working-set summary block for the system prompt
 //! - pinned message indices that compaction should preserve
 
-use codewhale_models::{ContentBlock, Message};
-use codewhale_runtime::workspace_discovery::{
+use crate::workspace_discovery::{
     DISCOVERY_ALWAYS_DIRS, path_is_excluded_from_discovery, should_skip_unignored_discovery_entry,
 };
+use codewhale_models::{ContentBlock, Message};
 use ignore::WalkBuilder;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -30,7 +30,7 @@ use std::sync::OnceLock;
 pub struct Workspace {
     pub root: PathBuf,
     cwd: Option<PathBuf>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     file_index: OnceLock<HashMap<String, Vec<PathBuf>>>,
     completion_walk_depth: Option<usize>,
     /// Follow symbolic links during file discovery walks. When `true`,
@@ -105,7 +105,7 @@ impl Workspace {
         Self {
             root,
             cwd,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             file_index: OnceLock::new(),
             completion_walk_depth: normalize_completion_walk_depth(walk_depth),
             follow_links,
@@ -113,7 +113,7 @@ impl Workspace {
     }
 
     /// Two-pass resolution: workspace, then cwd, then fuzzy fallback.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn resolve(&self, raw_path: &str) -> Result<PathBuf, PathBuf> {
         let literal = self.resolve_exact(raw_path);
         if literal.is_ok() {
@@ -154,7 +154,7 @@ impl Workspace {
         Err(ws_path)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn fuzzy_resolve(&self, path: &Path) -> Option<PathBuf> {
         let needle = path.file_name()?.to_string_lossy().to_lowercase();
         if needle.is_empty() {
@@ -165,7 +165,7 @@ impl Workspace {
         index.get(&needle).and_then(|paths| paths.first()).cloned()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn build_file_index(&self) -> HashMap<String, Vec<PathBuf>> {
         let mut index: HashMap<String, Vec<PathBuf>> = HashMap::new();
         let mut total: usize = 0;
@@ -274,7 +274,7 @@ impl Workspace {
     /// Honors `.gitignore`, `.git/info/exclude`, `.ignore`, and
     /// `.deepseekignore`. Capped at `limit` results.
     #[must_use]
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn completions(&self, partial: &str, limit: usize) -> Vec<String> {
         if limit == 0 {
             return Vec::new();
@@ -352,7 +352,7 @@ impl Workspace {
     /// callers must fall back to [`Workspace::completions`] for path-like
     /// needles (starting with `.` or containing a separator).
     #[must_use]
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn completion_candidates(&self) -> Vec<String> {
         let never_cancelled = || false;
         self.completion_candidates_inner(usize::MAX, false, &never_cancelled)
@@ -362,7 +362,7 @@ impl Workspace {
     /// is hard-capped and checks `cancelled` between filesystem iterator
     /// steps. A single slow iterator step may still return late, but it runs on
     /// the discovery worker and can never park terminal input (#4365).
-    pub(crate) fn completion_discovery_candidates(
+    pub fn completion_discovery_candidates(
         &self,
         limit: usize,
         cancelled: &dyn Fn() -> bool,
@@ -442,7 +442,7 @@ impl Workspace {
     /// returns only that directory's immediate children in case-insensitive
     /// alphabetical order.
     #[must_use]
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn browser_completions(&self, partial: &str, limit: usize) -> Vec<String> {
         if limit == 0 {
             return Vec::new();
@@ -457,7 +457,7 @@ impl Workspace {
     /// Background-worker directory-browser collection. It stops at `limit`
     /// before sorting, so a directory with millions of direct children cannot
     /// grow the cache without bound.
-    pub(crate) fn browser_completion_discovery_candidates(
+    pub fn browser_completion_discovery_candidates(
         &self,
         partial: &str,
         limit: usize,
@@ -565,7 +565,7 @@ fn normalize_completion_walk_depth(depth: usize) -> Option<usize> {
     if depth == 0 { None } else { Some(depth) }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn child_completion_walk_depth(depth: Option<usize>) -> Option<usize> {
     depth.map(|depth| depth.saturating_sub(1))
 }
@@ -577,7 +577,7 @@ fn child_completion_walk_depth(depth: Option<usize>) -> Option<usize> {
 /// `fuzzy_resolve` call bounded on huge workspaces (#697 reported a
 /// ~10s hang on the first turn). For typical projects 50K is well
 /// above the actual entry count and the cap is a no-op.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 const FILE_INDEX_MAX_ENTRIES: usize = 50_000;
 
 /// Configure a `WalkBuilder` for workspace discovery: hidden files,
@@ -702,7 +702,7 @@ fn walk_for_completions(
 
 const LOCAL_REFERENCE_SCAN_LIMIT: usize = 4096;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn add_local_reference_completions(
     root: &Path,
     display_root: &Path,
@@ -796,7 +796,7 @@ pub fn rank_completion_candidates(
     prefix_hits
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn should_try_local_reference_completion(needle: &str) -> bool {
     if needle.is_empty() {
         return false;
@@ -812,7 +812,7 @@ fn should_try_local_reference_completion(needle: &str) -> bool {
     needle.starts_with('.') || needle.contains('/') || needle.contains('\\')
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn local_reference_paths(
     root: &Path,
     limit: usize,
@@ -872,7 +872,7 @@ impl Clone for Workspace {
         Self {
             root: self.root.clone(),
             cwd: self.cwd.clone(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             file_index: OnceLock::new(),
             completion_walk_depth: self.completion_walk_depth,
             follow_links: self.follow_links,
@@ -1066,7 +1066,11 @@ impl WorkingSet {
     /// The block lands in the system prompt before the historical
     /// conversation; any byte that drifts here cache-misses everything that
     /// follows in DeepSeek's KV prefix cache.
-    pub fn summary_block(&self, workspace: &Path) -> Option<String> {
+    pub fn summary_block(
+        &self,
+        workspace: &Path,
+        read_allowed: &dyn Fn(&Path) -> bool,
+    ) -> Option<String> {
         // Only stat-verified paths reach the model. Prose observation happily
         // records tokens that merely look like paths ("120x40",
         // "codewhale-hq/CodeWhale"), and a fabricated Active-paths line teaches the
@@ -1119,7 +1123,12 @@ impl WorkingSet {
         if self.cache_maximal_enabled() && !prompt_entries.is_empty() {
             let content_entries: Vec<&WorkingSetEntry> =
                 prompt_entries.iter().map(|(entry, _)| *entry).collect();
-            self.append_resident_file_contents(&mut lines, workspace, &content_entries);
+            self.append_resident_file_contents(
+                &mut lines,
+                workspace,
+                &content_entries,
+                read_allowed,
+            );
         }
 
         Some(lines.join("\n"))
@@ -1150,6 +1159,7 @@ impl WorkingSet {
         lines: &mut Vec<String>,
         workspace: &Path,
         prompt_entries: &[&WorkingSetEntry],
+        read_allowed: &dyn Fn(&Path) -> bool,
     ) {
         let mut header_pushed = false;
         let mut total_bytes: usize = 0;
@@ -1165,7 +1175,7 @@ impl WorkingSet {
             }
 
             let abs = workspace.join(&entry.path);
-            if crate::tools::file::enforce_read_denylist(&abs, "working_set").is_err() {
+            if !read_allowed(&abs) {
                 if !header_pushed {
                     lines.push("### Active file contents (cache-resident)".to_string());
                     header_pushed = true;
@@ -1628,16 +1638,6 @@ mod tests {
         }
     }
 
-    fn make_message(role: &str, text: &str) -> Message {
-        Message {
-            role: Role::from(role),
-            content: vec![ContentBlock::Text {
-                text: text.to_string(),
-                cache_control: None,
-            }],
-        }
-    }
-
     #[test]
     fn observe_user_message_tracks_paths() {
         let tmp = TempDir::new().expect("tempdir");
@@ -1678,7 +1678,7 @@ mod tests {
 
         let mut ws = WorkingSet::default();
         ws.observe_user_message("src/lib.rs", tmp.path());
-        let block = ws.summary_block(tmp.path()).expect("block");
+        let block = ws.summary_block(tmp.path(), &|_| true).expect("block");
 
         assert!(block.contains("Repo Working Set"));
         assert!(!block.contains("Workspace:"));
@@ -1708,9 +1708,13 @@ mod tests {
         let mut ws = WorkingSet::default();
         ws.observe_user_message("Edit src/a.rs and src/b.rs", tmp.path());
 
-        let before = ws.summary_block(tmp.path()).expect("block before");
+        let before = ws
+            .summary_block(tmp.path(), &|_| true)
+            .expect("block before");
         ws.next_turn();
-        let after = ws.summary_block(tmp.path()).expect("block after");
+        let after = ws
+            .summary_block(tmp.path(), &|_| true)
+            .expect("block after");
 
         assert_byte_identical(
             "summary_block must be stable across next_turn when no new paths touched",
@@ -1734,10 +1738,14 @@ mod tests {
 
         let mut ws = WorkingSet::default();
         ws.observe_user_message("src/a.rs", tmp.path());
-        let before = ws.summary_block(tmp.path()).expect("block before");
+        let before = ws
+            .summary_block(tmp.path(), &|_| true)
+            .expect("block before");
 
         ws.observe_user_message("src/c.rs", tmp.path());
-        let after = ws.summary_block(tmp.path()).expect("block after");
+        let after = ws
+            .summary_block(tmp.path(), &|_| true)
+            .expect("block after");
 
         assert_ne!(before, after, "new path must update the rendered summary");
         assert!(after.contains("src/c.rs"));
@@ -1759,7 +1767,7 @@ mod tests {
             tmp.path(),
         );
 
-        let block = ws.summary_block(tmp.path()).expect("block");
+        let block = ws.summary_block(tmp.path(), &|_| true).expect("block");
         assert!(block.contains("- src/real.rs (file)"), "{block}");
         assert!(!block.contains("120x40"), "{block}");
         assert!(!block.contains("codewhale-hq/CodeWhale"), "{block}");
@@ -1767,7 +1775,7 @@ mod tests {
         // A file deleted mid-session falls out on the next render — the same
         // filesystem-changed exception #280 makes for newly observed paths.
         fs::remove_file(src.join("real.rs")).expect("remove");
-        let after_delete = ws.summary_block(tmp.path());
+        let after_delete = ws.summary_block(tmp.path(), &|_| true);
         assert!(
             after_delete
                 .as_deref()
@@ -1796,7 +1804,7 @@ mod tests {
 
         let mut ws = WorkingSet::default(); // cache_maximal defaults to false
         ws.observe_user_message("src/lib.rs", tmp.path());
-        let block = ws.summary_block(tmp.path()).expect("block");
+        let block = ws.summary_block(tmp.path(), &|_| true).expect("block");
 
         assert!(block.contains("src/lib.rs"), "path list still present");
         assert!(
@@ -1815,7 +1823,7 @@ mod tests {
 
         let mut ws = cache_maximal_ws();
         ws.observe_user_message("src/lib.rs", tmp.path());
-        let block = ws.summary_block(tmp.path()).expect("block");
+        let block = ws.summary_block(tmp.path(), &|_| true).expect("block");
 
         assert!(block.contains("Active file contents (cache-resident)"));
         assert!(block.contains("<!-- file: src/lib.rs -->"));
@@ -1830,7 +1838,7 @@ mod tests {
 
         let mut ws = cache_maximal_ws();
         ws.observe_user_message("look in src/", tmp.path());
-        let block = ws.summary_block(tmp.path()).expect("block");
+        let block = ws.summary_block(tmp.path(), &|_| true).expect("block");
 
         // `src` is a dir; it appears in the path list but has no content block.
         assert!(!block.contains("<!-- file: src -->"));
@@ -1848,7 +1856,7 @@ mod tests {
         ws.config.max_resident_file_bytes = 100;
         ws.config.max_total_resident_bytes = 10_000;
         ws.observe_user_message("src/big.rs", tmp.path());
-        let block = ws.summary_block(tmp.path()).expect("block");
+        let block = ws.summary_block(tmp.path(), &|_| true).expect("block");
 
         assert!(block.contains("truncated for prompt budget"));
         // The full 10k body must not be inlined.
@@ -1867,7 +1875,7 @@ mod tests {
         ws.config.max_resident_file_bytes = 200;
         ws.config.max_total_resident_bytes = 200; // only one file fits
         ws.observe_user_message("Edit src/a.rs and src/b.rs", tmp.path());
-        let block = ws.summary_block(tmp.path()).expect("block");
+        let block = ws.summary_block(tmp.path(), &|_| true).expect("block");
 
         assert!(
             block.contains("omitted from the cache-resident budget"),
@@ -1886,9 +1894,9 @@ mod tests {
 
         let mut ws = cache_maximal_ws();
         ws.observe_user_message("src/a.rs", tmp.path());
-        let before = ws.summary_block(tmp.path()).expect("before");
+        let before = ws.summary_block(tmp.path(), &|_| true).expect("before");
         ws.next_turn();
-        let after = ws.summary_block(tmp.path()).expect("after");
+        let after = ws.summary_block(tmp.path(), &|_| true).expect("after");
 
         assert_byte_identical(
             "cache-maximal block must be stable while files are unchanged (KV cache hit)",
@@ -1907,10 +1915,10 @@ mod tests {
 
         let mut ws = cache_maximal_ws();
         ws.observe_user_message("src/a.rs", tmp.path());
-        let before = ws.summary_block(tmp.path()).expect("before");
+        let before = ws.summary_block(tmp.path(), &|_| true).expect("before");
 
         fs::write(&file, "fn a() { todo!() }").expect("rewrite");
-        let after = ws.summary_block(tmp.path()).expect("after");
+        let after = ws.summary_block(tmp.path(), &|_| true).expect("after");
 
         assert_ne!(before, after, "editing the file must change the block");
         assert!(after.contains("todo!()"));
@@ -1953,13 +1961,6 @@ mod tests {
         let a_score = score_entry(ws.entries.get("src/a.rs").expect("a"), ws.turn);
         let b_score = score_entry(ws.entries.get("src/b.rs").expect("b"), ws.turn);
         assert!(a_score >= b_score);
-    }
-
-    #[test]
-    fn estimate_tokens_is_available_for_future_budgeting() {
-        use crate::compaction::estimate_tokens;
-        let messages = vec![make_message("user", "src/main.rs")];
-        assert!(estimate_tokens(&messages) > 0);
     }
 
     #[test]

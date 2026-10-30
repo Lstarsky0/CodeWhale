@@ -807,10 +807,12 @@ fn active_turn_has_running_tool(app: &App) -> bool {
 /// with a 240-character preview, and that copy is what `SyncSession` sends
 /// back to the engine.
 fn tool_result_content_for_api_message(app: &App, name: &str, output: &ToolResult) -> String {
-    crate::core::engine::compact_tool_result_for_route(
-        app.api_provider,
-        &app.model,
-        app.active_route_limits,
+    let (provider, model, limits, window) = app.effective_budget_route();
+    crate::core::engine::compact_tool_result_for_route_with_window(
+        provider,
+        model,
+        limits,
+        window.map(|window| window.tokens),
         name,
         output,
     )
@@ -830,6 +832,7 @@ pub(crate) struct UserDispatchOutcome {
     effective_reasoning_effort: EffectiveReasoningEffort,
     auto_selection: Option<crate::model_routing::AutoRouteSelection>,
     route_limits: codewhale_config::route::RouteLimits,
+    context_window: crate::route_runtime::ContextWindowResolution,
 }
 
 /// Tell the operator that an explicit "make this my default" request did not

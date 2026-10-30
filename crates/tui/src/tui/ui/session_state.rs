@@ -158,8 +158,7 @@ pub(crate) fn persist_with_pending_work_boundary(
         .as_ref()
         .is_some_and(|work| work.has_pending_publish());
     if !has_pending {
-        persistence_actor::persist(request);
-        return Ok(());
+        return persistence_actor::persist_checked(request);
     }
     if !persistence_actor::try_persist(request) {
         return Err("persistence actor is unavailable".to_string());
@@ -1345,6 +1344,7 @@ pub(crate) fn restore_loaded_session_provider(
     app.set_active_context_window_override(config, &identity);
     app.active_route_limits = app.context_window_override_limits();
     app.active_route_base_url = config.active_route_base_url();
+    app.active_context_window = app.configured_context_window_for(&app.model);
     app.active_context_window_source = app
         .configured_context_window_for(&app.model)
         .map(|resolution| resolution.source)
@@ -1370,6 +1370,7 @@ pub(crate) fn resolve_loaded_session_route(app: &mut App, config: &Config) {
     if app.auto_model {
         app.active_route_limits = app.context_window_override_limits();
         app.active_route_base_url = config.active_route_base_url();
+        app.active_context_window = app.configured_context_window_for(&app.model);
         app.active_context_window_source = app
             .configured_context_window_for(&app.model)
             .map(|resolution| resolution.source)
@@ -1386,12 +1387,13 @@ pub(crate) fn resolve_loaded_session_route(app: &mut App, config: &Config) {
             app.set_active_route_resolution(
                 resolution.candidate.endpoint().base_url.clone(),
                 resolution.candidate.limits(),
-                resolution.context_window.source,
+                resolution.context_window,
             );
         }
         Err(_) => {
             app.active_route_limits = app.context_window_override_limits();
             app.active_route_base_url = config.active_route_base_url();
+            app.active_context_window = app.configured_context_window_for(&app.model);
             app.active_context_window_source = app
                 .configured_context_window_for(&app.model)
                 .map(|resolution| resolution.source)

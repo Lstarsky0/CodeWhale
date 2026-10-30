@@ -353,12 +353,8 @@ impl SetupRuntimeFacts {
                     .map_or(identity.key.as_str(), |row| row.label)
             })
             .to_string();
-        let context_window = crate::route_budget::route_context_window_tokens(
-            app.api_provider,
-            &app.model,
-            app.active_route_limits,
-        );
-        let context_window_source = app.active_context_window_source.display_label();
+        let context_window = app.effective_context_window();
+        let context_window_source = app.effective_context_window_source().display_label();
         let provider =
             format!("{provider_name} · context {context_window} ({context_window_source})");
         let auth = readiness.label().into_owned();

@@ -23,7 +23,6 @@ use crate::compaction::{
     estimate_text_tokens_conservative,
 };
 use crate::prompts::CORE_EXECUTION_PROFILE_PROMPT;
-use crate::route_budget::route_context_window_tokens;
 use crate::tui::app::App;
 use codewhale_config::AppMode;
 use codewhale_models::{CacheControl, ContentBlock, Message, SystemPrompt, Tool};
@@ -262,15 +261,9 @@ impl ReportBuilder {
 }
 
 pub fn build_context_report(app: &App) -> PromptSourceMap {
-    // The host still stores the rung apart from the number; pair them against
-    // the same route limits the pressure meter reads.
     let context_window = crate::route_runtime::ContextWindowResolution {
-        tokens: route_context_window_tokens(
-            app.api_provider,
-            app.effective_model_for_budget(),
-            app.active_route_limits,
-        ),
-        source: app.active_context_window_source,
+        tokens: app.effective_context_window(),
+        source: app.effective_context_window_source(),
     };
     let mut builder = base_source_entries(
         &app.model,
@@ -401,19 +394,22 @@ pub fn build_headless_context_report(config: &Config, workspace: &Path) -> Promp
     let budgets = crate::project_context::InstructionBudgets::resolve_or_default(
         &settings.budget,
         context_window.instruction_budget_tokens(),
-        Some(crate::route_budget::effective_max_output_tokens_for_turn(
-            provider,
-            &model,
-            limits,
-            None,
-            crate::core::engine::turn_loop::resolve_auto_effort(
-                config.reasoning_effort(),
+        Some(
+            crate::route_budget::effective_max_output_tokens_for_turn_with_window(
                 provider,
-                &config.active_route_base_url(),
                 &model,
-            )
-            .as_deref(),
-        ) as usize),
+                limits,
+                Some(context_window.tokens),
+                None,
+                crate::core::engine::turn_loop::resolve_auto_effort(
+                    config.reasoning_effort(),
+                    provider,
+                    &config.active_route_base_url(),
+                    &model,
+                )
+                .as_deref(),
+            ) as usize,
+        ),
     );
     let assembly = crate::project_context::assemble_instruction_block(&mut raw, &[], &budgets);
     let mut builder = base_source_entries(
