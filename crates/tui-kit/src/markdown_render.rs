@@ -204,7 +204,7 @@ thread_local! {
 /// Resumable parser state.
 ///
 /// The parser is strictly line-oriented: each source line maps to blocks using
-/// only a three-field carry (`open_fence_len`, `code_language`,
+/// only a three-field carry (`open_fence`, `code_language`,
 /// `code_block_id`). That is what makes resuming *exact* rather than
 /// approximate — appending text can never change how an earlier complete line
 /// parsed, so committed blocks never need revisiting.
@@ -227,10 +227,11 @@ pub struct ParseState {
     /// Length of `prefix`. Always ends just past a newline, so only whole
     /// lines are ever committed.
     consumed: usize,
-    /// Length of the opening code fence in backticks while inside a fenced
-    /// code block (`None` outside). A closing fence must be at least this
-    /// long per CommonMark; shorter backtick lines are code content.
-    open_fence_len: Option<usize>,
+    /// Character (backtick or tilde) and length of the opening code fence
+    /// while inside a fenced code block (`None` outside). A closing fence must
+    /// use the same character and be at least this long per CommonMark;
+    /// shorter fence lines and fences of the other character are code content.
+    open_fence: Option<(char, usize)>,
     code_language: Option<String>,
     code_block_id: usize,
 }
@@ -253,7 +254,7 @@ impl ParseState {
             push_parsed_line(
                 raw_line,
                 &mut self.blocks,
-                &mut self.open_fence_len,
+                &mut self.open_fence,
                 &mut self.code_language,
                 &mut self.code_block_id,
             );
@@ -282,14 +283,14 @@ impl ParseState {
             };
         }
         let mut blocks = self.blocks.clone();
-        let mut open_fence_len = self.open_fence_len;
+        let mut open_fence = self.open_fence;
         let mut code_language = self.code_language.clone();
         let mut code_block_id = self.code_block_id;
         for raw_line in tail.lines() {
             push_parsed_line(
                 raw_line,
                 &mut blocks,
-                &mut open_fence_len,
+                &mut open_fence,
                 &mut code_language,
                 &mut code_block_id,
             );
@@ -511,14 +512,14 @@ impl ParseState {
     fn snapshot_tail(&self, content: &str) -> Vec<Block> {
         let tail = content.get(self.consumed..).unwrap_or_default();
         let mut blocks = Vec::new();
-        let mut open_fence_len = self.open_fence_len;
+        let mut open_fence = self.open_fence;
         let mut code_language = self.code_language.clone();
         let mut code_block_id = self.code_block_id;
         for raw_line in tail.lines() {
             push_parsed_line(
                 raw_line,
                 &mut blocks,
-                &mut open_fence_len,
+                &mut open_fence,
                 &mut code_language,
                 &mut code_block_id,
             );
@@ -548,19 +549,25 @@ fn stable_block_prefix_len(blocks: &[Block]) -> usize {
 fn push_parsed_line(
     raw_line: &str,
     blocks: &mut Vec<Block>,
-    open_fence_len: &mut Option<usize>,
+    open_fence: &mut Option<(char, usize)>,
     code_language: &mut Option<String>,
     code_block_id: &mut usize,
 ) {
     let trimmed = raw_line.trim_start();
-    let fence_len = trimmed.chars().take_while(|c| *c == '`').count();
+    let fence_char = if trimmed.starts_with('~') { '~' } else { '`' };
+    let fence_len = trimmed.chars().take_while(|c| *c == fence_char).count();
     if fence_len >= 3 {
-        match *open_fence_len {
-            // Inside a code block: a fence at least as long as the opener
-            // closes it; a shorter backtick line is code content per
-            // CommonMark and must not flip the state or escape the block.
-            Some(open) if fence_len >= open && trimmed[fence_len..].trim().is_empty() => {
-                *open_fence_len = None;
+        match *open_fence {
+            // Inside a code block: a fence of the same character and at least
+            // as long as the opener closes it; a shorter fence line, or one of
+            // the other character, is code content per CommonMark and must
+            // not flip the state or escape the block.
+            Some((open_char, open_len))
+                if fence_char == open_char
+                    && fence_len >= open_len
+                    && trimmed[fence_len..].trim().is_empty() =>
+            {
+                *open_fence = None;
                 *code_language = None;
             }
             Some(_) => {
@@ -571,7 +578,7 @@ fn push_parsed_line(
                 });
             }
             None => {
-                *open_fence_len = Some(fence_len);
+                *open_fence = Some((fence_char, fence_len));
                 *code_block_id = code_block_id.saturating_add(1);
                 *code_language = normalized_fence_language(&trimmed[fence_len..]);
             }
@@ -579,7 +586,7 @@ fn push_parsed_line(
         return;
     }
 
-    if open_fence_len.is_some() {
+    if open_fence.is_some() {
         blocks.push(Block::Code {
             line: raw_line.to_string(),
             language: code_language.clone(),
