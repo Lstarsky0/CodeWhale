@@ -10,11 +10,11 @@ use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget};
 use crate::tools::user_input::{
     UserInputAnswer, UserInputAnswerKind, UserInputQuestion, UserInputRequest, UserInputResponse,
 };
-use crate::tui::menu_style;
 use crate::tui::pager::PagerRows;
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent, render_modal_surface};
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
+use codewhale_tui_kit::menu_style;
 
 fn modal_block(title: &str) -> Block<'static> {
     Block::default()
@@ -57,7 +57,7 @@ fn push_option_lines(
     } else {
         Style::default().fg(palette::TEXT_MUTED)
     };
-    let prefix = crate::tui::glyphs::selection_marker(selected);
+    let prefix = codewhale_tui_kit::glyphs::selection_marker(selected);
     // Multi-select rows get a check-mark gutter when toggled into the pending
     // set, mirroring the affordance used in other multi-option pickers.
     let mark = if ticked { "✔ " } else { "  " };
@@ -1320,7 +1320,7 @@ mod tests {
                 };
                 let focused = format!(
                     "{}  {}) {label}",
-                    crate::tui::glyphs::selection_marker(true),
+                    codewhale_tui_kit::glyphs::selection_marker(true),
                     selected + 1
                 );
                 let rendered = render_view(&view, width, height);

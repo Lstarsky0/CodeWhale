@@ -5066,10 +5066,10 @@ model = "private-model"
             "a pin cannot be ignored by an older reader"
         );
 
-        let runtime = crate::runtime_threads::RuntimeThreadManager::open(
+        let runtime = crate::runtime_threads::manager::RuntimeThreadManager::open(
             config.clone(),
             root.path().to_path_buf(),
-            crate::runtime_threads::RuntimeThreadManagerConfig::from_task_data_dir(
+            crate::runtime_threads::manager::RuntimeThreadManagerConfig::from_task_data_dir(
                 root.path().join("runtime"),
             ),
         )?;

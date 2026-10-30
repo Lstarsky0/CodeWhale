@@ -1504,7 +1504,7 @@ auth_mode = "none"
     }
 
     struct RouteRecordingExecutor(
-        std::sync::Arc<std::sync::Mutex<Vec<crate::runtime_threads::CreateThreadRequest>>>,
+        std::sync::Arc<std::sync::Mutex<Vec<crate::runtime_threads::manager::CreateThreadRequest>>>,
     );
 
     #[async_trait::async_trait]

@@ -32,15 +32,15 @@ use crate::tui::provider_picker::ProviderPickerView;
 use crate::tui::shell_key_routing::{
     Focus, SHELL_BINDINGS, ShellBindingId, is_permission_cycle_shortcut,
 };
-use crate::tui::ui_text::{line_to_plain, truncate_line_to_width};
 use crate::tui::views::ConfigView;
 use crate::tui::views::{HelpView, ModalView, ViewAction};
-use crate::working_set::Workspace;
 use codewhale_config::ProviderKind;
 use codewhale_config::descriptors::defaults::{
     DEFAULT_OPENROUTER_MODEL, DEFAULT_TEXT_MODEL, DEFAULT_ZAI_MODEL,
 };
 use codewhale_runtime::config::{Config, ProviderConfig, ProvidersConfig};
+use codewhale_runtime::working_set::Workspace;
+use codewhale_tui_kit::ui_text::{line_to_plain, truncate_line_to_width};
 use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
     Terminal,
@@ -1656,7 +1656,10 @@ fn canonical_file_mutations_attach_receipts_only_to_successful_outcomes() {
             );
             assert!(cell.receipt.is_some(), "{approval_mode:?} File.{action}");
             assert_eq!(
-                cell.receipt.as_ref().unwrap().outcome_label(),
+                cell.receipt
+                    .as_ref()
+                    .unwrap()
+                    .outcome_label(codewhale_localization::Locale::En),
                 "Updated src/lib.rs",
                 "{approval_mode:?} File.{action}"
             );
@@ -7235,7 +7238,7 @@ fn mouse_up_preserves_the_single_click_action_and_detail_owner() {
     app.history = vec![
         HistoryCell::Error {
             message: "selected error".into(),
-            severity: crate::error_taxonomy::ErrorSeverity::Error,
+            severity: codewhale_error_taxonomy::ErrorSeverity::Error,
         },
         running_exec_cell(),
     ];
@@ -7360,7 +7363,7 @@ fn advertised_reasoning_space_dispatches_after_first_char_paste_hold() {
     );
     assert!(flush_paste_burst_before_composer(
         &mut app,
-        now + crate::tui::paste_burst::PasteBurst::recommended_flush_delay()
+        now + codewhale_tui_kit::paste_burst::PasteBurst::recommended_flush_delay()
     ));
     assert_eq!(
         app.cell_folds.get(&0),
@@ -7409,7 +7412,7 @@ fn raw_paste_beginning_with_space_preserves_payload_over_reasoning_action() {
     );
     assert!(flush_paste_burst_before_composer(
         &mut app,
-        now + crate::tui::paste_burst::PasteBurst::recommended_active_flush_delay()
+        now + codewhale_tui_kit::paste_burst::PasteBurst::recommended_active_flush_delay()
             + Duration::from_millis(2),
     ));
     assert_eq!(app.input, " x");
@@ -7459,7 +7462,7 @@ fn paste_burst_does_not_leak_into_composer_while_a_modal_owns_keys() {
     app.view_stack.push(HelpView::new());
     let flushed = flush_paste_burst_before_composer(
         &mut app,
-        now + crate::tui::paste_burst::PasteBurst::recommended_flush_delay(),
+        now + codewhale_tui_kit::paste_burst::PasteBurst::recommended_flush_delay(),
     );
     assert!(
         !flushed,
@@ -7508,7 +7511,7 @@ fn active_raw_paste_keeps_space_as_payload_over_reasoning_action() {
         "an in-flight raw paste must not trigger transcript actions"
     );
     assert!(app.flush_paste_burst_if_due(
-        now + crate::tui::paste_burst::PasteBurst::recommended_active_flush_delay()
+        now + codewhale_tui_kit::paste_burst::PasteBurst::recommended_active_flush_delay()
             + Duration::from_millis(2)
     ));
     assert_eq!(app.input, "a ");
@@ -7941,7 +7944,7 @@ fn error_or_interruption_transfers_reasoning_ownership_truthfully() {
         interrupted,
         HistoryCell::Error {
             message: "provider disconnected".to_string(),
-            severity: crate::error_taxonomy::ErrorSeverity::Error,
+            severity: codewhale_error_taxonomy::ErrorSeverity::Error,
         },
     ];
     app.resync_history_revisions();
@@ -8686,7 +8689,7 @@ fn child_approval_card_hides_always_allow_in_repo() {
         assert_eq!(
             matches!(action, ViewAction::EmitAndClose(_)),
             expect_repo_rule,
-            "only the parent card offers Always allow in this repo"
+            "only the parent card offers Always for this command"
         );
     }
 }
@@ -12872,8 +12875,12 @@ async fn paused_dispatch_at_compaction_threshold_enqueues_one_atomic_send() {
     app.auto_compact_threshold_percent = 10.0;
     app.api_messages =
         std::sync::Arc::new(vec![text_message("assistant", &"context ".repeat(240_000))]);
-    let planned_compaction =
-        app.compaction_config_for_route(app.api_provider, &app.model, app.active_route_limits);
+    let planned_compaction = app.compaction_config_for_route(
+        app.api_provider,
+        &app.model,
+        app.active_route_limits,
+        app.active_context_window,
+    );
     let fixture_used =
         estimated_context_tokens(&app).expect("fixture context estimate should be available");
     assert!(
@@ -13520,8 +13527,12 @@ fn auto_routed_turn_compaction_uses_selected_route_not_stale_app_route() {
         .expect("preflight auto-selected route");
     let route_limits = crate::route_budget::known_route_limits(route.candidate.limits());
 
-    let compaction =
-        app.compaction_config_for_route(route.identity.provider, &route.model, route_limits);
+    let compaction = app.compaction_config_for_route(
+        route.identity.provider,
+        &route.model,
+        route_limits,
+        Some(route.context_window),
+    );
 
     assert_eq!(compaction.model, "vendor/model-b");
     assert_eq!(compaction.effective_context_window, Some(196_000));
@@ -20251,7 +20262,7 @@ fn slash_menu_down_wraps_from_last_to_first() {
 
 #[test]
 fn slash_menu_paging_clamps_instead_of_wrapping() {
-    use crate::tui::list_nav::Motion;
+    use codewhale_tui_kit::list_nav::Motion;
     let mut app = create_test_app();
     app.input = "/".to_string();
     app.cursor_position = 1;
@@ -22229,7 +22240,7 @@ fn visible_error_becomes_full_detail_target_ahead_of_adjacent_tool() {
         HistoryCell::Error {
             message: "Refusing insecure base URL.\nSet CODEWHALE_ALLOW_INSECURE_HTTP=1 only for a trusted LAN host."
                 .to_string(),
-            severity: crate::error_taxonomy::ErrorSeverity::Error,
+            severity: codewhale_error_taxonomy::ErrorSeverity::Error,
         },
     ];
     app.resync_history_revisions();
@@ -26150,7 +26161,9 @@ fn orphan_success_with_mutation_metadata_keeps_the_file_receipt() {
     };
     assert_eq!(cell.status, ToolStatus::Success);
     assert_eq!(
-        cell.receipt.as_ref().map(|receipt| receipt.outcome_label()),
+        cell.receipt
+            .as_ref()
+            .map(|receipt| receipt.outcome_label(codewhale_localization::Locale::En)),
         Some("Updated src/lib.rs".to_string())
     );
     assert_eq!(app.tool_details_by_cell[&0].tool_name, "File");
@@ -26252,7 +26265,7 @@ fn exploring_label_for_list_files_uses_progressive() {
 
 #[test]
 fn add_message_does_not_scroll_when_user_scrolled_away() {
-    use crate::tui::scrolling::TranscriptScroll;
+    use codewhale_tui_kit::scrolling::TranscriptScroll;
 
     let mut app = create_test_app();
     // Pre-condition: user was following the tail, then scrolled up.
@@ -26271,7 +26284,7 @@ fn add_message_does_not_scroll_when_user_scrolled_away() {
 
 #[test]
 fn add_message_pins_to_tail_when_user_was_following() {
-    use crate::tui::scrolling::TranscriptScroll;
+    use codewhale_tui_kit::scrolling::TranscriptScroll;
 
     let mut app = create_test_app();
     app.viewport.transcript_scroll = TranscriptScroll::to_bottom();
@@ -26291,7 +26304,7 @@ fn add_message_pins_to_tail_when_user_was_following() {
 fn tool_call_started_does_not_scroll_when_user_scrolled_away() {
     // Tool-cell handlers must not sneak in a scroll_to_bottom — they go
     // through `mark_history_updated` which only bumps `history_version`.
-    use crate::tui::scrolling::TranscriptScroll;
+    use codewhale_tui_kit::scrolling::TranscriptScroll;
 
     let mut app = create_test_app();
     app.viewport.transcript_scroll = TranscriptScroll::at_line(7);
@@ -26312,7 +26325,7 @@ fn tool_call_started_does_not_scroll_when_user_scrolled_away() {
 
 #[test]
 fn tool_call_complete_does_not_scroll_when_user_scrolled_away() {
-    use crate::tui::scrolling::TranscriptScroll;
+    use codewhale_tui_kit::scrolling::TranscriptScroll;
 
     let mut app = create_test_app();
     handle_tool_call_started(
@@ -26339,7 +26352,7 @@ fn mark_history_updated_does_not_call_scroll_to_bottom() {
     // Behavior pin: future contributors must not add a scroll_to_bottom
     // here. The scroll-following logic lives only in `add_message` and
     // `flush_active_cell`, both gated on `user_scrolled_during_stream`.
-    use crate::tui::scrolling::TranscriptScroll;
+    use codewhale_tui_kit::scrolling::TranscriptScroll;
 
     let mut app = create_test_app();
     app.viewport.transcript_scroll = TranscriptScroll::at_line(3);
@@ -26379,7 +26392,7 @@ async fn composer_send_anchors_new_message_at_tail() {
     let engine = mock_engine_handle();
 
     // The user deliberately scrolled up to read history mid-turn.
-    use crate::tui::scrolling::TranscriptScroll;
+    use codewhale_tui_kit::scrolling::TranscriptScroll;
     app.viewport.transcript_scroll = TranscriptScroll::at_line(7);
     app.user_scrolled_during_stream = true;
     assert!(!app.viewport.transcript_scroll.is_at_tail());
@@ -26415,7 +26428,7 @@ async fn composer_send_anchors_new_message_at_tail() {
 async fn steer_send_keeps_local_scroll_context() {
     let mut app = create_test_app();
     let mut engine = crate::core::engine::mock_engine_handle();
-    use crate::tui::scrolling::TranscriptScroll;
+    use codewhale_tui_kit::scrolling::TranscriptScroll;
     app.viewport.transcript_scroll = TranscriptScroll::at_line(7);
     app.user_scrolled_during_stream = true;
 
@@ -27249,7 +27262,7 @@ fn turn_handoff_markdown_degrades_empty_sections_without_panic() {
 
 #[test]
 fn engine_error_finalizes_active_thinking_block() {
-    use crate::error_taxonomy::StreamError;
+    use codewhale_error_taxonomy::StreamError;
 
     let mut app = create_test_app();
     let entry_idx = crate::tui::streaming_thinking::ensure_active_entry(&mut app);
@@ -27455,7 +27468,9 @@ fn patch_approval_modal_does_not_displace_the_active_file_receipt() {
     };
     assert_eq!(cell.status, ToolStatus::Success);
     assert_eq!(
-        cell.receipt.as_ref().map(|receipt| receipt.outcome_label()),
+        cell.receipt
+            .as_ref()
+            .map(|receipt| receipt.outcome_label(codewhale_localization::Locale::En)),
         Some("Updated src/lib.rs".to_string())
     );
 }
@@ -27801,7 +27816,7 @@ fn truncate_line_to_width_respects_display_width_for_tiny_budgets() {
 /// the session in offline mode with the next typed message queued.
 #[test]
 fn recoverable_engine_error_does_not_enter_offline_mode() {
-    use crate::error_taxonomy::{ErrorEnvelope, StreamError};
+    use codewhale_error_taxonomy::{ErrorEnvelope, StreamError};
     let mut app = create_test_app();
     assert!(!app.offline_mode);
 
@@ -27839,7 +27854,7 @@ fn recoverable_engine_error_does_not_enter_offline_mode() {
 
 #[test]
 fn recoverable_provider_error_advances_fallback_chain() {
-    use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
+    use codewhale_error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
 
     let config = {
         let __cw_config_init_60_0 = vec![ProviderKind::Openrouter];
@@ -27900,7 +27915,7 @@ fn recoverable_provider_error_advances_fallback_chain() {
 /// walk). A bad key requires user intervention, not a silent rotation.
 #[test]
 fn auth_error_does_not_trigger_provider_fallback() {
-    use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
+    use codewhale_error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
 
     let mut app = create_test_app();
     app.api_provider = ProviderKind::Deepseek;
@@ -27943,7 +27958,7 @@ fn auth_error_does_not_trigger_provider_fallback() {
 /// indexing in the fallback status).
 #[test]
 fn fallback_switch_status_shows_one_based_position_and_reason() {
-    use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
+    use codewhale_error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
 
     let mut providers = codewhale_runtime::config::ProvidersConfig::default();
     providers.openrouter.api_key = Some("fixture-fallback-key".to_string());
@@ -28067,7 +28082,7 @@ async fn failed_fallback_restores_exact_literal_custom_identity_without_root_cro
 
 #[tokio::test]
 async fn provider_switch_auth_error_restores_previous_provider_and_model() {
-    use crate::error_taxonomy::ErrorEnvelope;
+    use codewhale_error_taxonomy::ErrorEnvelope;
 
     let _home = SettingsHomeGuard::new();
     let mut app = create_test_app();
@@ -28181,7 +28196,7 @@ async fn provider_switch_auth_error_restores_previous_provider_and_model() {
 
 #[tokio::test]
 async fn provider_switch_rollback_corrects_setup_receipt_when_persistence_fails() {
-    use crate::error_taxonomy::ErrorEnvelope;
+    use codewhale_error_taxonomy::ErrorEnvelope;
 
     let _home = SettingsHomeGuard::new();
     let bad_config_path = TempDir::new().expect("bad config path");
@@ -28286,7 +28301,7 @@ fn stream_drop_approval_event() -> EngineEvent {
 #[tokio::test]
 async fn recoverable_stream_error_keeps_active_turn_for_pending_approval() {
     use crate::core::authority::ApprovalRequestDisposition;
-    use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
+    use codewhale_error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
 
     let mut app = create_test_app();
     app.is_loading = true;
@@ -28414,7 +28429,7 @@ async fn recoverable_stream_error_after_local_cancel_resolves_stale_approval() {
 
     apply_engine_error_to_app(
         &mut app,
-        crate::error_taxonomy::StreamError::Stall { timeout_secs: 60 }.into_envelope(),
+        codewhale_error_taxonomy::StreamError::Stall { timeout_secs: 60 }.into_envelope(),
     );
 
     assert!(!app.is_loading);
@@ -29176,7 +29191,7 @@ async fn agent_complete_clears_child_pending() {
 /// TurnComplete must not strand subsequent messages offline.
 #[test]
 fn non_recoverable_engine_error_stays_online() {
-    use crate::error_taxonomy::ErrorEnvelope;
+    use codewhale_error_taxonomy::ErrorEnvelope;
     let mut app = create_test_app();
     assert!(!app.offline_mode);
     app.is_loading = true;
@@ -29210,7 +29225,7 @@ fn non_recoverable_engine_error_stays_online() {
 async fn keyless_engine_error_stays_visible_after_a_config_ack() {
     use crate::core::engine::{Engine, EngineConfig};
     use crate::core::ops::{Op, TurnSpec, UserInputProvenance};
-    use crate::error_taxonomy::ErrorCategory;
+    use codewhale_error_taxonomy::ErrorCategory;
 
     let _home = SettingsHomeGuard::new();
     let _key = crate::test_support::EnvVarGuard::remove("DEEPSEEK_API_KEY");
@@ -29351,7 +29366,7 @@ async fn keyless_engine_error_stays_visible_after_a_config_ack() {
 
 #[test]
 fn env_only_auth_failure_reopens_provider_onboarding() {
-    use crate::error_taxonomy::ErrorEnvelope;
+    use codewhale_error_taxonomy::ErrorEnvelope;
     let mut app = create_test_app();
     app.ui_locale = codewhale_localization::Locale::Ja;
     app.api_provider = codewhale_config::ProviderKind::Anthropic;
@@ -31216,7 +31231,7 @@ fn status_animation_ticks_for_a_visible_background_task() {
         id: "shell_smooth".to_string(),
         status: "running".to_string(),
         prompt_summary: "shell: cargo test --locked".to_string(),
-        duration_ms: Some(crate::tui::spinner::LIVE_MARKER_DELAY_MS),
+        duration_ms: Some(codewhale_tui_kit::spinner::LIVE_MARKER_DELAY_MS),
         kind: TaskPanelEntryKind::Shell,
         stale: false,
         elapsed_since_output_ms: None,
@@ -33673,6 +33688,41 @@ async fn offline_queue_lifecycle_preserves_edits_and_explicit_reset() {
         assert_eq!(app.current_session_id, active);
         assert_eq!(app.input, "preserve on failed resume");
     }
+    let mut reset_app = create_test_app();
+    let reset_id = "reset-snapshot-build-failure";
+    reset_app.current_session_id = Some(reset_id.into());
+    let checkpoint = create_saved_session_with_id_and_mode(
+        reset_id.into(),
+        &[text_message("user", "recover this")],
+        &reset_app.model,
+        &reset_app.workspace,
+        0,
+        None,
+        None,
+    );
+    let checkpoint_path = manager
+        .save_checkpoint(&checkpoint)
+        .expect("save checkpoint");
+    let bad_home = directory.path().join("blocked-state-home");
+    std::fs::write(&bad_home, b"not a directory").unwrap();
+    {
+        let _bad_home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &bad_home);
+        persist_full_reset_snapshot(&mut reset_app);
+    }
+    flush_offline_queue_test_actor(&handle).await;
+    assert!(
+        checkpoint_path.exists(),
+        "failed reset must retain recovery"
+    );
+    let failure = reset_app
+        .status_message
+        .as_deref()
+        .expect("failed reset status");
+    assert!(failure.contains("could not be saved"), "{failure}");
+    assert!(matches!(
+        reset_app.history.last(),
+        Some(HistoryCell::Error { message, .. }) if message == failure
+    ));
     assert!(handle.try_send(PersistRequest::Shutdown));
     task.await.expect("queue actor shutdown");
 }
@@ -33805,6 +33855,14 @@ fn stale_session_projection_cannot_rewind_a_host_launch() {
     }
     app.runtime_turn_id = None;
     app.is_loading = false;
+    let accepted_window = crate::route_runtime::ContextWindowResolution {
+        tokens: 128_000,
+        source: crate::route_runtime::ContextWindowSource::Fallback,
+    };
+    app.active_route_limits = None;
+    app.active_context_window = Some(accepted_window);
+    app.active_context_window_source = accepted_window.source;
+    app.pending_turn_route = Some((app.api_provider, "canonical-model".into(), false));
     assert!(super::event_loop::apply_engine_session_projection(
         &mut app,
         &Config::default(),
@@ -33816,7 +33874,7 @@ fn stale_session_projection_cannot_rewind_a_host_launch() {
             ]),
             system_prompt: None,
             instruction_assembly: None,
-            model,
+            model: "canonical-model".into(),
             workspace,
         }
     ));
@@ -33826,6 +33884,8 @@ fn stale_session_projection_cannot_rewind_a_host_launch() {
         vec![text_message("user", "expected engine transcript")]
     );
     assert_eq!(app.input, "typing remains responsive");
+    assert_eq!(app.active_context_window, Some(accepted_window));
+    assert_eq!(app.effective_context_window(), 128_000);
 }
 
 #[test]
@@ -34151,7 +34211,7 @@ fn credential_rejected_turn_restores_the_prompt_with_one_next_step() {
     });
 
     let mut envelope = ErrorEnvelope::fatal_auth("Authentication failed: invalid API key");
-    envelope.code = crate::error_taxonomy::CREDENTIAL_REJECTED_UNSENT_CODE.to_string();
+    envelope.code = codewhale_error_taxonomy::CREDENTIAL_REJECTED_UNSENT_CODE.to_string();
     apply_engine_error_to_app(&mut app, envelope);
 
     assert_eq!(app.input, "explain this repo");
@@ -34193,7 +34253,7 @@ fn credential_rejected_turn_keeps_a_started_draft_and_the_bubble() {
     app.input = "and the tests".to_string();
 
     let mut envelope = ErrorEnvelope::fatal_auth("Authentication failed: invalid API key");
-    envelope.code = crate::error_taxonomy::CREDENTIAL_REJECTED_UNSENT_CODE.to_string();
+    envelope.code = codewhale_error_taxonomy::CREDENTIAL_REJECTED_UNSENT_CODE.to_string();
     apply_engine_error_to_app(&mut app, envelope);
 
     assert_eq!(app.input, "and the tests");
@@ -34879,13 +34939,15 @@ fn background_skill_cache_refuses_stale_epoch_workspace_and_plugin_snapshot() {
     stale_dir.skills_dir = app.skills_dir.join("different");
     assert!(!app.install_skill_cache_if_current(&stale_dir, 7, result.clone()));
     let mut stale_mode = current.clone();
-    stale_mode.mode = if app.skills_discovery_mode == crate::skills::SkillDiscoveryMode::Compatible
-    {
-        crate::skills::SkillDiscoveryMode::CodeWhaleOnly
-    } else {
-        crate::skills::SkillDiscoveryMode::Compatible
-    };
+    let mut config = (*app.skills_config).clone();
+    config.scan_codewhale_only = Some(!config.scan_codewhale_only());
+    stale_mode.config = Arc::new(config);
     assert!(!app.install_skill_cache_if_current(&stale_mode, 7, result.clone()));
+    let mut stale_bundle = current.clone();
+    let mut config = (*app.skills_config).clone();
+    config.bundled.disabled = Some(vec!["debug".into()]);
+    stale_bundle.config = Arc::new(config);
+    assert!(!app.install_skill_cache_if_current(&stale_bundle, 7, result.clone()));
     let mut stale_plugins = current.clone();
     stale_plugins.plugins = Arc::new(codewhale_plugins::PluginRegistry::empty(&app.workspace));
     assert!(!app.install_skill_cache_if_current(&stale_plugins, 7, result.clone()));
@@ -34911,9 +34973,9 @@ async fn persisted_queued_native_skill_is_denied_after_host_withdrawal() {
     let engine = manager.attach(Arc::clone(&plugins));
     engine.sync().await.unwrap();
     let plugins = engine.plugin_view();
-    let catalog = crate::skills::discover_in_workspace_with_mode_and_plugins(
+    let catalog = codewhale_skills::discover_in_workspace_with_mode_and_plugins(
         fixture.workspace(),
-        crate::skills::SkillDiscoveryMode::CodeWhaleOnly,
+        codewhale_skills::SkillDiscoveryMode::CodeWhaleOnly,
         Some(&plugins),
     );
     let skill = catalog.get("skills-root:quick-check").unwrap();
@@ -35324,11 +35386,11 @@ fn ended_parent_turn_retires_approvals_and_elevations_but_keeps_child_requests()
 /// the thinking card and the prose that follows it.
 #[test]
 fn issue_7123_reasoning_after_prose_stays_in_the_thinking_cell() {
-    use crate::tui::streaming::StreamDisplayClock;
     use crate::tui::ui::frame::{
         append_streaming_text, commit_streaming_display_tick,
         ensure_streaming_assistant_history_cell,
     };
+    use codewhale_tui_kit::streaming::StreamDisplayClock;
 
     let mut app = create_test_app();
 

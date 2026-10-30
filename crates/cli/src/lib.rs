@@ -514,6 +514,64 @@ const COMPLETION_BIN_NAME: &str = "codewhale";
 /// types the short name.
 const COMPLETION_ALIAS_NAME: &str = "codew";
 
+const ADVANCED_COMMANDS: &[&str] = &[
+    "run",
+    "models",
+    "model",
+    "fork",
+    "rc",
+    "web",
+    "serve",
+    "app-server",
+    "mcp-server",
+    "login",
+    "logout",
+    "account",
+    "dispatch",
+    "fleet",
+    "workflow",
+    "lane",
+    "apply",
+    "install",
+    "setup",
+    "remote-setup",
+    "integrations",
+    "features",
+    "speech",
+    "thread",
+    "sandbox",
+    "eval",
+    "scorecard",
+    "session-diagnostics",
+    "metrics",
+    "providers",
+    "completion",
+];
+
+fn user_facing_command() -> clap::Command {
+    let mut cmd = Cli::command();
+    let mut listed = Vec::new();
+    for name in ADVANCED_COMMANDS {
+        if cmd.find_subcommand(name).is_some() {
+            cmd = cmd.mut_subcommand(name, |sub| sub.hide(true));
+            listed.push(*name);
+        }
+    }
+    let mut paragraph =
+        String::from("Advanced commands (`codewhale help <command>` for details):\n ");
+    let mut width = 1;
+    for name in listed {
+        if width + name.len() + 1 > 78 {
+            paragraph.push_str("\n ");
+            width = 1;
+        }
+        paragraph.push(' ');
+        paragraph.push_str(name);
+        width += name.len() + 1;
+    }
+    cmd.after_help(paragraph)
+}
+
 /// Render the completion script for `shell` from this binary's own clap tree,
 /// registered for both published command names.
 fn render_completion_script(shell: Shell) -> String {
@@ -2294,7 +2352,7 @@ fn argv_secret_warning(cli: &Cli, command: Option<&Commands>) -> Option<&'static
 fn run() -> Result<()> {
     let inherited_listener = codewhale_tui::prepare_runtime_listener_handoff()?;
     let argv: Vec<_> = std::env::args_os().collect();
-    let matches = Cli::command().get_matches_from(&argv);
+    let matches = user_facing_command().get_matches_from(&argv);
     let project_bundle_scope = config_command_targets_project(&matches);
     let mut cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     anyhow::ensure!(

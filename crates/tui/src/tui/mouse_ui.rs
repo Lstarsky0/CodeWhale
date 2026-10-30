@@ -108,16 +108,17 @@ use crate::tui::command_palette::{
     CommandPaletteView, build_entries_with_plugins as build_command_palette_entries,
 };
 use crate::tui::context_menu::{ContextMenuEntry, ContextMenuView};
-use crate::tui::scrolling::{ScrollDirection, TranscriptScroll};
+use crate::tui::history::text::{history_cell_to_clipboard_text, history_cell_to_text};
 use crate::tui::selection::{SelectionAutoscroll, TranscriptSelectionPoint};
 use crate::tui::tideline::InteractionAction;
-use crate::tui::ui_text::{
-    history_cell_to_clipboard_text, history_cell_to_text, line_to_plain, slice_visible_columns,
-    text_display_width, text_visible_width, truncate_line_to_width,
-};
 use crate::tui::views::{ContextMenuAction, HelpView, ModalKind, ViewEvent};
 use codewhale_localization::MessageId;
 use codewhale_models::{ContentBlock, Message};
+use codewhale_tui_kit::scrolling::{ScrollDirection, TranscriptScroll};
+use codewhale_tui_kit::ui_text::{
+    line_to_plain, slice_visible_columns, text_display_width, text_visible_width,
+    truncate_line_to_width,
+};
 
 // These functions will need to be imported from ui.rs or we can just import crate::tui::ui::*.
 use crate::tui::ui::{
@@ -1794,7 +1795,7 @@ pub(crate) fn apply_context_menu_action(
                 build_command_palette_entries(
                     app.ui_locale,
                     &app.skills_dir,
-                    app.skills_discovery_mode,
+                    &app.skills_config,
                     &app.workspace,
                     &app.mcp_config_path,
                     app.mcp_snapshot.as_ref(),
@@ -3260,7 +3261,7 @@ mod tests {
             .transcript_cache
             .lines()
             .iter()
-            .position(|line| crate::tui::ui_text::line_to_plain(line).contains(needle))
+            .position(|line| codewhale_tui_kit::ui_text::line_to_plain(line).contains(needle))
             .expect("rendered line");
         u16::try_from(index).unwrap()
     }

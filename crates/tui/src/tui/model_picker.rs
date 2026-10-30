@@ -33,7 +33,6 @@ use crate::models_dev_live::{self, ModelsDevFreshness};
 use crate::provider_lake::{catalog_offering_for_model_identity, configured_providers};
 use crate::reasoning_preference::ReasoningEffort;
 use crate::tui::app::{App, StatusToastLevel};
-use crate::tui::menu_style;
 use crate::tui::provider_picker::ProviderOffer;
 use crate::tui::views::fleet_detail::{FleetRouteSelection, FleetRouteTarget};
 use crate::tui::views::{
@@ -49,6 +48,7 @@ use codewhale_runtime::codex_model_roster::{
 };
 use codewhale_runtime::config::Config;
 use codewhale_runtime::settings::PinnedModel;
+use codewhale_tui_kit::menu_style;
 use codewhale_util::utils::format_context_window;
 
 /// Thinking-effort rows shown for DeepSeek-style providers, in the order
@@ -1287,11 +1287,11 @@ impl ModelPickerView {
         }
     }
 
-    /// Apply one [`list_nav`](crate::tui::list_nav) motion (#6290), returning
+    /// Apply one [`list_nav`](codewhale_tui_kit::list_nav) motion (#6290), returning
     /// whether it was consumed. Steps wrap; pages travel [`MODEL_PAGE`] rows
     /// and clamp. The region axis toggles between the model and effort panes.
-    fn apply_motion(&mut self, motion: crate::tui::list_nav::Motion) -> bool {
-        use crate::tui::list_nav::Motion;
+    fn apply_motion(&mut self, motion: codewhale_tui_kit::list_nav::Motion) -> bool {
+        use codewhale_tui_kit::list_nav::Motion;
         if matches!(motion, Motion::RegionPrev | Motion::RegionNext) {
             if self.can_edit_effort() {
                 self.toggle_focus();
@@ -1305,7 +1305,8 @@ impl ModelPickerView {
         if len == 0 {
             return false;
         }
-        let Some(next) = crate::tui::list_nav::apply(current, len, MODEL_PAGE, motion) else {
+        let Some(next) = codewhale_tui_kit::list_nav::apply(current, len, MODEL_PAGE, motion)
+        else {
             return false;
         };
         match self.focus {
@@ -1595,7 +1596,7 @@ impl ModelPickerView {
                 || title.to_string(),
                 |row| format!("{title}: {}", row.primary),
             );
-            Paragraph::new(crate::tui::ui_text::semantic_truncate(
+            Paragraph::new(codewhale_tui_kit::ui_text::semantic_truncate(
                 &summary,
                 usize::from(area.width),
             ))
@@ -1676,11 +1677,11 @@ impl ModelPickerView {
             let locked = row.locked;
             let focused = is_selected && state.focused;
             let marker = if focused {
-                crate::tui::glyphs::SELECTION
+                codewhale_tui_kit::glyphs::SELECTION
             } else if locked {
-                crate::tui::glyphs::ATTENTION
+                codewhale_tui_kit::glyphs::ATTENTION
             } else if row.active {
-                crate::tui::glyphs::CURRENT
+                codewhale_tui_kit::glyphs::CURRENT
             } else {
                 " "
             };
@@ -4276,7 +4277,7 @@ impl ModalView for ModelPickerView {
         // Movement keys come from the shared vocabulary (#6290); the match
         // below owns only the picker's own verbs. The live filter means the
         // typing-safe set — no letter aliases to eat the query.
-        if let Some(motion) = crate::tui::list_nav::motion_while_typing(&key)
+        if let Some(motion) = codewhale_tui_kit::list_nav::motion_while_typing(&key)
             && self.apply_motion(motion)
         {
             return ViewAction::None;
@@ -4572,7 +4573,7 @@ impl ModelPickerView {
         };
         // The catalog is a visible action on the existing title rail, with
         // no extra row taken from short terminals. Keep the shortcut too.
-        let action_label = crate::tui::ui_text::semantic_truncate(
+        let action_label = codewhale_tui_kit::ui_text::semantic_truncate(
             &view_action,
             usize::from(area.width.saturating_sub(20)),
         );
@@ -4585,7 +4586,7 @@ impl ModelPickerView {
                     + 8
                     <= usize::from(area.width));
         let title = if show_action {
-            crate::tui::ui_text::semantic_truncate(
+            codewhale_tui_kit::ui_text::semantic_truncate(
                 &title,
                 usize::from(area.width.saturating_sub(action_width + 8)),
             )

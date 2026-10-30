@@ -38,9 +38,9 @@ use crate::automation_manager::{
     SharedAutomationManager,
 };
 use crate::tui::app::App;
-use crate::tui::list_nav::wrap_index;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
+use codewhale_tui_kit::list_nav::wrap_index;
 
 mod editor;
 use editor::{AutomationEditor, EditorAction};
@@ -833,7 +833,7 @@ impl ModalView for AutomationsView {
                 continue;
             }
             let text = format!("[{key} {}] ", tr(self.locale, label));
-            let width = u16::try_from(crate::tui::ui_text::text_display_width(&text))
+            let width = u16::try_from(codewhale_tui_kit::ui_text::text_display_width(&text))
                 .unwrap_or(u16::MAX)
                 .min(chunks[0].right().saturating_sub(x));
             let rect = Rect::new(

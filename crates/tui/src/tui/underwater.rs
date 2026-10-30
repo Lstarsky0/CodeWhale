@@ -16,7 +16,6 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::tui::ui_text::{semantic_truncate, text_display_width};
 use crate::tui::{
     app::{App, OnboardingState},
     ocean::COMPLETION_BREATH_MS,
@@ -26,6 +25,7 @@ use codewhale_config::AppMode;
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette::ChromeInk;
+use codewhale_tui_kit::ui_text::{semantic_truncate, text_display_width};
 
 /// Responsive density tier. It changes how much truth is shown, never the
 /// underlying state grammar.
@@ -873,10 +873,11 @@ pub(crate) fn phase_marker_with_activity(
             // spinners. The shared helper also preserves the 400ms
             // "motion is earned" delay and reduced/still fallback.
             let policy = app.motion_policy();
-            let animated = crate::tui::spinner::braille_spinner_frame(app.turn_started_at, false);
+            let animated =
+                codewhale_tui_kit::spinner::braille_spinner_frame(app.turn_started_at, false);
             let earned = app.turn_started_at.is_none_or(|started| {
                 started.elapsed().as_millis()
-                    >= u128::from(crate::tui::spinner::LIVE_MARKER_DELAY_MS)
+                    >= u128::from(codewhale_tui_kit::spinner::LIVE_MARKER_DELAY_MS)
             });
             let frame = policy.spinner_glyph(animated, earned);
             (frame, activity.label(locale))
@@ -885,10 +886,11 @@ pub(crate) fn phase_marker_with_activity(
             // Metered braille tick on the shared live clock — checking, not
             // searching. Reduced motion holds the legible mid frame.
             let policy = app.motion_policy();
-            let animated = crate::tui::spinner::verification_tick_frame(app.turn_started_at, false);
+            let animated =
+                codewhale_tui_kit::spinner::verification_tick_frame(app.turn_started_at, false);
             let earned = app.turn_started_at.is_none_or(|started| {
                 started.elapsed().as_millis()
-                    >= u128::from(crate::tui::spinner::LIVE_MARKER_DELAY_MS)
+                    >= u128::from(codewhale_tui_kit::spinner::LIVE_MARKER_DELAY_MS)
             });
             let frame = policy.spinner_glyph(animated, earned);
             (frame, phase.label(locale))
@@ -899,9 +901,9 @@ pub(crate) fn phase_marker_with_activity(
                 let index = ((elapsed / 140) as usize + 4).min(WORKING_BUBBLE_FRAMES.len() - 1);
                 (WORKING_BUBBLE_FRAMES[index], phase.label(locale))
             }
-            _ => (crate::tui::glyphs::DONE, phase.label(locale)),
+            _ => (codewhale_tui_kit::glyphs::DONE, phase.label(locale)),
         },
-        ShellPhase::Failed => (crate::tui::glyphs::FAILED, phase.label(locale)),
+        ShellPhase::Failed => (codewhale_tui_kit::glyphs::FAILED, phase.label(locale)),
     }
 }
 
@@ -1427,8 +1429,8 @@ fn mcp_problems_row(
     hint: &str,
     lane: usize,
 ) -> Option<String> {
-    use crate::tui::glyphs::{ATTENTION, FAILED};
     use crate::tui::session_boot::ITEM_SEPARATOR;
+    use codewhale_tui_kit::glyphs::{ATTENTION, FAILED};
 
     let group = |glyph: &str, names: &[&str], shown: usize, row: &mut String| {
         if names.is_empty() {
@@ -1483,7 +1485,7 @@ fn fade_lines(lines: &mut [Line<'static>], dissolve: f32, water: Color) {
     for line in lines.iter_mut() {
         for span in line.spans.iter_mut() {
             if let Some(fg) = span.style.fg {
-                span.style.fg = Some(crate::tui::mark::lerp_color(fg, water, dissolve));
+                span.style.fg = Some(codewhale_tui_kit::mark::lerp_color(fg, water, dissolve));
             }
         }
     }
@@ -1679,7 +1681,7 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
     let whats_new_lines = whats_new_launch_lines(app, text_width);
     // Brand occupies the header only; recent titles retain the whole reading lane.
     // Scale the canonical raster derivative before sacrificing any controls.
-    use crate::tui::mark::MarkSize;
+    use codewhale_tui_kit::mark::MarkSize;
     let mut mark = if crate::tui::color_compat::ascii_safe_enabled() {
         None
     } else if height >= 14 && text_width >= 40 {
@@ -1769,11 +1771,11 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
         for (row, dots) in mark.rows().iter().enumerate() {
             let mut spans = vec![
                 Span::styled(
-                    crate::tui::mark::reveal_row(
+                    codewhale_tui_kit::mark::reveal_row(
                         dots,
                         app.launch
                             .mark_reveal_started_at
-                            .map_or(crate::tui::mark::REVEAL_MS, |started| {
+                            .map_or(codewhale_tui_kit::mark::REVEAL_MS, |started| {
                                 started.elapsed().as_millis()
                             }),
                         app.motion_policy().allows_decorative() && !app.launch.return_to_session,
@@ -1886,11 +1888,23 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
                 }
             }
             let label = semantic_truncate(&tr(locale, MessageId::LaunchRecentHeading), text_width);
-            let remaining = text_width.saturating_sub(text_display_width(&label) + 2);
+            let mut remaining = text_width.saturating_sub(text_display_width(&label) + 2);
             let mut spans = vec![Span::styled(
                 label,
                 Style::default().fg(theme.text_soft).bold(),
             )];
+            let resume = tr(locale, MessageId::LaunchRecentResumeHint);
+            if card_rows
+                .iter()
+                .any(|row| matches!(row.id, crate::tui::app::LaunchRowId::Recent(_)))
+                && remaining >= text_display_width(&resume) + 6
+            {
+                remaining = remaining.saturating_sub(text_display_width(&resume) + 2);
+                spans.push(Span::styled(
+                    format!("  {resume}"),
+                    Style::default().fg(theme.text_hint),
+                ));
+            }
             if remaining >= 4 {
                 let rule = if crate::tui::color_compat::ascii_safe_enabled() {
                     "-"
@@ -1950,9 +1964,9 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
     // band to the text lane so selecting a session never colors the margins.
     for (index, (_, row)) in rows.iter().enumerate() {
         let style = if app.launch.menu_selected == Some(index) {
-            Some(crate::tui::menu_style::selected_row_bg_style().bold())
+            Some(codewhale_tui_kit::menu_style::selected_row_bg_style().bold())
         } else if app.launch.hovered_row == Some(index) {
-            Some(crate::tui::menu_style::hovered_row_style())
+            Some(codewhale_tui_kit::menu_style::hovered_row_style())
         } else {
             None
         };
@@ -1984,9 +1998,9 @@ pub fn launch_empty_state(app: &App, area: Rect) -> LaunchEmptyState {
         let selected = action.is_some_and(|i| app.launch.menu_selected == Some(i));
         let hovered = action.is_some_and(|i| app.launch.hovered_row == Some(i));
         let style = if selected {
-            crate::tui::menu_style::selected_row_style()
+            codewhale_tui_kit::menu_style::selected_row_style()
         } else if hovered {
-            crate::tui::menu_style::hovered_row_style()
+            codewhale_tui_kit::menu_style::hovered_row_style()
         } else {
             Style::default().fg(theme.text_muted)
         };
@@ -2372,8 +2386,8 @@ mod launch_card_tests {
         let problems: Vec<_> = lines
             .iter()
             .filter(|line| {
-                line.contains(crate::tui::glyphs::FAILED)
-                    || line.contains(crate::tui::glyphs::ATTENTION)
+                line.contains(codewhale_tui_kit::glyphs::FAILED)
+                    || line.contains(codewhale_tui_kit::glyphs::ATTENTION)
             })
             .collect();
         assert_eq!(problems.len(), 1, "one problems row: {lines:#?}");
@@ -2675,14 +2689,14 @@ mod launch_card_tests {
                 let text = hovered.lines[y].spans.last().unwrap();
                 assert_eq!(
                     text.style.bg,
-                    crate::tui::menu_style::hovered_row_style().bg
+                    codewhale_tui_kit::menu_style::hovered_row_style().bg
                 );
 
                 app.launch.menu_selected = Some(index);
                 let selected = launch_empty_state(&app, area);
                 assert_eq!(
                     selected.lines[y].spans.last().unwrap().style,
-                    crate::tui::menu_style::selected_row_bg_style().bold()
+                    codewhale_tui_kit::menu_style::selected_row_bg_style().bold()
                 );
                 // Neither the whale nor the leading whitespace changes color.
                 assert_eq!(selected.lines[y].spans[0].style.bg, None);
@@ -2712,7 +2726,7 @@ mod launch_card_tests {
             assert_eq!(summary.style.fg, Some(app.ui_theme.error_fg));
             assert_eq!(
                 summary.style.bg,
-                crate::tui::menu_style::selected_row_bg_style().bg
+                codewhale_tui_kit::menu_style::selected_row_bg_style().bg
             );
         }
     }
@@ -2917,9 +2931,8 @@ pub fn launch_motion_active(app: &App, obscured: bool, ambient_settled: bool) ->
     let water_alive = app.theme_id == codewhale_palette::ThemeId::Underwater && !ambient_settled;
     let revealing = !app.launch.return_to_session
         && !crate::tui::color_compat::ascii_safe_enabled()
-        && app
-            .launch
-            .mark_reveal_started_at
-            .is_some_and(|started| started.elapsed().as_millis() < crate::tui::mark::REVEAL_MS);
+        && app.launch.mark_reveal_started_at.is_some_and(|started| {
+            started.elapsed().as_millis() < codewhale_tui_kit::mark::REVEAL_MS
+        });
     revealing || dissolving || water_alive
 }

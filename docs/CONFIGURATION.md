@@ -2698,9 +2698,10 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   `.agents/skills`. Flat `./skills` requires explicit opt-in below. The runtime
   also discovers global agentskills.io-compatible `~/.agents/skills` and the
   broader Claude-ecosystem
-  `~/.claude/skills`. First launch installs versioned bundled skills for common
+  `~/.claude/skills`. With the default bundle policy and no `skills_dir` override, first launch installs versioned bundled skills for common
   workflows including skill creation, delegation, MCP/plugin scaffolding,
-  documents, presentations, spreadsheets, PDFs, and Feishu/Lark. Only
+  documents, presentations, spreadsheets and PDFs. Feishu/Lark is outside the
+  default pack. Only
   Codewhale-owned roots (`<workspace>/.codewhale/skills` and
   `~/.codewhale/skills`) are writable install/import targets; compatible harness
   roots stay read-only. Bare `/skills` opens Extensions → Skills (owned-only,
@@ -2708,6 +2709,10 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   for the manager, audit statuses, provenance markers, and mutation rules, and
   [CLAUDE_PLUGIN_COMPAT.md](CLAUDE_PLUGIN_COMPAT.md) for the supported boundary
   between portable `SKILL.md` bundles and Claude Code plugin runtimes.
+- `[skills.bundled].install` (`"auto"` default, `"all"`, `"none"`): controls bundle writes independently of discovery. `auto` keeps deletion-as-opt-out and disables installation when `skills_dir` is set. `all` repairs enabled missing skills into `$CODEWHALE_HOME/skills` (normally `~/.codewhale/skills`) even with a discovery override. `none` writes nothing and leaves the marker untouched. Modified and managed bodies are preserved in every mode.
+- `[skills.bundled].selected` / `disabled` / `explicit_only` (arrays of names, default `[]`): selection limits installation and discovery; empty selects the whole bundle. Disabled wins and reveals lower-root copies. Explicit-only retains user invocation while removing the shipped copy from the model index and model loading. Aliases share canonical policy. These settings affect recognized global bundle copies only and never delete files. Profile fields merge separately; `[]` clears an inherited list. `doctor` warns about unknown/ignored entries and `/skills inspect` reports per-path reasons. See [bundled skills](SKILLS.md#bundled-skills).
+- `[skills].listing_max_description_chars` (integer, default `400`, range `1..=40000`): ambient-index description cap, shared by parent and child prompts and `/skills inspect`.
+- `[skills].listing_budget_fraction` (finite number, default `0.05`, greater than `0` and at most `1`): share of the route window for that same index, estimated at four characters per token and clamped to `2400..=40000` characters. Explicit profile fields override inherited values independently; `/context` uses the same resolution. Full skill loading is unaffected.
 - `[skills].scan_codewhale_only` (bool, default `false`): when `true`, session
   skill discovery ignores cross-tool roots such as `.claude/skills`,
   `.opencode/skills`, `.cursor/skills`, and `~/.agents/skills`. Codewhale still

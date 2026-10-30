@@ -1538,7 +1538,7 @@ fn overlay_and_streaming_entries_share_the_prose_measure() {
         .max()
         .unwrap_or(0);
 
-    let mut cache = crate::tui::markdown_render::IncrementalMarkdownRenderCache::default();
+    let mut cache = codewhale_tui_kit::markdown_render::IncrementalMarkdownRenderCache::default();
     let mut streaming_lines = Vec::new();
     let mut links = Vec::new();
     let mut separators = Vec::new();

@@ -546,7 +546,7 @@ mod tests {
             .iter()
             .find(|row| row.id.0 == "coordination")
             .expect("blocked coordination Work row");
-        assert_eq!(row.mark, crate::tui::glyphs::ATTENTION);
+        assert_eq!(row.mark, codewhale_tui_kit::glyphs::ATTENTION);
         assert_eq!(row.tone, super::model::WorkTone::Attention);
         assert_eq!(row.detail, "0 decisions · 1 contentions · 0 reconciled");
     }
@@ -589,9 +589,9 @@ mod tests {
         }
 
         let text = render_text(&mut app, 80, 7);
-        let done = format!("1 · {} finished", crate::tui::glyphs::DONE);
-        let current = format!("2 · {} current", crate::tui::glyphs::SELECTION);
-        let next = format!("3 · {} next", crate::tui::glyphs::READY);
+        let done = format!("1 · {} finished", codewhale_tui_kit::glyphs::DONE);
+        let current = format!("2 · {} current", codewhale_tui_kit::glyphs::SELECTION);
+        let next = format!("3 · {} next", codewhale_tui_kit::glyphs::READY);
 
         assert!(text.contains("To-do · 1/3 · 2 left"), "{text:?}");
         assert_eq!(text.matches("To-do ·").count(), 1, "{text:?}");
@@ -921,7 +921,10 @@ mod tests {
 
         assert!(text.contains("To-do · 1/3 · 2 left"), "{text:?}");
         assert!(
-            text.contains(&format!("2 · {} current", crate::tui::glyphs::SELECTION)),
+            text.contains(&format!(
+                "2 · {} current",
+                codewhale_tui_kit::glyphs::SELECTION
+            )),
             "{text:?}"
         );
         assert_eq!(app.work_surface.hitboxes[0].row_y, 2);
@@ -2361,7 +2364,7 @@ mod tests {
             .find(|row| row.id.0 == "context:automatic")
             .unwrap();
         assert_eq!(automatic.label, "automatic compaction off");
-        assert!(automatic.detail.contains("Emergency compaction"));
+        assert!(automatic.detail.contains("/compact"));
     }
 
     #[test]
@@ -2622,7 +2625,7 @@ mod tests {
             .iter()
             .find(|row| row.selectable)
             .expect("operation row");
-        assert_eq!(row.mark, crate::tui::glyphs::ATTENTION);
+        assert_eq!(row.mark, codewhale_tui_kit::glyphs::ATTENTION);
         assert!(row.detail.contains("completed · evidence pending"));
         assert_ne!(row.mark, "✓");
         let Some(SidebarRowAction::InspectWork { body, .. }) = row.primary_action.as_ref() else {

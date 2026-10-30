@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::runtime_threads::{
-    CreateThreadRequest, RuntimeThreadManager, RuntimeTurnStatus, ThreadDetail, ThreadListFilter,
+    RuntimeTurnStatus, manager::CreateThreadRequest, manager::RuntimeThreadManager,
+    manager::ThreadDetail, manager::ThreadListFilter,
 };
 use crate::session_manager::{
     SavedSession, SessionListFilter, SessionManager, SessionMetadata, SessionMutator,

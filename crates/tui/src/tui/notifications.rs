@@ -2120,13 +2120,13 @@ impl<'a> TidelineInbox<'a> {
         if !self.ascii_safe {
             return glyph.to_string();
         }
-        if let Some(fb) = crate::tui::glyphs::ascii_fallback(glyph) {
+        if let Some(fb) = codewhale_tui_kit::glyphs::ascii_fallback(glyph) {
             return fb.to_string();
         }
         glyph
             .chars()
             .map(|c| {
-                crate::tui::glyphs::ascii_fallback(&c.to_string())
+                codewhale_tui_kit::glyphs::ascii_fallback(&c.to_string())
                     .map(str::to_string)
                     .unwrap_or_else(|| c.to_string())
             })

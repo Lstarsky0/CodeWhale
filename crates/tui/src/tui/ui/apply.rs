@@ -186,7 +186,7 @@ pub(crate) fn apply_picker_session_rename_to_active_app(
 /// `Warning`, dim for `Info`.
 pub(crate) fn apply_engine_error_to_app(
     app: &mut App,
-    envelope: crate::error_taxonomy::ErrorEnvelope,
+    envelope: codewhale_error_taxonomy::ErrorEnvelope,
 ) {
     let recoverable = envelope.recoverable;
     let message = envelope.message.clone();
@@ -202,7 +202,7 @@ pub(crate) fn apply_engine_error_to_app(
     // The engine decides whether the question was taken back out of the
     // session; the host only follows, so the two cannot disagree (#6566).
     let credential_rejected_before_output = turn_was_in_progress
-        && envelope.code == crate::error_taxonomy::CREDENTIAL_REJECTED_UNSENT_CODE;
+        && envelope.code == codewhale_error_taxonomy::CREDENTIAL_REJECTED_UNSENT_CODE;
     streaming_thinking::finalize_current(app);
     if turn_was_in_progress {
         app.finalize_streaming_assistant_as_interrupted();
@@ -266,7 +266,7 @@ pub(crate) fn apply_engine_error_to_app(
     }
     if matches!(
         envelope.category,
-        crate::error_taxonomy::ErrorCategory::Authentication
+        codewhale_error_taxonomy::ErrorCategory::Authentication
     ) && app.api_key_env_only
     {
         app.offline_mode = true;
@@ -305,9 +305,9 @@ pub(crate) fn apply_engine_error_to_app(
     if recoverable
         && matches!(
             envelope.category,
-            crate::error_taxonomy::ErrorCategory::Network
-                | crate::error_taxonomy::ErrorCategory::RateLimit
-                | crate::error_taxonomy::ErrorCategory::Timeout
+            codewhale_error_taxonomy::ErrorCategory::Network
+                | codewhale_error_taxonomy::ErrorCategory::RateLimit
+                | codewhale_error_taxonomy::ErrorCategory::Timeout
         )
         && app.advance_fallback(message.clone()).is_some()
     {
@@ -995,6 +995,7 @@ pub(crate) async fn apply_model_picker_choice(
     let model_changed = model != previous_model || app.auto_model != model_is_auto;
     let mut resolved_model = model.clone();
     let mut route_base_url = config.active_route_base_url();
+    let mut resolved_budget = None;
     if !model_is_auto {
         match crate::route_runtime::resolve_runtime_route_for_identity(
             config,
@@ -1005,12 +1006,8 @@ pub(crate) async fn apply_model_picker_choice(
                 resolved_model = resolution.candidate.wire_model_id().as_str().to_string();
                 route_base_url = resolution.candidate.endpoint().base_url.clone();
                 if model_changed {
-                    app.set_active_context_window_override(config, &current_identity);
-                    app.set_active_route_resolution(
-                        route_base_url.clone(),
-                        resolution.candidate.limits(),
-                        resolution.context_window.source,
-                    );
+                    resolved_budget =
+                        Some((resolution.candidate.limits(), resolution.context_window));
                 }
             }
             Err(reason) => {
@@ -1019,14 +1016,6 @@ pub(crate) async fn apply_model_picker_choice(
                 return;
             }
         }
-    } else if model_changed {
-        app.set_active_context_window_override(config, &current_identity);
-        app.active_route_limits = app.context_window_override_limits();
-        app.active_route_base_url = route_base_url.clone();
-        app.active_context_window_source = app
-            .configured_context_window_for(&app.model)
-            .map(|resolution| resolution.source)
-            .unwrap_or(crate::route_runtime::ContextWindowSource::Fallback);
     }
 
     let effective_effort = if model_is_auto {
@@ -1043,6 +1032,17 @@ pub(crate) async fn apply_model_picker_choice(
 
     if model_changed {
         app.set_model_selection(resolved_model.clone());
+        app.set_active_context_window_override(config, &current_identity);
+        if let Some((limits, context_window)) = resolved_budget {
+            app.set_active_route_resolution(route_base_url.clone(), limits, context_window);
+        } else {
+            app.active_route_limits = app.context_window_override_limits();
+            app.active_route_base_url = route_base_url.clone();
+            app.active_context_window_source = app.active_context_window.map_or(
+                crate::route_runtime::ContextWindowSource::Fallback,
+                |window| window.source,
+            );
+        }
         let provider_identity = app.provider_identity_for_persistence().to_string();
         app.provider_models
             .insert(provider_identity.clone(), resolved_model.clone());
@@ -1242,7 +1242,7 @@ pub(crate) async fn apply_provider_fallback_switch(
     let resolved_endpoint = resolved_route.candidate.endpoint().base_url.clone();
     let next_config = resolved_route.config;
     let new_model = resolved_route.model;
-    let context_window_source = resolved_route.context_window.source;
+    let context_window = resolved_route.context_window;
 
     if let Err(err) = CodewhaleClient::from_candidate(&next_config, &resolved_route.candidate) {
         app.set_provider_identity_record(previous_identity);
@@ -1273,7 +1273,7 @@ pub(crate) async fn apply_provider_fallback_switch(
     app.set_active_route_resolution(
         new_base_url.clone(),
         resolved_route.candidate.limits(),
-        context_window_source,
+        context_window,
     );
     app.update_model_compaction_budget();
     if cache_scope_changed {
@@ -3051,7 +3051,7 @@ fn apply_validated_profile_config(
     app.set_active_route_resolution(
         route.candidate.endpoint().base_url.clone(),
         route.candidate.limits(),
-        route.context_window.source,
+        route.context_window,
     );
     app.update_model_compaction_budget();
     app.session.last_prompt_tokens = None;
@@ -3201,8 +3201,7 @@ pub(crate) fn apply_workspace_runtime_state(app: &mut App, config: &Config, work
         workspace.clone(),
     );
     app.skills_dir = crate::tui::app::resolve_skills_dir(&workspace, &config.skills_dir(), config);
-    app.skills_discovery_mode =
-        crate::skills::SkillDiscoveryMode::from_config(&config.skills_config());
+    app.skills_config = std::sync::Arc::new(config.skills_config());
     app.project_context_pack_enabled = config.project_context_pack_enabled();
     app.refresh_skill_cache();
     app.workspace_context = None;
@@ -3735,7 +3734,7 @@ pub(crate) async fn apply_provider_picker_test_connection(
 /// step, in place of the provider's raw reply (#6566). Only a failure with no
 /// plain reading keeps a sanitized, bounded excerpt of that reply.
 fn plain_key_verification_error(app: &App, reason: &str, api_key: &str) -> String {
-    use crate::error_taxonomy::ErrorCategory;
+    use codewhale_error_taxonomy::ErrorCategory;
     match provider_verification_error_category(reason) {
         ErrorCategory::Authentication => app.tr(MessageId::ProviderKeyRejected).into_owned(),
         ErrorCategory::Authorization => app.tr(MessageId::ProviderKeyForbidden).into_owned(),
@@ -4510,7 +4509,7 @@ pub(crate) fn apply_loaded_session_with_goal(
         {
             app.extend_history(std::iter::once(HistoryCell::Error {
                 message: outcome.error.clone(),
-                severity: crate::error_taxonomy::ErrorSeverity::Error,
+                severity: codewhale_error_taxonomy::ErrorSeverity::Error,
             }));
         }
     };

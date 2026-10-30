@@ -124,7 +124,7 @@ pub(super) fn render_archived_context(
         )));
     }
 
-    let rendered = crate::tui::markdown_render::render_markdown_tagged_with_palette(
+    let rendered = codewhale_tui_kit::markdown_render::render_markdown_tagged_with_palette(
         &body,
         content_width,
         body_style,

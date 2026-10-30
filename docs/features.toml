@@ -49,7 +49,7 @@ owner = "crates/cli/src/update/uninstall.rs"
 [[feature]]
 id = "install-cleanup"
 name = "Installation cleanup"
-summary = "doctor --installs lists every copy and owner; doctor --fix moves old backups to recovery; doctor --restore undoes it."
+summary = "doctor --all expands diagnostics; --installs lists owners, --fix recovers old copies and --restore reverses it."
 status = "stable"
 surfaces = { tui = "stable" }
 since = "unreleased"
@@ -132,7 +132,7 @@ owner = "crates/tui/src/tools/apply_patch.rs"
 [[feature]]
 id = "mcp-client"
 name = "MCP client"
-summary = "Connects local stdio and remote HTTP MCP servers and exposes their tools."
+summary = "Connects MCP servers, exposes permitted tools and records connection status for the model."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 since = "0.1.0"
@@ -308,7 +308,7 @@ owner = "crates/config/src/app_mode.rs"
 [[feature]]
 id = "permission-postures"
 name = "Permission postures"
-summary = "Ask, Auto-Review and Full Access postures decide when a tool call needs approval."
+summary = "Ask, Auto-Review and Full Access govern approvals; cards default to Deny and preview saved grants."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/MODES.md#permission-posture"
@@ -326,7 +326,7 @@ owner = "crates/sandbox/src"
 [[feature]]
 id = "providers"
 name = "Providers"
-summary = "Provider routes with scoped facts, limits, price estimates and a disclosed OrcaRouter offer in the pickers."
+summary = "Provider routes including Runcrate, with scoped facts, limits, price estimates and a disclosed OrcaRouter offer."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/PROVIDERS.md"
@@ -475,11 +475,11 @@ owner = "crates/memory"
 [[feature]]
 id = "skills"
 name = "Skills"
-summary = "Installs and loads trusted instruction packages with owned-root precedence and separate user/model invocation controls."
+summary = "Trusted instruction packages with bundle policy, invocation controls and shared, configurable index limits."
 status = "stable"
 surfaces = { tui = "stable", api = "stable" }
 docs = "docs/SKILLS.md"
-owner = "crates/tui/src/skills"
+owner = "crates/skills/src"
 
 [[feature]]
 id = "plugins"
@@ -651,7 +651,7 @@ owner = "crates/tui/src/commands/groups/session/color.rs"
 [[feature]]
 id = "localization"
 name = "Localization"
-summary = "Interface text in 15 locales."
+summary = "Interface text in 15 locales, including tool activity, file receipts and language-aware transcript caches."
 status = "stable"
 surfaces = { tui = "stable" }
 docs = "docs/LOCALIZATION.md"

@@ -23,7 +23,6 @@ use crate::compaction::{
     estimate_text_tokens_conservative,
 };
 use crate::prompts::CORE_EXECUTION_PROFILE_PROMPT;
-use crate::route_budget::route_context_window_tokens;
 use crate::tui::app::App;
 use codewhale_config::AppMode;
 use codewhale_models::{CacheControl, ContentBlock, Message, SystemPrompt, Tool};
@@ -262,22 +261,16 @@ impl ReportBuilder {
 }
 
 pub fn build_context_report(app: &App) -> PromptSourceMap {
-    // The host still stores the rung apart from the number; pair them against
-    // the same route limits the pressure meter reads.
     let context_window = crate::route_runtime::ContextWindowResolution {
-        tokens: route_context_window_tokens(
-            app.api_provider,
-            app.effective_model_for_budget(),
-            app.active_route_limits,
-        ),
-        source: app.active_context_window_source,
+        tokens: app.effective_context_window(),
+        source: app.effective_context_window_source(),
     };
     let mut builder = base_source_entries(
         &app.model,
         &app.workspace,
         Some(&app.skills_dir),
         app.project_context_pack_enabled,
-        app.skills_discovery_mode,
+        &app.skills_config,
         app.ui_locale.tag(),
         app.mode,
         Some(app.plugin_registry.as_ref()),
@@ -401,19 +394,22 @@ pub fn build_headless_context_report(config: &Config, workspace: &Path) -> Promp
     let budgets = crate::project_context::InstructionBudgets::resolve_or_default(
         &settings.budget,
         context_window.instruction_budget_tokens(),
-        Some(crate::route_budget::effective_max_output_tokens_for_turn(
-            provider,
-            &model,
-            limits,
-            None,
-            crate::core::engine::turn_loop::resolve_auto_effort(
-                config.reasoning_effort(),
+        Some(
+            crate::route_budget::effective_max_output_tokens_for_turn_with_window(
                 provider,
-                &config.active_route_base_url(),
                 &model,
-            )
-            .as_deref(),
-        ) as usize),
+                limits,
+                Some(context_window.tokens),
+                None,
+                crate::core::engine::turn_loop::resolve_auto_effort(
+                    config.reasoning_effort(),
+                    provider,
+                    &config.active_route_base_url(),
+                    &model,
+                )
+                .as_deref(),
+            ) as usize,
+        ),
     );
     let assembly = crate::project_context::assemble_instruction_block(&mut raw, &[], &budgets);
     let mut builder = base_source_entries(
@@ -421,7 +417,7 @@ pub fn build_headless_context_report(config: &Config, workspace: &Path) -> Promp
         workspace,
         Some(&selected_skills_dir),
         config.project_context_pack_enabled(),
-        crate::skills::SkillDiscoveryMode::from_config(&config.skills_config()),
+        &config.skills_config(),
         "en",
         AppMode::Agent,
         None,
@@ -498,7 +494,7 @@ fn base_source_entries(
     workspace: &Path,
     skills_dir: Option<&Path>,
     project_pack_enabled: bool,
-    skills_discovery_mode: crate::skills::SkillDiscoveryMode,
+    skills_config: &codewhale_runtime::config::SkillsConfig,
     locale_tag: &str,
     mode: AppMode,
     plugin_registry: Option<&codewhale_plugins::PluginRegistry>,
@@ -661,25 +657,14 @@ fn base_source_entries(
         ));
     }
 
-    let skill_discovery_mode = skills_discovery_mode;
-    let skills_budget = crate::skills::skills_prompt_budget_chars(context_window_tokens);
-    let skills_block = match skills_dir {
-        Some(dir) => crate::skills::render_available_skills_context_for_workspace_and_dir_with_mode_and_plugins(
-            workspace,
-            dir,
-            skill_discovery_mode,
-            locale_tag,
-            plugin_registry,
-            skills_budget,
-        ),
-        None => crate::skills::render_available_skills_context_for_workspace_with_mode_and_plugins(
-            workspace,
-            skill_discovery_mode,
-            locale_tag,
-            plugin_registry,
-            skills_budget,
-        ),
-    };
+    let skills_block = codewhale_skills::render_index(
+        workspace,
+        skills_dir,
+        skills_config,
+        locale_tag,
+        plugin_registry,
+        context_window_tokens,
+    );
     if let Some(block) = skills_block {
         let mut entry = SourceEntry::text(
             SourceKind::SkillsBlock,
@@ -690,7 +675,7 @@ fn base_source_entries(
             CountingConfidence::High,
             Some(5),
         );
-        entry.truncation_reason = crate::skills::shortened_skills_note(&block);
+        entry.truncation_reason = codewhale_skills::shortened_skills_note(&block);
         builder.push(entry);
     } else {
         builder.push(SourceEntry::omitted(

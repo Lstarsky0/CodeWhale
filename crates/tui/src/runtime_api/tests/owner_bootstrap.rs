@@ -1,7 +1,9 @@
 //! Actual manager/store/lease bootstrap, without any provider turn. Transport
 //! fixtures do not substitute for the separate rebuilt two-process proof.
 use super::*;
-use crate::runtime_threads::{RuntimeProcessOwnerLock, RuntimeStoreBinding, ThreadListFilter};
+use crate::runtime_threads::{
+    RuntimeProcessOwnerLock, RuntimeStoreBinding, manager::ThreadListFilter,
+};
 use codewhale_config::private_directory::PrivateDirectory;
 use codewhale_protocol::RuntimeOwnerReceipt;
 

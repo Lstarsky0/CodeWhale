@@ -1792,7 +1792,8 @@ pub(crate) fn fresh_dispatch_pricing_quote_at(
         return None;
     }
     let at = chrono::DateTime::from_timestamp(i64::try_from(dispatched_at_unix).ok()?, 0)?;
-    let hand = crate::pricing::provider_owned_hand_quote_rows(provider, wire_model, at);
+    let hand =
+        codewhale_models::hand_pricing::provider_owned_hand_quote_rows(provider, wire_model, at);
     let needs_schedule = matches!(
         provider,
         ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic

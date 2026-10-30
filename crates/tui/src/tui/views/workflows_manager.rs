@@ -31,8 +31,8 @@ use crate::tools::workflow::{
     HostWorkflowChildRow, HostWorkflowRunDetail, host_cancel_workflow, host_workflow_run_details,
 };
 use crate::tui::app::App;
-use crate::tui::list_nav::wrap_index;
 use codewhale_palette as palette;
+use codewhale_tui_kit::list_nav::wrap_index;
 
 fn now_ms() -> u64 {
     SystemTime::now()

@@ -216,7 +216,9 @@ fn custom_route_endpoint_change_forgets_the_previous_bill() {
             .expect("resolve lm-studio")
             .validate()
             .expect("preflight lm-studio");
+        let context_window = route.context_window;
         engine.install_validated_runtime_route(route);
+        assert_eq!(engine.active_context_window, Some(context_window));
     };
     install(&mut engine, &config);
     engine.session.latest_parent_input_tokens = Some(150_000);

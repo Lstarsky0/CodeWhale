@@ -15,13 +15,13 @@ use crate::tui::background_indicator::is_live_shell_entry;
 use crate::tui::history::{
     FileActivityKind, FileActivitySummary, FileMutationReceipt, HistoryCell, ToolCell,
 };
-use crate::tui::menu_style::{StatusKind, status_mark};
 use crate::work_graph::{
     AcceptanceRequirement, EdgeKind, EvidenceKind, EvidenceKindTag, NodeKind, NodeState,
     OperationBinding, OwnerState, Provenance, WorkGraphSnapshot, WorkNode,
 };
 use codewhale_execpolicy::canonical_action::canonical_action_alias;
 use codewhale_runtime::settings::InlineDiffMode;
+use codewhale_tui_kit::menu_style::{StatusKind, status_mark};
 
 /// Persisted Ocean work-surface placement. Bottom is deliberately absent: the
 /// composer and phase footer own the shell's lower edge. `Off` hides the rail
@@ -1015,9 +1015,9 @@ fn finished_background_rows(app: &App) -> Vec<WorkRow> {
                 WorkTone::Muted
             };
             let mark = match entry.status.as_str() {
-                "completed" => crate::tui::glyphs::DONE,
-                _ if failed => crate::tui::glyphs::ATTENTION,
-                _ => crate::tui::glyphs::NEUTRAL,
+                "completed" => codewhale_tui_kit::glyphs::DONE,
+                _ if failed => codewhale_tui_kit::glyphs::ATTENTION,
+                _ => codewhale_tui_kit::glyphs::NEUTRAL,
             };
             if is_shell_entry(entry) {
                 let command = shell_command(entry);
@@ -1257,8 +1257,9 @@ struct RankedWorkRow {
 }
 
 /// Complete unique targets; only the aggregate summary presentation is capped.
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub(super) struct SettledFileActivity {
+    pub(super) locale: Locale,
     pub(super) summary: FileActivitySummary,
     pub(super) read: Vec<String>,
     list: Vec<String>,
@@ -1266,6 +1267,21 @@ pub(super) struct SettledFileActivity {
     pub(super) write: Vec<String>,
     pub(super) mutations: Vec<FileMutationReceipt>,
     pub(super) inline_diff_mode: InlineDiffMode,
+}
+
+impl Default for SettledFileActivity {
+    fn default() -> Self {
+        Self {
+            locale: Locale::En,
+            summary: FileActivitySummary::default(),
+            read: Vec::new(),
+            list: Vec::new(),
+            search: Vec::new(),
+            write: Vec::new(),
+            mutations: Vec::new(),
+            inline_diff_mode: InlineDiffMode::default(),
+        }
+    }
 }
 
 impl std::fmt::Debug for SettledFileActivity {
@@ -1614,9 +1630,9 @@ fn coordination_row(app: &App) -> Option<RankedWorkRow> {
         row: WorkRow {
             id: WorkRowId("coordination".to_string()),
             mark: if attention {
-                crate::tui::glyphs::ATTENTION
+                codewhale_tui_kit::glyphs::ATTENTION
             } else {
-                crate::tui::glyphs::DONE
+                codewhale_tui_kit::glyphs::DONE
             },
             label: title.clone(),
             detail: crate::tui::coordination_detail::summary(app.ui_locale, projection),
@@ -2304,15 +2320,16 @@ const fn bucket_tone(bucket: WorkBucket) -> WorkTone {
 
 const fn agent_mark(bucket: WorkBucket) -> &'static str {
     match bucket {
-        WorkBucket::Active => crate::tui::glyphs::SELECTION,
-        WorkBucket::Attention => crate::tui::glyphs::ATTENTION,
-        WorkBucket::Ready => crate::tui::glyphs::READY,
-        WorkBucket::Recent => crate::tui::glyphs::DONE,
+        WorkBucket::Active => codewhale_tui_kit::glyphs::SELECTION,
+        WorkBucket::Attention => codewhale_tui_kit::glyphs::ATTENTION,
+        WorkBucket::Ready => codewhale_tui_kit::glyphs::READY,
+        WorkBucket::Recent => codewhale_tui_kit::glyphs::DONE,
     }
 }
 
 pub(super) fn settled_file_activity(app: &App) -> SettledFileActivity {
     let mut activity = SettledFileActivity {
+        locale: app.ui_locale,
         inline_diff_mode: app.inline_diff_mode,
         ..SettledFileActivity::default()
     };
@@ -2372,7 +2389,8 @@ fn aggregate_activity_row(activity: &SettledFileActivity) -> Option<RankedWorkRo
     if activity.is_empty() {
         return None;
     }
-    let summaries = activity.summary.compact_display();
+    let locale = activity.locale;
+    let summaries = activity.summary.compact_display(locale);
     if summaries.is_empty() {
         return None;
     }
@@ -2384,21 +2402,28 @@ fn aggregate_activity_row(activity: &SettledFileActivity) -> Option<RankedWorkRo
     };
     let mutation_detail = activity.mutations.last().map(|receipt| {
         if activity.inline_diff_mode == InlineDiffMode::Off {
-            receipt.outcome_label()
+            receipt.outcome_label(locale)
         } else {
-            receipt.semantic_summary()
+            receipt.semantic_summary(locale)
         }
     });
-    let mutation_body = settled_mutation_body(&activity.mutations, activity.inline_diff_mode);
+    let mutation_body =
+        settled_mutation_body(&activity.mutations, activity.inline_diff_mode, locale);
     let mut body_parts = Vec::new();
     if !mutation_body.is_empty() {
         body_parts.push(mutation_body);
     }
     for (kind, details) in [
-        ("Read", &activity.read),
-        ("List", &activity.list),
-        ("Search", &activity.search),
-        ("Write", &activity.write),
+        (tr(locale, MessageId::FileActivityReadLabel), &activity.read),
+        (tr(locale, MessageId::FileActivityListLabel), &activity.list),
+        (
+            tr(locale, MessageId::FileActivitySearchLabel),
+            &activity.search,
+        ),
+        (
+            tr(locale, MessageId::FileActivityWriteLabel),
+            &activity.write,
+        ),
     ] {
         if details.is_empty() {
             continue;
@@ -2409,7 +2434,7 @@ fn aggregate_activity_row(activity: &SettledFileActivity) -> Option<RankedWorkRo
         ));
     }
     if body_parts.is_empty() {
-        body_parts.push("No safe target detail retained".to_string());
+        body_parts.push(tr(locale, MessageId::FileActivityNoDetail).into_owned());
     }
     let detail = mutation_detail
         .or_else(|| {
@@ -2418,10 +2443,15 @@ fn aggregate_activity_row(activity: &SettledFileActivity) -> Option<RankedWorkRo
                 .first()
                 .cloned()
                 .or_else(|| activity.read.first().cloned())
-                .or_else(|| activity.search.first().map(|_| "patterns".to_string()))
+                .or_else(|| {
+                    activity
+                        .search
+                        .first()
+                        .map(|_| tr(locale, MessageId::FileActivityPatterns).into_owned())
+                })
                 .or_else(|| activity.list.first().cloned())
         })
-        .unwrap_or_else(|| "settled".to_string());
+        .unwrap_or_else(|| tr(locale, MessageId::FileActivitySettled).into_owned());
     let detail = sanitize_summary_title(&detail);
     Some(RankedWorkRow {
         bucket: WorkBucket::Recent,
@@ -2429,13 +2459,13 @@ fn aggregate_activity_row(activity: &SettledFileActivity) -> Option<RankedWorkRo
         is_plan_step: false,
         row: WorkRow {
             id: WorkRowId("activity:aggregate".to_string()),
-            mark: crate::tui::glyphs::DONE,
+            mark: codewhale_tui_kit::glyphs::DONE,
             label,
             detail,
             tone: WorkTone::Success,
             selectable: true,
             primary_action: Some(SidebarRowAction::InspectWork {
-                title: "Work · file activity".to_string(),
+                title: tr(locale, MessageId::FileActivityDetailTitle).into_owned(),
                 body: body_parts.join("\n\n"),
                 stop_action: None,
             }),
@@ -2452,17 +2482,18 @@ fn activity_rows(activity: SettledFileActivity) -> Vec<RankedWorkRow> {
 pub(super) fn settled_mutation_body(
     receipts: &[FileMutationReceipt],
     mode: InlineDiffMode,
+    locale: Locale,
 ) -> String {
     let Some(receipt) = receipts.last() else {
         return String::new();
     };
     let details = crate::tui::key_shortcuts::tool_details_shortcut_action_hint(
-        "exact change evidence on the matching File receipt",
+        tr(locale, MessageId::FileMutationExactEvidence).as_ref(),
     );
-    let hint = format!("Select the matching File receipt; {details}.");
+    let hint = tr(locale, MessageId::FileMutationSelectReceipt).replace("{hint}", &details);
     match mode {
-        InlineDiffMode::Off => format!("{}\n\n{hint}", receipt.outcome_label()),
-        InlineDiffMode::Summary => format!("{}\n\n{hint}", receipt.semantic_summary()),
+        InlineDiffMode::Off => format!("{}\n\n{hint}", receipt.outcome_label(locale)),
+        InlineDiffMode::Summary => format!("{}\n\n{hint}", receipt.semantic_summary(locale)),
         InlineDiffMode::Full => {
             let diff = receipt
                 .display_diff
@@ -2471,9 +2502,9 @@ pub(super) fn settled_mutation_body(
                 .collect::<Vec<_>>()
                 .join("\n");
             if diff.trim().is_empty() {
-                format!("{}\n\n{hint}", receipt.semantic_summary())
+                format!("{}\n\n{hint}", receipt.semantic_summary(locale))
             } else {
-                format!("{}\n\n{diff}\n\n{hint}", receipt.semantic_summary())
+                format!("{}\n\n{diff}\n\n{hint}", receipt.semantic_summary(locale))
             }
         }
     }
@@ -2694,10 +2725,10 @@ fn shells_section_heading(shells: &[WorkRow]) -> WorkRow {
 
 fn graph_node_row(snapshot: &WorkGraphSnapshot, node: &WorkNode) -> WorkRow {
     let (mark, tone) = match node.state {
-        NodeState::Ready => (crate::tui::glyphs::READY, WorkTone::Muted),
-        NodeState::Initializing => (crate::tui::glyphs::SELECTION, WorkTone::Live),
-        NodeState::Active => (crate::tui::glyphs::SELECTION, WorkTone::Live),
-        NodeState::Waiting => (crate::tui::glyphs::ATTENTION, WorkTone::Attention),
+        NodeState::Ready => (codewhale_tui_kit::glyphs::READY, WorkTone::Muted),
+        NodeState::Initializing => (codewhale_tui_kit::glyphs::SELECTION, WorkTone::Live),
+        NodeState::Active => (codewhale_tui_kit::glyphs::SELECTION, WorkTone::Live),
+        NodeState::Waiting => (codewhale_tui_kit::glyphs::ATTENTION, WorkTone::Attention),
         NodeState::Blocked => (
             status_mark(StatusKind::Attention).glyph,
             WorkTone::Attention,
@@ -2712,7 +2743,7 @@ fn graph_node_row(snapshot: &WorkGraphSnapshot, node: &WorkNode) -> WorkRow {
         NodeState::Verified => (status_mark(StatusKind::Done).glyph, WorkTone::Success),
         NodeState::Stale => ("?", WorkTone::Attention),
         NodeState::Superseded | NodeState::Cancelled => ("−", WorkTone::Muted),
-        NodeState::Failed => (crate::tui::glyphs::FAILED, WorkTone::Failure),
+        NodeState::Failed => (codewhale_tui_kit::glyphs::FAILED, WorkTone::Failure),
     };
     let state = state_label(node);
     let kind = kind_label(node.kind);
@@ -4237,6 +4268,17 @@ mod tests {
             assert!(body.contains(&format!("{action}-11.rs")));
             assert!(!body.contains(&format!("{action}-12.rs")));
         }
+        app.ui_locale = Locale::ZhHans;
+        app.work_surface.file_activity = settled_file_activity(&app);
+        let rows = files_rows(&mut app);
+        assert!(rows.iter().any(|row| row.label == "读取 13"));
+        assert!(rows.iter().any(|row| row.label == "已编辑 13"));
+        let summary = aggregate_activity_row(&app.work_surface.file_activity).unwrap();
+        assert!(
+            summary.row.label.contains("读取了14个文件"),
+            "{}",
+            summary.row.label
+        );
     }
 
     #[test]

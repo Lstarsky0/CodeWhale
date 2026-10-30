@@ -14495,61 +14495,15 @@ fn build_subagent_system_prompt_with_skills(
 /// Every fresh and nested child derives this from its inherited ToolContext;
 /// forked children receive it at system precedence as well.
 fn subagent_skill_catalog(context: &ToolContext) -> String {
-    let mode = context.skills_discovery_mode;
-    let registry = context
-        .skills_dir
-        .as_deref()
-        .map_or_else(
-            || {
-                crate::skills::discover_in_workspace_with_mode_and_plugins(
-                    &context.workspace,
-                    mode,
-                    context.plugin_registry.as_deref(),
-                )
-            },
-            |skills_dir| {
-                crate::skills::discover_for_workspace_and_dir_with_mode_and_plugins(
-                    &context.workspace,
-                    skills_dir,
-                    mode,
-                    context.plugin_registry.as_deref(),
-                )
-            },
-        )
-        .into_enabled();
-    if registry.list().is_empty() {
-        return String::new();
-    }
-    let mut output = String::from(
-        "## Skills\n\nUse `load_skill` with an exact name before applying a Skill. Catalog entries are workspace-scoped snapshots; plugin entries are revalidated at use.\n",
-    );
-    for skill in registry
-        .list()
-        .iter()
-        .filter(|skill| skill.invocation.model_invocable())
-    {
-        let source = match &skill.source {
-            crate::skills::SkillSource::Native => "native workspace catalog".to_string(),
-            crate::skills::SkillSource::Plugin {
-                plugin_id,
-                plugin_name,
-                authority,
-                ..
-            } => format!(
-                "reviewed plugin {plugin_name} id={plugin_id} generation={} content={}",
-                authority.state_generation,
-                &authority.content_hash[..authority.content_hash.len().min(12)]
-            ),
-        };
-        use std::fmt::Write as _;
-        let _ = writeln!(
-            output,
-            "- `{}`: {} ({source})",
-            skill.name,
-            skill.description.replace(['\n', '\r'], " ")
-        );
-    }
-    output
+    codewhale_skills::render_index(
+        &context.workspace,
+        context.skills_dir.as_deref(),
+        &context.skills_config,
+        "en",
+        context.plugin_registry.as_deref(),
+        context.route_context_window,
+    )
+    .unwrap_or_default()
 }
 
 fn subagent_request_system_prompt(subagent_system_prompt: &str) -> SystemPrompt {
@@ -20011,14 +19965,14 @@ fn annotate_child_model_error_with_origin(
         ),
     };
     let lower = err.to_ascii_lowercase();
-    match crate::error_taxonomy::classify_error_message(err) {
-        crate::error_taxonomy::ErrorCategory::Authorization => hint(),
-        crate::error_taxonomy::ErrorCategory::RateLimit
-            if crate::error_taxonomy::is_spent_balance_message(err) =>
+    match codewhale_error_taxonomy::classify_error_message(err) {
+        codewhale_error_taxonomy::ErrorCategory::Authorization => hint(),
+        codewhale_error_taxonomy::ErrorCategory::RateLimit
+            if codewhale_error_taxonomy::is_spent_balance_message(err) =>
         {
             hint()
         }
-        crate::error_taxonomy::ErrorCategory::State if lower.contains("model") => hint(),
+        codewhale_error_taxonomy::ErrorCategory::State if lower.contains("model") => hint(),
         _ => {
             // #3020 (#2653): Provider rejections like "Model Not Exist" or
             // "does not exist or you do not have access" often classify as

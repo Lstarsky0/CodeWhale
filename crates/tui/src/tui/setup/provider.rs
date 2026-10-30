@@ -80,7 +80,7 @@ mod tests {
             ResolvedProviderReadiness::MissingKey,
             ResolvedProviderReadiness::InvalidRoute,
             ResolvedProviderReadiness::SavedLastCheckFailed {
-                category: crate::error_taxonomy::ErrorCategory::Authentication,
+                category: codewhale_error_taxonomy::ErrorCategory::Authentication,
                 message: "fixture rejection".to_string(),
             },
         ] {

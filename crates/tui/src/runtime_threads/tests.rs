@@ -1,7 +1,23 @@
+use super::manager::*;
 use super::*;
+use crate::core::engine::EngineConfig;
 use crate::core::engine::{MockApprovalEvent, mock_engine_handle};
 use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
+use crate::core::ops::{Op, TurnSpec};
+use crate::route_budget::known_route_limits;
+use crate::tools::subagent::SubAgentStatus;
+use codewhale_execpolicy::ApprovalMode;
+use codewhale_models::{SystemPrompt, ToolCaller};
+use codewhale_protocol::agent_mail::{
+    AGENT_MAIL_EVENT_DELIVERED, AGENT_MAIL_EVENT_DELIVERING, AGENT_MAIL_EVENT_QUEUED,
+    AgentMailSendRequest,
+};
 use codewhale_protocol::agent_mail::{AgentMailDeliveryMode, AgentMailSender, AgentMailStatus};
+use codewhale_protocol::runtime::{
+    DynamicToolCallContent, DynamicToolCallParams, DynamicToolCallResult,
+};
+use codewhale_runtime::config::Config;
+use codewhale_runtime::runtime_policy::RuntimePolicyProjection;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::sleep;
@@ -2704,7 +2720,7 @@ fn runtime_compaction_uses_provider_route_context() {
         &Config::default(),
         ProviderKind::OpenaiCodex,
         "gpt-5.5",
-        Some(limits),
+        (Some(limits), None),
         false,
         false,
         80.0,
@@ -10553,7 +10569,7 @@ async fn engine_error_remains_failed_after_nominal_turn_complete() -> Result<()>
                 .await;
             let _ = tx_event
                 .send(EngineEvent::error(
-                    crate::error_taxonomy::ErrorEnvelope::fatal("provider exploded"),
+                    codewhale_error_taxonomy::ErrorEnvelope::fatal("provider exploded"),
                 ))
                 .await;
             let _ = tx_event

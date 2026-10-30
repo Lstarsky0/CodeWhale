@@ -68,10 +68,12 @@ use crate::fleet::task_spec::FleetTaskSpecDocument;
 use crate::fleet::worker_runtime::fleet_write_roots;
 use crate::mcp::McpPool;
 use crate::runtime_threads::{
-    CompactThreadRequest, CreateThreadRequest, ExternalApprovalDecision,
-    MAX_RUNTIME_EVENT_REPLAY_TAIL, RuntimeThreadManager, RuntimeThreadManagerConfig,
-    SharedRuntimeThreadManager, StartTurnRequest, SteerTurnRequest, ThreadDetail, ThreadListFilter,
-    ThreadRecord, TurnRecord, UpdateThreadRequest, UsageGroupBy, UsageTotals,
+    MAX_RUNTIME_EVENT_REPLAY_TAIL, ThreadRecord, TurnRecord, manager::CompactThreadRequest,
+    manager::CreateThreadRequest, manager::ExternalApprovalDecision, manager::RuntimeThreadManager,
+    manager::RuntimeThreadManagerConfig, manager::SharedRuntimeThreadManager,
+    manager::StartTurnRequest, manager::SteerTurnRequest, manager::ThreadDetail,
+    manager::ThreadListFilter, manager::UpdateThreadRequest, manager::UsageGroupBy,
+    manager::UsageTotals,
 };
 use codewhale_config::ProviderKind;
 #[cfg(test)]
@@ -1705,7 +1707,8 @@ pub(crate) fn open_runtime_threads_for_host(
         binding,
     )?);
     if let Some(skills_dir) = config.bundled_skills_install_dir()
-        && let Err(error) = crate::skills::install_system_skills(&skills_dir)
+        && let Err(error) =
+            codewhale_skills::install_system_skills(&skills_dir, &config.skills_config().bundled)
     {
         codewhale_runtime::logging::warn(format!("Failed to install system skills: {error}"));
     }
@@ -3419,7 +3422,7 @@ async fn create_thread(
         )
         .await
         .map_err(|e| {
-            if e.is::<crate::runtime_threads::RuntimeThreadCreateConflict>() {
+            if e.is::<crate::runtime_threads::manager::RuntimeThreadCreateConflict>() {
                 ApiError::conflict(e.to_string())
             } else {
                 ApiError::bad_request(e.to_string())
@@ -3445,7 +3448,7 @@ async fn list_threads(
 /// accounting (#6180). One call, no inference from latest-turn status.
 async fn list_running_threads(
     State(state): State<RuntimeApiState>,
-) -> Result<Json<Vec<crate::runtime_threads::RunningThread>>, ApiError> {
+) -> Result<Json<Vec<crate::runtime_threads::manager::RunningThread>>, ApiError> {
     let running = state
         .runtime_threads
         .running_threads()
@@ -3460,7 +3463,7 @@ async fn list_running_threads(
 async fn list_thread_notices(
     State(state): State<RuntimeApiState>,
     Path(id): Path<String>,
-) -> Result<Json<Vec<crate::runtime_threads::ActiveNotice>>, ApiError> {
+) -> Result<Json<Vec<crate::runtime_threads::manager::ActiveNotice>>, ApiError> {
     state
         .runtime_threads
         .get_thread(&id)
@@ -5337,8 +5340,8 @@ async fn list_commands(
 async fn run_thread_command(
     State(state): State<RuntimeApiState>,
     Path(thread_id): Path<String>,
-    Json(request): Json<crate::runtime_threads::RuntimeCommandRequest>,
-) -> Result<Json<crate::runtime_threads::RuntimeCommandResult>, ApiError> {
+    Json(request): Json<crate::runtime_threads::manager::RuntimeCommandRequest>,
+) -> Result<Json<crate::runtime_threads::manager::RuntimeCommandResult>, ApiError> {
     let operation_key = request.operation_key.clone();
     match state
         .runtime_threads
@@ -5540,11 +5543,11 @@ async fn list_hooks(
 async fn list_skills(
     State(state): State<RuntimeApiState>,
 ) -> Result<Json<SkillsResponse>, ApiError> {
-    let (skills_dir, mode) = {
+    let (skills_dir, skills_config) = {
         let config = state.config.read();
         let skills_dir = resolve_skills_dir(&config, &state.workspace);
-        let mode = crate::skills::SkillDiscoveryMode::from_config(&config.skills_config());
-        (skills_dir, mode)
+        let skills_config = config.skills_config();
+        (skills_dir, skills_config)
     };
     let plugin_registry = state
         .plugin_discovery
@@ -5552,7 +5555,7 @@ async fn list_skills(
     let (registry, directories) = discover_skills_for_runtime_api(
         &state.workspace,
         &skills_dir,
-        mode,
+        &skills_config,
         Some(plugin_registry.as_ref()),
     );
     let mut skill_state = state.skill_state.lock().await;
@@ -5581,11 +5584,11 @@ async fn set_skill_enabled(
     Path(name): Path<String>,
     Json(req): Json<SetSkillEnabledRequest>,
 ) -> Result<Json<SetSkillEnabledResponse>, ApiError> {
-    let (skills_dir, mode) = {
+    let (skills_dir, skills_config) = {
         let config = state.config.read();
         let skills_dir = resolve_skills_dir(&config, &state.workspace);
-        let mode = crate::skills::SkillDiscoveryMode::from_config(&config.skills_config());
-        (skills_dir, mode)
+        let skills_config = config.skills_config();
+        (skills_dir, skills_config)
     };
     let plugin_registry = state
         .plugin_discovery
@@ -5593,7 +5596,7 @@ async fn set_skill_enabled(
     let (registry, directories) = discover_skills_for_runtime_api(
         &state.workspace,
         &skills_dir,
-        mode,
+        &skills_config,
         Some(plugin_registry.as_ref()),
     );
     let exists = registry.list().iter().any(|skill| skill.name == name);
@@ -5634,11 +5637,11 @@ async fn get_skill_detail(
     tokio::task::spawn_blocking(move || {
         #[cfg(test)]
         let _membership = crate::test_support::join_env_scope(env_ticket);
-        let (skills_dir, mode) = {
+        let (skills_dir, skills_config) = {
             let config = state.config.read();
             let skills_dir = resolve_skills_dir(&config, &state.workspace);
-            let mode = crate::skills::SkillDiscoveryMode::from_config(&config.skills_config());
-            (skills_dir, mode)
+            let skills_config = config.skills_config();
+            (skills_dir, skills_config)
         };
         let plugin_registry = state
             .plugin_discovery
@@ -5646,7 +5649,7 @@ async fn get_skill_detail(
         let (registry, directories) = discover_skills_for_runtime_api(
             &state.workspace,
             &skills_dir,
-            mode,
+            &skills_config,
             Some(plugin_registry.as_ref()),
         );
         let Some(skill) = registry.get(&name) else {
@@ -5662,14 +5665,14 @@ async fn get_skill_detail(
         // authority its snapshot was reviewed under. Field derivation itself is
         // `skill_entry_for`'s, shared with the listing.
         match &skill.source {
-            crate::skills::SkillSource::Native if !skill.path.is_file() => {
+            codewhale_skills::SkillSource::Native if !skill.path.is_file() => {
                 return Err(ApiError::not_found(format!(
                     "skill '{}' is registered at {} but that file no longer exists on disk",
                     skill.name,
                     skill.path.display()
                 )));
             }
-            crate::skills::SkillSource::Plugin { authority, .. } => {
+            codewhale_skills::SkillSource::Plugin { authority, .. } => {
                 // The same gate the TUI's own activation path runs: a plugin whose
                 // trust or enablement changed since discovery must not hand its
                 // body to a client.
@@ -5690,7 +5693,7 @@ async fn get_skill_detail(
                     )));
                 }
             }
-            crate::skills::SkillSource::Native => {}
+            codewhale_skills::SkillSource::Native => {}
         }
 
         let mut skill_state = state.skill_state.blocking_lock();
@@ -5710,7 +5713,7 @@ async fn get_skill_detail(
 
 // ─── Skill lifecycle helpers ────────────────────────────────────────────────
 
-/// Build a [`crate::skills::mutation::MutationContext`] from the current
+/// Build a [`codewhale_skills::mutation::MutationContext`] from the current
 /// server state. Reads the network policy and installer settings directly
 /// from the config already held in `state`.
 fn mutation_context_settings(
@@ -5741,11 +5744,11 @@ fn mutation_context_settings(
 
 fn parse_api_scope(
     scope: Option<&str>,
-) -> Result<Option<crate::skills::mutation::SkillTargetScope>, ApiError> {
+) -> Result<Option<codewhale_skills::mutation::SkillTargetScope>, ApiError> {
     match scope {
         None => Ok(None),
-        Some("project") => Ok(Some(crate::skills::mutation::SkillTargetScope::Project)),
-        Some("global") => Ok(Some(crate::skills::mutation::SkillTargetScope::Global)),
+        Some("project") => Ok(Some(codewhale_skills::mutation::SkillTargetScope::Project)),
+        Some("global") => Ok(Some(codewhale_skills::mutation::SkillTargetScope::Global)),
         Some(other) => Err(ApiError::bad_request(format!(
             "invalid scope '{other}'; expected \"project\" or \"global\""
         ))),
@@ -5753,10 +5756,10 @@ fn parse_api_scope(
 }
 
 fn receipt_to_response(
-    receipt: &crate::skills::mutation::SkillMutationReceipt,
+    receipt: &codewhale_skills::mutation::SkillMutationReceipt,
 ) -> SkillMutationReceiptResponse {
-    use crate::skills::mutation::SkillMutationOutcome;
-    use crate::skills::roots::SkillScope;
+    use codewhale_skills::mutation::SkillMutationOutcome;
+    use codewhale_skills::roots::SkillScope;
 
     const TRUST_NOTE: &str = "The .trusted marker is advisory and digest-bound; \
          it records your review intent but does not sandbox or auto-authorize scripts.";
@@ -5793,21 +5796,21 @@ fn receipt_to_response(
     }
 }
 
-fn outcome_is_policy_error(outcome: &crate::skills::mutation::SkillMutationOutcome) -> bool {
+fn outcome_is_policy_error(outcome: &codewhale_skills::mutation::SkillMutationOutcome) -> bool {
     matches!(
         outcome,
-        crate::skills::mutation::SkillMutationOutcome::NeedsApproval(_)
-            | crate::skills::mutation::SkillMutationOutcome::NetworkDenied(_)
+        codewhale_skills::mutation::SkillMutationOutcome::NeedsApproval(_)
+            | codewhale_skills::mutation::SkillMutationOutcome::NetworkDenied(_)
     )
 }
 
-fn policy_error_message(outcome: &crate::skills::mutation::SkillMutationOutcome) -> String {
+fn policy_error_message(outcome: &codewhale_skills::mutation::SkillMutationOutcome) -> String {
     match outcome {
-        crate::skills::mutation::SkillMutationOutcome::NeedsApproval(host) => format!(
+        codewhale_skills::mutation::SkillMutationOutcome::NeedsApproval(host) => format!(
             "network access to '{host}' requires explicit approval; \
              approve the host in your network policy before installing this skill"
         ),
-        crate::skills::mutation::SkillMutationOutcome::NetworkDenied(host) => {
+        codewhale_skills::mutation::SkillMutationOutcome::NetworkDenied(host) => {
             format!("network access to '{host}' was denied by the active network policy")
         }
         _ => "operation denied by policy".to_string(),
@@ -5820,8 +5823,8 @@ async fn install_skill_api(
     State(state): State<RuntimeApiState>,
     Json(req): Json<InstallSkillRequest>,
 ) -> Result<(StatusCode, Json<SkillMutationReceiptResponse>), ApiError> {
-    use crate::skills::mutation::{MutationContext, SkillMutationRequest, SkillTargetScope};
     use codewhale_skill_install::install::InstallSource;
+    use codewhale_skills::mutation::{MutationContext, SkillMutationRequest, SkillTargetScope};
 
     let source = InstallSource::parse(&req.source)
         .map_err(|err| ApiError::bad_request(format!("invalid install source: {err}")))?;
@@ -5832,7 +5835,7 @@ async fn install_skill_api(
     let home = codewhale_paths::user_home();
     let workspace = state.workspace.clone();
 
-    let receipt = crate::skills::mutation::execute(
+    let receipt = codewhale_skills::mutation::execute(
         SkillMutationRequest::InstallRemote { source, target },
         &MutationContext {
             workspace: &workspace,
@@ -5850,7 +5853,7 @@ async fn install_skill_api(
         return Err(ApiError::forbidden(policy_error_message(&receipt.outcome)));
     }
 
-    let status = if receipt.outcome == crate::skills::mutation::SkillMutationOutcome::Installed {
+    let status = if receipt.outcome == codewhale_skills::mutation::SkillMutationOutcome::Installed {
         StatusCode::CREATED
     } else {
         StatusCode::OK
@@ -5865,7 +5868,7 @@ async fn update_skill_api(
     Path(name): Path<String>,
     Json(req): Json<UpdateSkillRequest>,
 ) -> Result<Json<SkillMutationReceiptResponse>, ApiError> {
-    use crate::skills::mutation::{MutationContext, SkillMutationRequest};
+    use codewhale_skills::mutation::{MutationContext, SkillMutationRequest};
 
     let scope = parse_api_scope(req.scope.as_deref())?;
     let (network, max_size, registry_url, configured_skills_dir) =
@@ -5873,7 +5876,7 @@ async fn update_skill_api(
     let home = codewhale_paths::user_home();
     let workspace = state.workspace.clone();
 
-    let receipt = crate::skills::mutation::execute(
+    let receipt = codewhale_skills::mutation::execute(
         SkillMutationRequest::UpdateByName {
             name: name.clone(),
             scope,
@@ -5912,14 +5915,14 @@ async fn uninstall_skill_api(
     Path(name): Path<String>,
     Query(query): Query<UninstallSkillQuery>,
 ) -> Result<Json<SkillMutationReceiptResponse>, ApiError> {
-    use crate::skills::mutation::{MutationContext, SkillMutationRequest};
+    use codewhale_skills::mutation::{MutationContext, SkillMutationRequest};
 
     let scope = parse_api_scope(query.scope.as_deref())?;
     let (network, max_size, registry_url, configured_skills_dir) =
         mutation_context_settings(&state);
     let home = codewhale_paths::user_home();
 
-    let receipt = crate::skills::mutation::execute_sync(
+    let receipt = codewhale_skills::mutation::execute_sync(
         SkillMutationRequest::RemoveByName {
             name: name.clone(),
             scope,
@@ -5953,14 +5956,14 @@ async fn trust_skill_api(
     Path(name): Path<String>,
     Json(req): Json<TrustSkillRequest>,
 ) -> Result<Json<SkillMutationReceiptResponse>, ApiError> {
-    use crate::skills::mutation::{MutationContext, SkillMutationRequest};
+    use codewhale_skills::mutation::{MutationContext, SkillMutationRequest};
 
     let scope = parse_api_scope(req.scope.as_deref())?;
     let (network, max_size, registry_url, configured_skills_dir) =
         mutation_context_settings(&state);
     let home = codewhale_paths::user_home();
 
-    let receipt = crate::skills::mutation::execute_sync(
+    let receipt = codewhale_skills::mutation::execute_sync(
         SkillMutationRequest::TrustByName {
             name: name.clone(),
             scope,
@@ -5994,11 +5997,11 @@ async fn audit_skill_api(
     Path(name): Path<String>,
     Query(query): Query<SkillScopeQuery>,
 ) -> Result<Json<SkillAuditResponse>, ApiError> {
-    use crate::skills::audit::{
+    use codewhale_skills::audit::{
         AuditedSkill, DigestState, IntegrityState, SkillActionKind, SkillAuditMode,
         SkillAuditWarning, SkillSourceKind, TrustState, scan_with_configured,
     };
-    use crate::skills::roots::SkillRootKind;
+    use codewhale_skills::roots::SkillRootKind;
 
     let scope_filter = parse_api_scope(query.scope.as_deref())?;
     let home = codewhale_paths::user_home();
@@ -6024,8 +6027,10 @@ async fn audit_skill_api(
 
     if let Some(scope) = scope_filter {
         let want = match scope {
-            crate::skills::mutation::SkillTargetScope::Project => SkillRootKind::CodeWhaleProject,
-            crate::skills::mutation::SkillTargetScope::Global => SkillRootKind::CodeWhaleGlobal,
+            codewhale_skills::mutation::SkillTargetScope::Project => {
+                SkillRootKind::CodeWhaleProject
+            }
+            codewhale_skills::mutation::SkillTargetScope::Global => SkillRootKind::CodeWhaleGlobal,
         };
         matches.retain(|s| s.root.kind == want);
     }
@@ -8618,7 +8623,7 @@ fn no_restore_point(turn_id: &str, why: &str) -> ApiError {
 /// (`yolo || trust_mode`), evaluated once a real change is known.
 fn patch_undo_workspace_files(
     workspace: &FsPath,
-    dropped_turns: &[crate::runtime_threads::DroppedTurnSnapshots],
+    dropped_turns: &[crate::runtime_threads::manager::DroppedTurnSnapshots],
     trusted: bool,
 ) -> Result<PatchUndoResult, ApiError> {
     // An unreadable workspace directory (unmounted volume, disconnected
@@ -9270,7 +9275,7 @@ async fn get_thread_turn_operation(
     State(state): State<RuntimeApiState>,
     Path((id, operation_key)): Path<(String, String)>,
 ) -> Result<Json<TurnRecord>, ApiError> {
-    use crate::runtime_threads::RuntimeTurnOperationLookupError;
+    use crate::runtime_threads::manager::RuntimeTurnOperationLookupError;
     let turn = state
         .runtime_threads
         .lookup_turn_operation(&id, &operation_key)
@@ -10710,8 +10715,9 @@ fn resolve_skills_dir(config: &Config, workspace: &std::path::Path) -> PathBuf {
         if config.skills_dir.is_some() {
             return config.skills_dir();
         }
-        if let Some(codewhale_skills_dir) = crate::skills::codewhale_workspace_skills_dir(workspace)
-            && crate::skills::skills_dir_allowed_by_workspace_trust(
+        if let Some(codewhale_skills_dir) =
+            codewhale_skills::codewhale_workspace_skills_dir(workspace)
+            && codewhale_skills::skills_dir_allowed_by_workspace_trust(
                 workspace,
                 &codewhale_skills_dir,
             )
@@ -10744,7 +10750,7 @@ fn resolve_skills_dir(config: &Config, workspace: &std::path::Path) -> PathBuf {
         if let Ok(canon) = fs::canonicalize(&candidate)
             && canon.starts_with(&canonical_workspace)
             && canon.is_dir()
-            && crate::skills::skills_dir_allowed_by_workspace_trust(workspace, &canon)
+            && codewhale_skills::skills_dir_allowed_by_workspace_trust(workspace, &canon)
         {
             return canon;
         }
@@ -10754,7 +10760,7 @@ fn resolve_skills_dir(config: &Config, workspace: &std::path::Path) -> PathBuf {
         && let Ok(canonical) = fs::canonicalize(&flat)
         && canonical.starts_with(&canonical_workspace)
         && canonical.is_dir()
-        && crate::skills::skills_dir_allowed_by_workspace_trust(workspace, &canonical)
+        && codewhale_skills::skills_dir_allowed_by_workspace_trust(workspace, &canonical)
     {
         return canonical;
     }
@@ -10764,28 +10770,29 @@ fn resolve_skills_dir(config: &Config, workspace: &std::path::Path) -> PathBuf {
 fn skills_search_directories(
     workspace: &FsPath,
     skills_dir: &FsPath,
-    mode: crate::skills::SkillDiscoveryMode,
+    mode: codewhale_skills::SkillDiscoveryMode,
 ) -> Vec<PathBuf> {
-    crate::skills::skill_directories_for_workspace_and_dir(workspace, skills_dir, mode)
+    codewhale_skills::skill_directories_for_workspace_and_dir(workspace, skills_dir, mode)
 }
 
 fn discover_skills_for_runtime_api(
     workspace: &FsPath,
     skills_dir: &FsPath,
-    mode: crate::skills::SkillDiscoveryMode,
+    config: &codewhale_runtime::config::SkillsConfig,
     plugins: Option<&codewhale_plugins::PluginRegistry>,
-) -> (crate::skills::SkillRegistry, Vec<PathBuf>) {
-    let directories = skills_search_directories(workspace, skills_dir, mode);
-    let registry = crate::skills::discover_from_directories_in_workspace(
-        directories.clone(),
-        Some(workspace),
-        plugins,
+) -> (codewhale_skills::SkillRegistry, Vec<PathBuf>) {
+    let directories = skills_search_directories(
+        workspace,
+        skills_dir,
+        codewhale_skills::SkillDiscoveryMode::from_config(config),
     );
+    let registry =
+        codewhale_skills::discover_for_workspace(workspace, Some(skills_dir), config, plugins);
     (registry, directories)
 }
 
-fn skill_entry_is_bundled(skill: &crate::skills::Skill, skills_dir: &FsPath) -> bool {
-    if !crate::skills::is_bundled_skill_name(&skill.name) {
+fn skill_entry_is_bundled(skill: &codewhale_skills::Skill, skills_dir: &FsPath) -> bool {
+    if !codewhale_skills::is_bundled_skill_name(&skill.name) {
         return false;
     }
 
@@ -10796,16 +10803,20 @@ fn skill_entry_is_bundled(skill: &crate::skills::Skill, skills_dir: &FsPath) -> 
 /// One `/v1/skills` row, and the row half of `GET /v1/skills/{name}`. Both
 /// sites read the same fields from the same `Skill`, so a new routing field
 /// lands in the listing and the detail together or not at all.
-fn skill_entry_for(skill: &crate::skills::Skill, enabled: bool, skills_dir: &FsPath) -> SkillEntry {
+fn skill_entry_for(
+    skill: &codewhale_skills::Skill,
+    enabled: bool,
+    skills_dir: &FsPath,
+) -> SkillEntry {
     let (path, source, plugin_id, plugin_generation, plugin_content_hash) = match &skill.source {
-        crate::skills::SkillSource::Native => (
+        codewhale_skills::SkillSource::Native => (
             Some(skill.path.clone()),
             "native".to_string(),
             None,
             None,
             None,
         ),
-        crate::skills::SkillSource::Plugin {
+        codewhale_skills::SkillSource::Plugin {
             plugin_id,
             plugin_name,
             authority,
@@ -10842,7 +10853,7 @@ fn skill_entry_for(skill: &crate::skills::Skill, enabled: bool, skills_dir: &FsP
         // pre-existing path test (`skills_dir/<name>/SKILL.md`), and this does
         // not change what it means.
         bundled_tier: is_bundled
-            .then(|| crate::skills::bundled_skill_tier(&skill.name))
+            .then(|| codewhale_skills::bundled_skill_tier(&skill.name))
             .flatten()
             .map(|tier| tier.label()),
     }

@@ -1287,11 +1287,11 @@ fn classify_compaction_failure(e: &anyhow::Error) -> CompactionFailureKind {
     if is_context_window_error_message(&text) {
         return CompactionFailureKind::ContextOverflow;
     }
-    let category = crate::error_taxonomy::classify_error_message(&text);
+    let category = codewhale_error_taxonomy::classify_error_message(&text);
     match category {
-        crate::error_taxonomy::ErrorCategory::Network
-        | crate::error_taxonomy::ErrorCategory::RateLimit
-        | crate::error_taxonomy::ErrorCategory::Timeout => CompactionFailureKind::Transient,
+        codewhale_error_taxonomy::ErrorCategory::Network
+        | codewhale_error_taxonomy::ErrorCategory::RateLimit
+        | codewhale_error_taxonomy::ErrorCategory::Timeout => CompactionFailureKind::Transient,
         _ => CompactionFailureKind::Deterministic,
     }
 }
@@ -1340,16 +1340,16 @@ pub fn report_compaction_failure(
             "provider authorization rejected making room — verify account access or switch provider/model"
                 .to_string()
         }
-        _ => match crate::error_taxonomy::classify_error_message(&raw) {
-            crate::error_taxonomy::ErrorCategory::RateLimit => {
+        _ => match codewhale_error_taxonomy::classify_error_message(&raw) {
+            codewhale_error_taxonomy::ErrorCategory::RateLimit => {
                 "provider rate limit blocked making room — retry after the limit resets or switch provider/model"
                     .to_string()
             }
-            crate::error_taxonomy::ErrorCategory::Authentication => {
+            codewhale_error_taxonomy::ErrorCategory::Authentication => {
                 "provider authentication failed — sign in or replace the credential, then retry"
                     .to_string()
             }
-            crate::error_taxonomy::ErrorCategory::Authorization => {
+            codewhale_error_taxonomy::ErrorCategory::Authorization => {
                 "provider authorization rejected making room — verify account access or switch provider/model"
                     .to_string()
             }
@@ -1968,17 +1968,23 @@ async fn create_summary(
         // compaction-only ceiling that can be consumed by hidden reasoning.
         let cost_route = client.effective_route_envelope(&config.model, chrono::Utc::now());
         let ceiling = client.effective_max_output_tokens(&cost_route.model);
-        let summary_floor = crate::route_budget::route_output_reservation(
+        let summary_floor = crate::route_budget::route_output_reservation_with_window(
             cost_route.provider,
             &cost_route.model,
             client.route_limits(),
+            client
+                .effective_context_window(&cost_route.model)
+                .or(config.effective_context_window),
         )
         .min(ceiling)
             / 2;
-        let max_tokens = match crate::route_budget::request_output_cap_for_input(
+        let max_tokens = match crate::route_budget::request_output_cap_for_input_with_window(
             cost_route.provider,
             &cost_route.model,
             client.route_limits(),
+            client
+                .effective_context_window(&cost_route.model)
+                .or(config.effective_context_window),
             ceiling,
             u64::try_from(calibrate_token_estimate(
                 estimate_request_input_tokens(&request_messages, system_prompt, tools),
@@ -2287,8 +2293,8 @@ fn replace_inline_images_for_retry(
 
 fn is_context_window_error(e: &anyhow::Error) -> bool {
     let text = e.to_string();
-    if crate::error_taxonomy::classify_error_message(&text)
-        != crate::error_taxonomy::ErrorCategory::InvalidInput
+    if codewhale_error_taxonomy::classify_error_message(&text)
+        != codewhale_error_taxonomy::ErrorCategory::InvalidInput
     {
         return false;
     }

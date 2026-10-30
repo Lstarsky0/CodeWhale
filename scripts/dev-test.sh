@@ -49,10 +49,12 @@ command-contract  cargo test -p codewhale-command-contract --lib --locked
 commands          cargo test -p codewhale-commands --lib --locked
 config            cargo test -p codewhale-config --lib --locked
 core              cargo test -p codewhale-core --lib --locked
+error-taxonomy    cargo test -p codewhale-error-taxonomy --lib --locked
 execpolicy        cargo test -p codewhale-execpolicy --lib --locked
 hooks             cargo test -p codewhale-hooks --lib --locked
 lane              cargo test -p codewhale-lane --lib --locked
 mcp               cargo test -p codewhale-mcp --lib --locked
+models            cargo test -p codewhale-models --lib --locked
 net               cargo test -p codewhale-net --lib --locked
 notify            cargo test -p codewhale-notify --lib --locked
 paths             cargo test -p codewhale-paths --lib --locked
@@ -67,7 +69,9 @@ state             cargo test -p codewhale-state --lib --locked
 telemetry         cargo test -p codewhale-telemetry --lib --locked
 tools             cargo test -p codewhale-tools --lib --locked
 tui               cargo test -p codewhale-tui --lib --locked
+tui-kit           cargo test -p codewhale-tui-kit --lib --locked
 skill-install     cargo test -p codewhale-skill-install --lib --locked
+skills            cargo test -p codewhale-skills --lib --locked
 plugins           cargo test -p codewhale-plugins --lib --locked
 util              cargo test -p codewhale-util --lib --locked
 dependencies      cargo test -p codewhale-dependencies --lib --locked
@@ -202,10 +206,12 @@ case $area in
   commands) pkg=codewhale-commands ;;
   config) pkg=codewhale-config ;;
   core) pkg=codewhale-core ;;
+  error-taxonomy) pkg=codewhale-error-taxonomy ;;
   execpolicy) pkg=codewhale-execpolicy ;;
   hooks) pkg=codewhale-hooks ;;
   lane) pkg=codewhale-lane ;;
   mcp) pkg=codewhale-mcp ;;
+  models) pkg=codewhale-models ;;
   net) pkg=codewhale-net ;;
   notify) pkg=codewhale-notify ;;
   paths) pkg=codewhale-paths ;;
@@ -220,7 +226,9 @@ case $area in
   telemetry) pkg=codewhale-telemetry ;;
   tools) pkg=codewhale-tools ;;
   tui) pkg=codewhale-tui ;;
+  tui-kit) pkg=codewhale-tui-kit ;;
   skill-install) pkg=codewhale-skill-install ;;
+  skills) pkg=codewhale-skills ;;
   plugins) pkg=codewhale-plugins ;;
   util) pkg=codewhale-util ;;
   dependencies) pkg=codewhale-dependencies ;;

@@ -9,13 +9,12 @@
 
 use crate::tui::app::App;
 use crate::tui::footer_ui::one_line_summary;
+use crate::tui::history::text::{history_cell_to_clipboard_text, history_cell_to_text};
 use crate::tui::history::{HistoryCell, ToolCell, ToolStatus, tool_status_label};
 use crate::tui::pager::{PagerPage, PagerView};
-use crate::tui::ui_text::{
-    history_cell_to_clipboard_text, history_cell_to_text, truncate_line_to_width,
-};
 use codewhale_localization::{MessageId, tr};
 use codewhale_snapshot::SnapshotRepo;
+use codewhale_tui_kit::ui_text::truncate_line_to_width;
 
 fn selected_transcript_cell_index(app: &App) -> Option<usize> {
     if let Some(owner) = app.selection_owner_cell() {
@@ -399,10 +398,18 @@ pub(crate) fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> b
         // model received against the full payload.
         let spillover_section = spillover_pager_section(app, cell_index);
         let mutation_section = match app.cell_at_virtual_index(cell_index) {
-            Some(HistoryCell::Tool(ToolCell::PatchSummary(cell))) => cell
-                .receipt
-                .as_ref()
-                .map(|receipt| format!("── Exact File change ──\n{}", receipt.inspect_text())),
+            Some(HistoryCell::Tool(ToolCell::PatchSummary(cell))) => {
+                cell.receipt.as_ref().map(|receipt| {
+                    format!(
+                        "── {} ──\n{}",
+                        codewhale_localization::tr(
+                            app.ui_locale,
+                            codewhale_localization::MessageId::FileMutationExactHeading
+                        ),
+                        receipt.inspect_text(app.ui_locale)
+                    )
+                })
+            }
             _ => None,
         };
 
@@ -1174,12 +1181,14 @@ fn turn_timeline_lines(app: &App, start: usize, end: usize) -> Vec<String> {
                 let (kind, summary) = timeline_tool_summary(app, idx, tool);
                 let duration = tool_duration_for_activity(tool)
                     .map(codewhale_command_contract::elapsed::format_elapsed_ms);
-                let status = tool.status().map(tool_status_label);
+                let status = tool
+                    .status()
+                    .map(|status| tool_status_label(status, app.ui_locale));
                 let actions = timeline_cell_actions(app, idx, cell);
                 rows.push(timeline_row(
                     kind,
                     &summary,
-                    status,
+                    status.as_deref(),
                     duration.as_deref(),
                     &actions,
                 ));
@@ -1428,7 +1437,7 @@ fn turn_files_changed(app: &App, start: usize, end: usize) -> Vec<String> {
                 lines.push(format!(
                     "• {} — {}",
                     truncate_line_to_width(&patch.path, 60),
-                    tool_status_label(patch.status)
+                    tool_status_label(patch.status, app.ui_locale)
                 ));
             }
             _ => {}
@@ -1497,7 +1506,7 @@ fn turn_verifier_lines(app: &App, start: usize, end: usize) -> Vec<String> {
                 lines.push(format!(
                     "• {} — {}",
                     truncate_line_to_width(&exec.command, 56),
-                    tool_status_label(exec.status)
+                    tool_status_label(exec.status, app.ui_locale)
                 ));
             }
             ToolCell::Review(review) => {
@@ -1507,7 +1516,10 @@ fn turn_verifier_lines(app: &App, start: usize, end: usize) -> Vec<String> {
                 } else {
                     format!("review {target}")
                 };
-                lines.push(format!("• {target} — {}", tool_status_label(review.status)));
+                lines.push(format!(
+                    "• {target} — {}",
+                    tool_status_label(review.status, app.ui_locale)
+                ));
             }
             _ => {}
         }
@@ -1714,7 +1726,7 @@ fn cleaned_turn_text(text: &str, detail: ResultDetail, max_width: usize) -> Stri
     }
 
     let mut cleaned = String::with_capacity(text.len());
-    crate::tui::osc8::strip_ansi_into(text, &mut cleaned);
+    codewhale_tui_kit::osc8::strip_ansi_into(text, &mut cleaned);
     cleaned.trim().to_string()
 }
 

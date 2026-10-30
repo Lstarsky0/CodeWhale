@@ -25,8 +25,8 @@ fn stream_read_scenario() {
         assert!(message.contains("risking duplicated output"));
         assert!(message.contains("Stream read error: error decoding response body"));
         assert_eq!(
-            crate::error_taxonomy::classify_error_message(&message),
-            crate::error_taxonomy::ErrorCategory::Network
+            codewhale_error_taxonomy::classify_error_message(&message),
+            codewhale_error_taxonomy::ErrorCategory::Network
         );
     }
 }
@@ -1135,7 +1135,7 @@ async fn exhausted_transient_error_frame_posts_one_error_envelope() {
     assert_eq!(cards.len(), 1, "one card, after the budget: {cards:?}");
     assert_eq!(
         cards[0].severity,
-        crate::error_taxonomy::ErrorSeverity::Error
+        codewhale_error_taxonomy::ErrorSeverity::Error
     );
     assert!(!cards[0].recoverable);
     assert!(
@@ -1164,8 +1164,8 @@ async fn placeholder_error_frame_is_reported_as_unreadable_and_not_retried() {
     assert_eq!(requests, 1, "an unreadable error is not retryable");
     assert!(events.iter().any(|event| matches!(event,
         Event::Error { envelope, .. }
-            if envelope.category == crate::error_taxonomy::ErrorCategory::Parse
-                && envelope.severity == crate::error_taxonomy::ErrorSeverity::Error
+            if envelope.category == codewhale_error_taxonomy::ErrorCategory::Parse
+                && envelope.severity == codewhale_error_taxonomy::ErrorSeverity::Error
                 && envelope.message.contains("unreadable error")
     )));
     assert!(events.iter().any(|event| matches!(event,
@@ -1258,8 +1258,8 @@ async fn midstream_error_frame_stops_the_stream_and_drops_trailing_deltas() {
         event,
         Event::Error { envelope, .. }
             if envelope.message.contains("Model not exist.")
-                && envelope.category == crate::error_taxonomy::ErrorCategory::InvalidInput
-                && envelope.severity == crate::error_taxonomy::ErrorSeverity::Error
+                && envelope.category == codewhale_error_taxonomy::ErrorCategory::InvalidInput
+                && envelope.severity == codewhale_error_taxonomy::ErrorSeverity::Error
     )));
     // Deltas after the failure frame never reach the UI.
     assert!(

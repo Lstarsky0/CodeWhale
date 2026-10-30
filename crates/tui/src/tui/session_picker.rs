@@ -21,7 +21,6 @@ use crate::session_manager::{
     extract_user_prompt, strip_thinking_tags,
 };
 use crate::session_projection::{MAX_PROJECTED_SESSIONS, SessionQuery, SessionSortMode};
-use crate::tui::menu_style;
 use crate::tui::views::{
     ActionHint, action_footer_lines, render_modal_footer, render_panel_scroll_rail,
     render_underwater_surface,
@@ -30,6 +29,7 @@ use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_models::Role;
 use codewhale_palette as palette;
+use codewhale_tui_kit::menu_style;
 
 fn section_block(title: &str) -> Block<'static> {
     Block::default()
@@ -471,17 +471,17 @@ impl SessionPickerView {
         self.refresh_preview();
     }
 
-    /// Apply one [`list_nav`](crate::tui::list_nav) motion (#6290), returning
+    /// Apply one [`list_nav`](codewhale_tui_kit::list_nav) motion (#6290), returning
     /// whether it was consumed. `Prev`/`Next` wrap (existing behavior);
     /// paging and Home/End clamp — a paging key asks to travel, not to
     /// teleport. The horizontal axis has nowhere to go on this surface.
-    fn apply_motion(&mut self, motion: crate::tui::list_nav::Motion) -> bool {
+    fn apply_motion(&mut self, motion: codewhale_tui_kit::list_nav::Motion) -> bool {
         if self.filtered.is_empty() {
             return false;
         }
         let page = self.list_visible_rows.get().max(1);
         let Some(next) =
-            crate::tui::list_nav::apply(self.selected, self.filtered.len(), page, motion)
+            codewhale_tui_kit::list_nav::apply(self.selected, self.filtered.len(), page, motion)
         else {
             return false;
         };
@@ -1021,10 +1021,10 @@ impl ModalView for SessionPickerView {
         }
         match mouse.kind {
             MouseEventKind::ScrollUp => {
-                self.apply_motion(crate::tui::list_nav::Motion::Prev);
+                self.apply_motion(codewhale_tui_kit::list_nav::Motion::Prev);
             }
             MouseEventKind::ScrollDown => {
-                self.apply_motion(crate::tui::list_nav::Motion::Next);
+                self.apply_motion(codewhale_tui_kit::list_nav::Motion::Next);
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 let clicked = self
@@ -1151,7 +1151,7 @@ impl ModalView for SessionPickerView {
         }
         // Movement keys come from the shared vocabulary (#6290); this match
         // owns only the picker's own verbs.
-        if let Some(motion) = crate::tui::list_nav::motion(&key)
+        if let Some(motion) = codewhale_tui_kit::list_nav::motion(&key)
             && self.apply_motion(motion)
         {
             return ViewAction::None;

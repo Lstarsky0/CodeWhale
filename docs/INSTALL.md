@@ -726,6 +726,9 @@ this VM: only 0.10.0 was built)**.
 ### Clean up old copies
 
 `codewhale doctor` has an **Installations** section, and
+keeps routine path and secret-backend details brief. Use `codewhale doctor --all`
+to show every resolved path and structural secret-backend detail.
+
 `codewhale doctor --installs` prints only that (`--json` for machines,
 `--brief` for nothing on a tidy machine). It lists every `codewhale`, `codew`,
 `codewhale-tui`, `deepseek` and `deepseek-tui` in your `PATH`, `~/.local/bin`,
@@ -1029,7 +1032,7 @@ codewhale auth clear --provider deepseek
 | manual copy elsewhere (§3) | Inspect the exact command paths and provenance before removing them manually; automatic uninstall preserves them. |
 | npm | `npm uninstall -g codewhale` (`codewhale uninstall` prints the `--prefix` for this copy) |
 | Cargo | `cargo uninstall codewhale-cli` (`codewhale uninstall` prints the owning `--root`) |
-| Homebrew | `brew uninstall codewhale && brew untap Hmbown/deepseek-tui` (also removes its node dependency; `codewhale uninstall` prints the owning formula) |
+| Homebrew | `brew uninstall codewhale` (`codewhale uninstall` prints the owning formula; untap only when you no longer use the tap) |
 
 Not sure which one you have? Run `codewhale doctor --installs`: it lists every copy, who owns it and the exact command that removes it, without running or changing anything. `codewhale uninstall` (no `--yes`) shows the same classified list after its own plan.
 
@@ -1039,34 +1042,36 @@ The command runs before configuration, credential migration and telemetry, so ma
 
 Successful self-update renews an existing command receipt, and writes one for a pre-receipt directory whose commands it just installed; it never claims unknown siblings. This command does not remove a remote-setup service or a desktop application.
 
-On Windows, `codewhale uninstall --yes` removes `codewhale.exe`, `codew.exe`, `codewhale.bat`, any receipted compiled-host files and the receipt itself. Windows cannot delete a running program, so the running `codewhale.exe` is renamed in place to a `.codewhale-host-recovery-…` name and deleted by a helper once the command exits; the output names that file in case it remains. `codewhale.old-…` files left by an earlier self-update are listed, not deleted. Archive installs made before this receipt existed are treated as unreceipted (reinstall with the current `install.ps1`, then uninstall). Windows removal has been compile-checked but not yet exercised on a Windows host.
+On Windows, `codewhale uninstall --yes` removes `codewhale.exe`, `codew.exe`, `codewhale.bat`, any receipted compiled-host files and the receipt itself. Windows cannot delete a running program, so the running `codewhale.exe` is renamed in place to a `.codewhale-host-recovery-…` name and deleted by a helper once the command exits; the output names that file in case it remains. `codewhale.old-…` files left by an earlier self-update are listed, not deleted. A known legacy directory can adopt matching command bytes into a receipt. Other unreceipted archive copies are preserved; reinstall with the current `install.ps1` to obtain a receipt before automatic removal. Windows removal has been compile-checked but not yet exercised on a Windows host.
 
 Repeating `uninstall` after removal is safe: the removed copy is gone, and any other copy only removes what its own receipt owns. Reinstalling into the same directory afterwards writes a fresh receipt.
 
-### Step 3: remove data. Program removal never does this.
+### Step 3: remove data. Program removal keeps it by default.
 
-`codewhale uninstall --purge-data` previews deleting `~/.codewhale` (or `$CODEWHALE_HOME`) and `~/.deepseek/snapshots`. Add `--yes` to delete exactly those directories. The purge runs only in the same `--yes` run that removed a receipted installation; a package-managed copy, a plan-only run, or a failed removal keeps all data. It refuses a path that is a symlink, your home directory or one of its parents, or (on Unix) a directory owned by another user. It also refuses an explicit `CODEWHALE_HOME` not named `.codewhale`; delete that one by hand after you review it. It does not search for per-workspace `.codewhale` directories, keyring entries, shell profile lines or completion files. Run `codewhale auth clear --provider <id>` first to remove keyring entries. To remove data by hand instead:
+`codewhale uninstall --purge-data` previews the data removal. Without an explicit
+`CODEWHALE_HOME`, the targets are `~/.codewhale` and the legacy
+`~/.deepseek/snapshots`. With an explicit `CODEWHALE_HOME`, only that directory
+is considered; the legacy snapshots are preserved. A custom target must be named
+`.codewhale` to qualify for automatic purge.
 
-| Path | What it is | Size seen |
-|---|---|---|
-| `~/.codewhale/` | config.toml, **secrets/secrets.json (plaintext keys)**, sessions/, logs/, catalog/ (model list, ~5 MB), skills/, builtin-plugins/, tasks/, automations/, crashes/, audit.log, composer history | 6–7 MB |
-| `~/.deepseek/snapshots/` | v0.10.0 stores its per-turn **copies of your workspaces** here (a legacy path). Contains the contents of every repo you ran it in. | 0.2–0.6 MB here; grows with repo size |
-| `<every repo you used>/.codewhale/` | per-workspace state/lock dir | tiny |
-| completion files | `~/.local/share/bash-completion/completions/codewhale`, `~/.zfunc/_codewhale`, `~/.config/fish/completions/codewhale.fish` | – |
-| PATH lines or Codewhale PATH blocks you added | `~/.bashrc`, `~/.zshrc`, `~/.profile`, `~/.config/fish/conf.d/codewhale.fish` | – |
+The purge requires a successful receipted program removal in the same `--yes`
+run. A package-managed copy, preview or failed removal keeps the data. All targets
+are checked before program removal: symlinks, another user's directory, your home
+or its ancestors, and any target containing the installation are refused.
+Sessions, workspace snapshots and recovery copies in those targets are deleted
+by the purge; review the preview and preserve anything needed before confirming.
 
-```bash
-rm -rf ~/.codewhale ~/.deepseek/snapshots
-rmdir ~/.deepseek 2>/dev/null   # removes the parent only if it is now empty
-# per-repo dirs, e.g.:
-find ~ -type d -name .codewhale -prune -print     # review, then delete the ones you want
-```
+| Retained item | How to review it |
+|---|---|
+| OS keyring entries | Run `codewhale auth clear --provider <id>` before removing the program. |
+| Per-workspace `.codewhale` directories | Inspect the known workspace individually; uninstall does not search or remove them. |
+| Shell PATH lines and completion files | Review the exact paths reported by uninstall; shell profiles are left unchanged. |
+| Other installed command copies | Use `codewhale doctor --installs`; each copy follows its own owner and receipt. |
+| Legacy snapshots with explicit `CODEWHALE_HOME` | Review them separately; explicit-home purge does not include them. |
 
-Codewhale wrote nothing outside `$HOME` and the repos it was used in: no
-system files, services or cron jobs. (I checked every file owned by the test
-users outside their home directories.) The commands above delete only
-`~/.deepseek/snapshots`. If you still use the older DeepSeek-TUI, the rest of
-`~/.deepseek` (its config and sessions) is left alone.
+A reinstall restores the program, not purged sessions or snapshots. Installation,
+remote services and desktop applications have separate ownership; this command
+only removes what its selected command installation owns.
 
 ---
 

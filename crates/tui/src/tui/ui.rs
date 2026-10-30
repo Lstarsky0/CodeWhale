@@ -12,10 +12,10 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
 use anyhow::{Context, Result};
 use codewhale_config::AppMode;
 use codewhale_core::ContextReference;
+use codewhale_error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
 use codewhale_execpolicy::ApprovalMode;
 use codewhale_release::InstallMethod;
 use codewhale_runtime::resource_telemetry::estimate_output_tokens_from_text;
@@ -83,7 +83,6 @@ use crate::tui::command_palette::{
 };
 use crate::tui::composer_ui::*;
 use crate::tui::context_inspector::ContextInspectorView;
-use crate::tui::event_broker::EventBroker;
 use crate::tui::file_picker_relevance;
 use crate::tui::footer_ui::friendly_subagent_progress;
 use crate::tui::format_helpers;
@@ -96,7 +95,6 @@ use crate::tui::notifications;
 use crate::tui::onboarding;
 use crate::tui::pager::PagerView;
 use crate::tui::persistence_actor::{self, PersistRequest};
-use crate::tui::scrolling::TranscriptScroll;
 use crate::turn_route_plan::{PlannedTurnRoute, TurnRoutePlanRequest, plan_turn_route};
 use crate::work_graph::task_owner_snapshot;
 use codewhale_config::ProviderKind;
@@ -112,13 +110,15 @@ use codewhale_runtime::config::{
     persist_external_credential_consent_for_at, revoke_external_credential_consent_for_at,
 };
 use codewhale_runtime::settings::Settings;
+use codewhale_tui_kit::event_broker::EventBroker;
+use codewhale_tui_kit::scrolling::TranscriptScroll;
 // SelectionAutoscroll unused
+use crate::tui::history::text::history_cell_to_text;
 use crate::tui::motion::{FrameRequester, MotionMode};
 use crate::tui::session_picker::SessionPickerView;
 use crate::tui::shell_job_routing::{
     add_shell_job_message, format_shell_job_list, format_shell_poll, open_shell_job_pager,
 };
-use crate::tui::streaming::StreamDisplayClock;
 use crate::tui::streaming_thinking;
 use crate::tui::subagent_routing::{
     apply_subagent_terminal_projection, format_task_list, handle_subagent_mailbox_for_turn,
@@ -133,11 +133,11 @@ use crate::tui::tool_routing::exploring_label;
 use crate::tui::tool_routing::{
     apply_owned_workflow_ui_event, handle_tool_call_complete, handle_tool_call_started,
 };
-use crate::tui::ui_text::history_cell_to_text;
 use crate::tui::user_input::UserInputView;
 use crate::tui::views::subagent_view_agents;
 use crate::tui::vim_mode;
 use crate::tui::workspace_context;
+use codewhale_tui_kit::streaming::StreamDisplayClock;
 
 use crate::reasoning_preference::{EffectiveReasoningEffort, ReasoningEffort};
 
@@ -214,7 +214,7 @@ const TOOL_HANG_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(600);
 // sub-agents running). Drives the footer water-spout animation as well as
 // the per-tool spinner pulse — keep this fast enough that the whale-spout
 // braille pattern reads as continuous motion instead of teleport-frames.
-const UI_STATUS_ANIMATION_MS: u64 = crate::tui::spinner::BRAILLE_SPINNER_FRAME_MS;
+const UI_STATUS_ANIMATION_MS: u64 = codewhale_tui_kit::spinner::BRAILLE_SPINNER_FRAME_MS;
 const UI_QUIET_STATUS_ANIMATION_MS: u64 = 1_000;
 /// Ambient fish, the idle-mark caustic, and the completion wake use a modest
 /// ~12.5fps clock by default. On measured high-Hz displays the adaptive probe
@@ -807,10 +807,12 @@ fn active_turn_has_running_tool(app: &App) -> bool {
 /// with a 240-character preview, and that copy is what `SyncSession` sends
 /// back to the engine.
 fn tool_result_content_for_api_message(app: &App, name: &str, output: &ToolResult) -> String {
-    crate::core::engine::compact_tool_result_for_route(
-        app.api_provider,
-        &app.model,
-        app.active_route_limits,
+    let (provider, model, limits, window) = app.effective_budget_route();
+    crate::core::engine::compact_tool_result_for_route_with_window(
+        provider,
+        model,
+        limits,
+        window.map(|window| window.tokens),
         name,
         output,
     )
@@ -830,6 +832,7 @@ pub(crate) struct UserDispatchOutcome {
     effective_reasoning_effort: EffectiveReasoningEffort,
     auto_selection: Option<crate::model_routing::AutoRouteSelection>,
     route_limits: codewhale_config::route::RouteLimits,
+    context_window: crate::route_runtime::ContextWindowResolution,
 }
 
 /// Tell the operator that an explicit "make this my default" request did not
@@ -1702,27 +1705,27 @@ mod provider_key_validation_tests {
     fn provider_key_check_classifies_transport_failures_truthfully() {
         assert_eq!(
             provider_verification_error_category("connection refused"),
-            crate::error_taxonomy::ErrorCategory::Network
+            codewhale_error_taxonomy::ErrorCategory::Network
         );
         assert_eq!(
             provider_verification_error_category("request timed out"),
-            crate::error_taxonomy::ErrorCategory::Timeout
+            codewhale_error_taxonomy::ErrorCategory::Timeout
         );
         assert_eq!(
             provider_verification_error_category("HTTP 429 rate limit"),
-            crate::error_taxonomy::ErrorCategory::RateLimit
+            codewhale_error_taxonomy::ErrorCategory::RateLimit
         );
         assert_eq!(
             provider_verification_error_category("HTTP 401 unauthorized"),
-            crate::error_taxonomy::ErrorCategory::Authentication
+            codewhale_error_taxonomy::ErrorCategory::Authentication
         );
         assert_eq!(
             provider_verification_error_category("HTTP 403 forbidden"),
-            crate::error_taxonomy::ErrorCategory::Authorization
+            codewhale_error_taxonomy::ErrorCategory::Authorization
         );
         assert_eq!(
             provider_verification_error_category("HTTP 500 upstream failure"),
-            crate::error_taxonomy::ErrorCategory::Network
+            codewhale_error_taxonomy::ErrorCategory::Network
         );
     }
 

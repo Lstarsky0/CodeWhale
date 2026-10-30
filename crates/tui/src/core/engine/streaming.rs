@@ -225,10 +225,10 @@ impl ToolUseState {
 /// configured per-turn tool budget remains authoritative at execution.
 pub(super) const MAX_TOOL_CALLS_PER_RESPONSE: usize = 256;
 
-pub(super) fn tool_call_limit_error() -> crate::error_taxonomy::ErrorEnvelope {
-    crate::error_taxonomy::ErrorEnvelope::new(
-        crate::error_taxonomy::ErrorCategory::InvalidInput,
-        crate::error_taxonomy::ErrorSeverity::Error,
+pub(super) fn tool_call_limit_error() -> codewhale_error_taxonomy::ErrorEnvelope {
+    codewhale_error_taxonomy::ErrorEnvelope::new(
+        codewhale_error_taxonomy::ErrorCategory::InvalidInput,
+        codewhale_error_taxonomy::ErrorSeverity::Error,
         false,
         "response_tool_call_limit",
         format!(

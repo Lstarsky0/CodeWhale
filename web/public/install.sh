@@ -237,9 +237,20 @@ case "$install_dir" in
   /*) ;;
   *) fail "CODEWHALE_INSTALL_DIR must be an absolute path" ;;
 esac
+case "/$install_dir/" in
+  */./*|*/../*) fail "CODEWHALE_INSTALL_DIR must not contain . or .. path components" ;;
+esac
+while [ "$install_dir" != / ] && [ "${install_dir%/}" != "$install_dir" ]; do install_dir="${install_dir%/}"; done
 [ ! -L "$install_dir" ] || fail "install directory is a symlink: $install_dir; choose a fresh user directory"
-(umask 077; mkdir -p "$install_dir") || fail "cannot create $install_dir; choose a writable user directory (no sudo is used)"
-install_dir="$(cd -P "$install_dir" && pwd)"
+preflight_dir="$install_dir"
+install_suffix=""
+while [ ! -d "$preflight_dir" ]; do
+  { [ ! -e "$preflight_dir" ] && [ ! -L "$preflight_dir" ]; } || fail "not a directory: $preflight_dir"
+  install_suffix="/$(basename "$preflight_dir")$install_suffix"
+  preflight_dir="$(dirname "$preflight_dir")"
+done
+preflight_dir="$(cd -P "$preflight_dir" && pwd)"
+install_dir="$preflight_dir$install_suffix"
 case "$install_dir/" in
   /bin/*|/sbin/*|/usr/bin/*|/usr/sbin/*|/nix/store/*|/gnu/store/*|*/node_modules/*|*/Cellar/*|*/.linuxbrew/*|*/linuxbrew/*|*/.cargo/bin/*|/opt/homebrew/bin/*|/usr/local/bin/*|/opt/local/bin/*)
     fail "refusing managed/system directory $install_dir; use a fresh user directory"
@@ -248,15 +259,19 @@ esac
 if [ "$install_dir" = / ] || { [ -n "${HOME:-}" ] && [ "$install_dir" = "$(cd -P "$HOME" 2>/dev/null && pwd)" ]; }; then
   fail "refusing $install_dir; use a fresh directory such as \$HOME/.local/bin"
 fi
-[ -w "$install_dir" ] || fail "$install_dir is not writable; choose a user directory (no sudo is used)"
-if [ -n "$(find "$install_dir" -prune \( -perm -020 -o -perm -002 \) -print)" ]; then
-  fail "$install_dir is writable by its group or others; run chmod go-w '$install_dir' or choose a directory only you can write"
+[ -O "$preflight_dir" ] && [ -w "$preflight_dir" ] || fail "$preflight_dir must be a writable directory owned by you (no sudo is used)"
+if [ -n "$(find "$preflight_dir" -prune \( -perm -020 -o -perm -002 \) -print)" ]; then
+  fail "$preflight_dir is writable by its group or others; run chmod go-w '$preflight_dir' or choose a directory only you can write"
 fi
-for cargo_receipt in "$install_dir/../.crates.toml" "$install_dir/../.crates2.json"; do
+for cargo_receipt in "$(dirname "$install_dir")/.crates.toml" "$(dirname "$install_dir")/.crates2.json"; do
   if [ -e "$cargo_receipt" ] || [ -L "$cargo_receipt" ]; then
     fail "Cargo install metadata beside this directory; use a fresh directory instead"
   fi
 done
+
+(umask 077; mkdir -p "$install_dir") || fail "cannot create $install_dir; choose a writable user directory (no sudo is used)"
+[ ! -L "$install_dir" ] || fail "install directory changed to a symlink: $install_dir"
+install_dir="$(cd -P "$install_dir" && pwd)"
 
 tmpdir="$(mktemp -d 2>/dev/null || mktemp -d -t codewhale-install)"
 trap 'rm -rf "$tmpdir"' EXIT INT TERM

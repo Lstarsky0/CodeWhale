@@ -14,12 +14,12 @@ use tokio_util::sync::CancellationToken;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-use crate::error_taxonomy::ErrorEnvelope;
 use crate::tools::goal::GoalSnapshot;
 use crate::tools::spec::{ToolError, ToolResult};
 use crate::tools::subagent::{AgentWorkerStatus, CoordinationDetailProjection, SubAgentResult};
 use crate::tools::user_input::UserInputRequest;
 use codewhale_config::ProviderKind;
+use codewhale_error_taxonomy::ErrorEnvelope;
 use codewhale_models::{Message, SystemPrompt, Tool, Usage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

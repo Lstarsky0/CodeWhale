@@ -4,8 +4,10 @@
 //! JSON-RPC correlation. Secure cross-process attachment is not yet qualified.
 use crate::core::authority::{SandboxNetworkAccess, sandbox_policy_for_turn};
 #[cfg(test)]
-use crate::runtime_threads::RuntimeThreadManagerConfig;
-use crate::runtime_threads::{CreateThreadRequest, RuntimeThreadManager, UpdateThreadRequest};
+use crate::runtime_threads::manager::RuntimeThreadManagerConfig;
+use crate::runtime_threads::{
+    manager::CreateThreadRequest, manager::RuntimeThreadManager, manager::UpdateThreadRequest,
+};
 use anyhow::{Result, anyhow};
 use codewhale_config::AppMode;
 use codewhale_config::ProviderKind;
@@ -528,7 +530,8 @@ impl AcpServer {
         use codewhale_models::ContentBlock;
         let saved = crate::session_manager::SessionManager::new(self.sessions_dir.clone())?
             .load_session(session_id)?;
-        let secrets = crate::runtime_threads::receipt_secret_values(self.config.clone()).await?;
+        let secrets =
+            crate::runtime_threads::manager::receipt_secret_values(self.config.clone()).await?;
         let mut calls = HashMap::new();
         for message in &saved.messages {
             let kind = match message.role.as_str() {
@@ -612,7 +615,7 @@ impl AcpServer {
                             } else {
                                 "completed"
                             };
-                            let detail = crate::runtime_threads::tool_receipt_detail(
+                            let detail = crate::runtime_threads::manager::tool_receipt_detail(
                                 &call.name, content, &secrets,
                             );
                             write_tool_call_update(
@@ -1601,7 +1604,7 @@ mod tests {
         );
         let rows = manager
             .list_threads(
-                crate::runtime_threads::ThreadListFilter::IncludeArchived,
+                crate::runtime_threads::manager::ThreadListFilter::IncludeArchived,
                 None,
             )
             .await?;
@@ -1615,7 +1618,7 @@ mod tests {
             let ordinary = manager
                 .start_turn(
                     &rows[0].id,
-                    crate::runtime_threads::StartTurnRequest {
+                    crate::runtime_threads::manager::StartTurnRequest {
                         prompt: "ordinary successor".into(),
                         ..Default::default()
                     },
@@ -2509,7 +2512,7 @@ mod tests {
                 .runtime
                 .start_turn(
                     &thread,
-                    crate::runtime_threads::StartTurnRequest {
+                    crate::runtime_threads::manager::StartTurnRequest {
                         prompt: "ordinary after cancelled ACP".into(),
                         ..Default::default()
                     },
@@ -2581,7 +2584,7 @@ mod tests {
         )?;
         let session = rig.new_session().await;
         let thread = rig.server.sessions[&session].thread_id.clone();
-        let request = crate::runtime_threads::StartTurnRequest {
+        let request = crate::runtime_threads::manager::StartTurnRequest {
             prompt: "same semantic request".into(),
             operation_key: Some("acp-operation".into()),
             ..Default::default()
@@ -2618,7 +2621,7 @@ mod tests {
         );
         rig.mock
             .push_turn(canned::simple_text_turn("ordinary initial"));
-        let ordinary_request = crate::runtime_threads::StartTurnRequest {
+        let ordinary_request = crate::runtime_threads::manager::StartTurnRequest {
             operation_key: Some("ordinary-operation".into()),
             ..request
         };
@@ -2928,7 +2931,7 @@ mod tests {
             .server
             .runtime
             .list_threads(
-                crate::runtime_threads::ThreadListFilter::IncludeArchived,
+                crate::runtime_threads::manager::ThreadListFilter::IncludeArchived,
                 None,
             )
             .await?
@@ -2943,7 +2946,7 @@ mod tests {
             rig.server
                 .runtime
                 .list_threads(
-                    crate::runtime_threads::ThreadListFilter::IncludeArchived,
+                    crate::runtime_threads::manager::ThreadListFilter::IncludeArchived,
                     None
                 )
                 .await?
@@ -3046,7 +3049,7 @@ mod tests {
                 .runtime
                 .start_turn(
                     &thread,
-                    crate::runtime_threads::StartTurnRequest {
+                    crate::runtime_threads::manager::StartTurnRequest {
                         prompt: "ordinary after step stop".into(),
                         ..Default::default()
                     },
@@ -3133,7 +3136,7 @@ mod tests {
             rig.server
                 .runtime
                 .list_threads(
-                    crate::runtime_threads::ThreadListFilter::IncludeArchived,
+                    crate::runtime_threads::manager::ThreadListFilter::IncludeArchived,
                     None,
                 )
                 .await?

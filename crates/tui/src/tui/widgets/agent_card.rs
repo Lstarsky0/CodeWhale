@@ -21,10 +21,10 @@ use ratatui::text::{Line, Span};
 use crate::todo_snapshot::{TodoCardProjection, card_omission_line, card_todo_projection};
 use crate::tools::subagent::MailboxMessage;
 use crate::tools::todo::TodoListSnapshot;
-use crate::tui::ui_text::truncate_line_to_width;
 use crate::tui::widgets::tool_card::{ToolFamily, family_glyph};
 use codewhale_agent_contract::role::public_role_label;
 use codewhale_palette as palette;
+use codewhale_tui_kit::ui_text::truncate_line_to_width;
 use unicode_width::UnicodeWidthStr;
 
 /// Maximum number of recent actions kept on a `DelegateCard`. Older entries

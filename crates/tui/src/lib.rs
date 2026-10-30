@@ -39,12 +39,12 @@ mod cost_status;
 pub mod delivery_files;
 mod doctor;
 mod doctor_fix;
-mod error_taxonomy;
 mod eval;
 mod extension_host;
 mod fleet;
 mod git_status;
 mod keybinding_table;
+mod llm_error_envelope;
 mod usage_persistence;
 use crate::fleet::executor::exec_stream_final_answer_excerpt;
 mod hooks;
@@ -92,7 +92,6 @@ mod route_runtime;
 mod runtime_api;
 mod runtime_chat_relay;
 mod runtime_handoff;
-mod runtime_log;
 mod runtime_threads;
 #[cfg(test)]
 mod sandbox_stay_tests;
@@ -113,7 +112,6 @@ mod session_projection;
 mod session_reconcile;
 mod session_resume;
 mod session_secret_scrub;
-mod skills;
 mod superfast;
 mod task_manager;
 mod telemetry_notice;
@@ -132,7 +130,6 @@ mod vision;
 mod voice;
 pub mod whats_new;
 mod work_graph;
-mod working_set;
 mod workspace_lease;
 mod workspace_trust;
 
@@ -1311,6 +1308,9 @@ struct DoctorArgs {
         conflicts_with_all = ["json", "context_json", "fix", "installs", "repair_sessions"]
     )]
     restore: Option<String>,
+    /// Show every resolved path, the search provider and secret-backend details
+    #[arg(long, default_value_t = false, conflicts_with_all = ["json", "context_json"])]
+    all: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -1937,7 +1937,7 @@ pub fn run(options: RuntimeOptions, args: Vec<String>) -> std::process::ExitCode
 /// args instead of reading `std::env::args()`. Startup facts are captured by
 /// the canonical CLI and applied before config/discovery or worker startup.
 fn run_with_args(options: RuntimeOptions, args: Vec<String>) -> Result<()> {
-    crate::extension_host::composition_review::install();
+    crate::extension_host::install_ports();
     let inherited_listener = prepare_runtime_listener_handoff()?;
     let args: Vec<String> = std::iter::once("codewhale".to_string())
         .chain(args)
@@ -2611,6 +2611,7 @@ async fn run_async_main_dispatch(
                         effective_config_profile(&cli).as_deref(),
                         probes,
                         plugin_registry.as_ref(),
+                        args.all,
                     )
                     .await;
                     if args.fix {
@@ -2847,7 +2848,8 @@ async fn run_async_main_dispatch(
                     if !explicit_route_override
                         && !fleet_route_applied
                         && let Some(tag) =
-                            crate::local_ollama::adopt_live_local_ollama_for_run(&mut config).await
+                            crate::local_ollama::adopt_live_local_ollama_for_run(&mut config, false)
+                                .await
                     {
                         eprintln!(
                             "codewhale exec: no cloud API key, so this run uses local Ollama {tag}; nothing was saved."
@@ -3025,9 +3027,8 @@ async fn run_async_main_dispatch(
                 if args.mcp {
                     let config = load_structural_config_from_cli(&cli)?;
                     let skills_dir = config.skills_dir();
-                    let skills_mode =
-                        skills::SkillDiscoveryMode::from_config(&config.skills_config());
-                    mcp_server::run_mcp_server(workspace, skills_dir, skills_mode).await
+                    let skills_config = std::sync::Arc::new(config.skills_config());
+                    mcp_server::run_mcp_server(workspace, skills_dir, skills_config).await
                 } else if http_selected {
                     let (mut config, config_profile) =
                         load_config_from_cli_with_effective_profile(&cli)?;
@@ -3764,7 +3765,7 @@ async fn run_fleet_command(workspace: &Path, config: &Config, args: FleetArgs) -
             // re-arm mouse reporting in the caller's shell and leave it
             // executing escape fragments after this command exits.
             let mut safe_preview = String::with_capacity(preview.len());
-            crate::tui::osc8::strip_ansi_into(&preview, &mut safe_preview);
+            codewhale_tui_kit::osc8::strip_ansi_into(&preview, &mut safe_preview);
             print!("{safe_preview}");
             if contents.chars().count() > preview.chars().count() {
                 println!("\n[truncated]");
@@ -4727,7 +4728,7 @@ fn skills_count_for(dir: &Path) -> usize {
     if !dir.exists() {
         return 0;
     }
-    crate::skills::SkillRegistry::discover(dir).len()
+    codewhale_skills::SkillRegistry::discover(dir).len()
 }
 
 fn run_setup_status(
@@ -5018,6 +5019,7 @@ async fn run_doctor(
     profile: Option<&str>,
     probes: crate::doctor::DoctorProbeRequest,
     plugins: &codewhale_plugins::PluginRegistry,
+    all: bool,
 ) {
     use codewhale_palette as palette;
     use colored::Colorize;
@@ -5036,7 +5038,7 @@ async fn run_doctor(
     println!("{}", "==================".truecolor(sky_r, sky_g, sky_b));
     let local_route = if probes.probe_local {
         let mut local = config.clone();
-        crate::local_ollama::adopt_live_local_ollama_for_run(&mut local)
+        crate::local_ollama::adopt_live_local_ollama_for_run(&mut local, true)
             .await
             .map(|tag| (local, tag))
     } else {
@@ -5188,15 +5190,22 @@ async fn run_doctor(
 
     println!();
     println!("{}", "Resolved User Paths (read-only):".bold());
-    for (label, path) in doctor_paths.entries() {
+    let entries = doctor_paths.entries();
+    let shown = if all { entries.len() } else { 5 };
+    for (label, path) in entries.iter().take(shown) {
         println!("  · {label}: {}", codewhale_util::utils::display_path(path));
     }
 
     let secret_backend = codewhale_secrets::diagnose_secret_backend();
     println!();
     println!("{}", "Secret Backend (structural only):".bold());
-    for line in crate::doctor::secret_backend_human_lines(&secret_backend) {
+    let backend_lines = crate::doctor::secret_backend_human_lines(&secret_backend);
+    let shown = if all { backend_lines.len() } else { 1 };
+    for line in backend_lines.iter().take(shown) {
         println!("  · {line}");
+    }
+    if !all {
+        println!("  · `codewhale doctor --all` shows every path and backend detail");
     }
 
     println!();
@@ -5697,9 +5706,35 @@ async fn run_doctor(
     println!();
     println!("{}", "Skills:".bold());
     let global_skills_dir = config.skills_dir();
+    let skills_config = config.skills_config();
+    let skill_registry = codewhale_skills::discover_for_workspace(
+        workspace,
+        Some(&global_skills_dir),
+        &skills_config,
+        None,
+    );
+    if let Some(status) = codewhale_skills::bundled_skills_status(&skills_config, &skill_registry) {
+        println!("  {}", status.summary());
+        if !status.unknown.is_empty() {
+            println!("  ⚠ Unknown bundled names: {}", status.unknown.join(", "));
+        }
+        if !status.ignored.is_empty() {
+            println!(
+                "  ⚠ Ignored explicit_only entries: {}",
+                status.ignored.join(", ")
+            );
+        }
+        if !status.selected_missing.is_empty() {
+            println!(
+                "  Selected but not installed: {}",
+                status.selected_missing.join(", ")
+            );
+        }
+    }
+
     let agents_skills_dir = workspace.join(".agents").join("skills");
     let local_skills_dir = workspace.join("skills");
-    let agents_global_skills_dir = crate::skills::agents_global_skills_dir();
+    let agents_global_skills_dir = codewhale_skills::agents_global_skills_dir();
     // #432: cross-tool skill discovery dirs. Presence is reported here
     // even though they sit lower in the precedence chain so users can
     // see at a glance whether a `.opencode/skills/`, `.claude/skills/`,
@@ -5803,13 +5838,16 @@ async fn run_doctor(
         "·".dimmed(),
         codewhale_util::utils::display_path(&selected_skills_dir)
     );
-    let unrecognized_system_skills = crate::skills::unrecognized_system_skills(&global_skills_dir);
+    let unrecognized_system_skills = codewhale_runtime::config::owned_skills_dir()
+        .map(|dir| {
+            codewhale_skills::unrecognized_system_skills(&dir, &config.skills_config().bundled)
+        })
+        .unwrap_or_default();
     if !unrecognized_system_skills.is_empty() {
         println!(
-            "  {} {} bundled skill(s) in {} are customized or from an unknown generation and are never refreshed: {}",
+            "  {} {} bundled skill(s) in the owned global root are customized or from an unknown generation and are never refreshed: {}",
             "!".truecolor(sky_r, sky_g, sky_b),
             unrecognized_system_skills.len(),
-            codewhale_util::utils::display_path(&global_skills_dir),
             unrecognized_system_skills.join(", ")
         );
     }
@@ -8265,7 +8303,7 @@ fn run_doctor_json(
     let global_skills_dir = config.skills_dir();
     let agents_skills_dir = workspace.join(".agents").join("skills");
     let local_skills_dir = workspace.join("skills");
-    let agents_global_skills_dir = crate::skills::agents_global_skills_dir();
+    let agents_global_skills_dir = codewhale_skills::agents_global_skills_dir();
     // #432: cross-tool skill discovery dirs surface in the JSON
     // report so external dashboards can see whether any
     // `.opencode/skills/`, `.claude/skills/`, `.cursor/skills/`, or
@@ -8376,8 +8414,9 @@ fn run_doctor_json(
         "memory": memory_summary,
         "mcp": mcp_summary,
         "skills": {
+            "bundled": codewhale_skills::bundled_skills_status(&config.skills_config(), &codewhale_skills::discover_for_workspace(workspace, Some(&selected_skills_dir), &config.skills_config(), None)),
             "selected": selected_skills_dir.display().to_string(),
-            "unrecognized_system_skills": crate::skills::unrecognized_system_skills(&global_skills_dir),
+            "unrecognized_system_skills": codewhale_runtime::config::owned_skills_dir().map(|dir| codewhale_skills::unrecognized_system_skills(&dir, &config.skills_config().bundled)).unwrap_or_default(),
             "global": {
                 "path": global_skills_dir.display().to_string(),
                 "present": global_skills_dir.exists(),
@@ -9340,7 +9379,7 @@ async fn print_doctor_stored_secrets_report(config_path: Option<PathBuf>, profil
 
     let scan = tokio::task::spawn_blocking(move || -> Result<_> {
         let sessions_dir = codewhale_config::resolve_state_dir("sessions")?;
-        let runtime = runtime_threads::RuntimeThreadManagerConfig::from_task_data_dir(
+        let runtime = runtime_threads::manager::RuntimeThreadManagerConfig::from_task_data_dir(
             task_manager::default_tasks_dir(),
         );
         let mut unreadable = Vec::new();
@@ -9423,7 +9462,7 @@ fn run_sessions_scrub_secrets_blocking(
     profile: Option<&str>,
 ) -> Result<()> {
     let manager = session_manager::SessionManager::default_location()?;
-    let runtime = runtime_threads::RuntimeThreadManagerConfig::from_task_data_dir(
+    let runtime = runtime_threads::manager::RuntimeThreadManagerConfig::from_task_data_dir(
         task_manager::default_tasks_dir(),
     );
     let mut unreadable = Vec::new();
@@ -9732,7 +9771,7 @@ fn install_extension_host_boot_config(config: &Config) {
         .features()
         .enabled(codewhale_runtime::features::Feature::ExtensionHost);
     codewhale_plugins::activation::install_extension_host_policy(enabled);
-    crate::extension_host::composition_review::install();
+    crate::extension_host::install_ports();
     // Builtin MCP uses the configured runtime without enabling Native plugins.
     // Configuration is lazy: it does not start an unused host.
     crate::extension_host::configure_with_handle(
@@ -10110,11 +10149,13 @@ async fn prepare_mounted_session(
     plugins: Arc<codewhale_plugins::PluginRegistry>,
 ) -> Result<(PreparedInteractiveConfig, String)> {
     use crate::runtime_api::thread_history::{
-        history_owner_work, lookup_thread_history_operation_in_runtime,
-        mutate_thread_history_in_runtime, recover_thread_history_operation_in_runtime,
-        saved_document_digest, session_goal_digest,
+        lookup_thread_history_operation_in_runtime, mutate_thread_history_in_runtime,
+        recover_thread_history_operation_in_runtime, session_goal_digest,
     };
-    use crate::runtime_threads::{RuntimeThreadManager, RuntimeThreadManagerConfig};
+    use crate::runtime_threads::manager::history::{history_owner_work, saved_document_digest};
+    use crate::runtime_threads::{
+        manager::RuntimeThreadManager, manager::RuntimeThreadManagerConfig,
+    };
     use codewhale_protocol::{
         CanonicalHistoryOptions, CanonicalHistorySource, CanonicalThreadMutation,
         CanonicalThreadMutationRequest, CanonicalThreadOperationKind,
@@ -13794,7 +13835,8 @@ async fn run_interactive_prepared(
     // Errors are non-fatal: log a warning and continue.
     let skills_dir = config.skills_dir();
     if let Some(install_dir) = config.bundled_skills_install_dir()
-        && let Err(e) = crate::skills::install_system_skills(&install_dir)
+        && let Err(e) =
+            codewhale_skills::install_system_skills(&install_dir, &config.skills_config().bundled)
     {
         logging::warn(format!("Failed to install system skills: {e}"));
     }
@@ -14426,7 +14468,7 @@ fn exec_failure_exit_code(error_category: Option<&str>) -> i32 {
 /// visibility, but the terminal `TurnComplete` event carries the
 /// authoritative turn outcome — a warning must never fail a run whose turn
 /// later completes.
-fn exec_error_event_is_fatal(envelope: &crate::error_taxonomy::ErrorEnvelope) -> bool {
+fn exec_error_event_is_fatal(envelope: &codewhale_error_taxonomy::ErrorEnvelope) -> bool {
     !envelope.recoverable
 }
 
@@ -14792,7 +14834,7 @@ async fn build_direct_workflow_tool(
     .with_features(config.features())
     .with_skills_config(
         config.skills_dir(),
-        crate::skills::SkillDiscoveryMode::from_config(&config.skills_config()),
+        std::sync::Arc::new(config.skills_config()),
     )
     .with_plugin_registry(std::sync::Arc::clone(&plugin_registry))
     .with_shell_policy(shell_policy)
@@ -17565,7 +17607,8 @@ mod interactive_startup_tests {
 mod mounted_history_tests {
     use super::*;
     use crate::runtime_threads::{
-        RuntimeThreadManager, RuntimeThreadManagerConfig, ThreadListFilter,
+        manager::RuntimeThreadManager, manager::RuntimeThreadManagerConfig,
+        manager::ThreadListFilter,
     };
     use crate::session_manager::{SavedSession, SessionGoalState, SessionWorkState};
     use crate::test_support::{EnvVarGuard, lock_test_env};
@@ -18259,7 +18302,7 @@ mod mounted_history_tests {
     #[tokio::test]
     async fn mounted_retained_pending_resume_finishes_published_source_once_without_reconstructing_intent()
     -> Result<()> {
-        use crate::runtime_api::thread_history::saved_document_digest;
+        use crate::runtime_threads::manager::history::saved_document_digest;
         let _env = lock_test_env();
         let _runtime_override = EnvVarGuard::remove("CODEWHALE_RUNTIME_DIR");
         let _legacy_runtime_override = EnvVarGuard::remove("DEEPSEEK_RUNTIME_DIR");

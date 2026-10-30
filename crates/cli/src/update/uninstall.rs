@@ -411,7 +411,7 @@ fn report_path_blocks(directory: &Path) {
     let ours = |line: &str| {
         line.strip_prefix("export PATH=\"")
             .and_then(|rest| rest.strip_suffix(":$PATH\""))
-            .is_some_and(|value| names_directory(value))
+            .is_some_and(names_directory)
             || line
                 .strip_prefix("contains -- \"")
                 .and_then(|rest| rest.split_once("\" $PATH; or set -gx PATH \""))
@@ -479,9 +479,9 @@ fn report_path_blocks(directory: &Path) {
     }
 }
 
-fn curl_install_entries(
-    identity: &UpdateExecutableIdentity,
-) -> Result<Option<(PathBuf, Vec<(String, String)>)>> {
+type CurlInstallEntries = (PathBuf, Vec<(String, String)>);
+
+fn curl_install_entries(identity: &UpdateExecutableIdentity) -> Result<Option<CurlInstallEntries>> {
     let Some(directory) = identity
         .path
         .parent()

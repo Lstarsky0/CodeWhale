@@ -3,7 +3,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use serde::{Deserialize, Serialize};
+use codewhale_skills::NativeSkillRef;
 
 use super::ManagerShared;
 use super::protocol::{RegisterParams, RegisterResult};
@@ -19,21 +19,6 @@ pub const MAX_ROOTS_PER_OWNER: usize = 8;
 pub const MAX_ROOTS_PER_HOST: usize = 64;
 pub const MAX_SKILLS_PER_HOST: usize = 1024;
 pub const MAX_BYTES_PER_HOST: usize = 32 * 1024 * 1024;
-
-/// Public receipt reuses the existing process and host/owner lifetimes. The
-/// host-only owner token never enters prompts or persisted queued messages.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NativeSkillRef {
-    pub boot_id: String,
-    pub host_generation: u64,
-    pub owner_generation: u64,
-    pub handle: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub selection: Option<codewhale_plugins::composition_scope::SelectionRevision>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scope: Option<codewhale_config::EntryRef>,
-}
 
 #[derive(Debug, Clone)]
 pub struct SkillRootRegistration {
@@ -342,10 +327,10 @@ mod tests {
     use crate::extension_host::protocol::{RegisterKind, RegisterSpecWire};
     use crate::extension_host::registry::OwnerRegistry;
     use crate::extension_host::tests::{FixturePlugins, fake_authority, node_for_tests};
-    use crate::skills::{SkillDiscoveryMode, SkillProvenance};
     use crate::tools::spec::{ToolContext, ToolSpec};
     use codewhale_plugins::activation::TestPolicyGuard;
     use codewhale_skill_install::skill_parse::SkillInvocation;
+    use codewhale_skills::{SkillDiscoveryMode, SkillProvenance};
     use std::collections::HashMap;
 
     fn params(owner: &OwnerRef, path: &str) -> RegisterParams {
@@ -632,6 +617,7 @@ mod tests {
 
     #[test]
     fn queued_skill_provenance_preserves_legacy_receipts_and_rejects_process_restart() {
+        super::super::install_ports();
         let authority = fake_authority("a");
         let legacy = serde_json::to_string(&authority).unwrap();
         let parsed: SkillProvenance = serde_json::from_str(&legacy).unwrap();
@@ -649,7 +635,7 @@ mod tests {
                 .unwrap_err()
                 .contains("managed policy source")
         );
-        let provenance = SkillProvenance::NativeRoot(crate::skills::NativeSkillProvenance {
+        let provenance = SkillProvenance::NativeRoot(codewhale_skills::NativeSkillProvenance {
             authority: authority.clone(),
             registration: NativeSkillRef {
                 selection: None,
@@ -794,7 +780,7 @@ mod tests {
             Path::new("skills"),
         )
         .unwrap();
-        let baseline = crate::skills::SkillRegistry::discover(&skill_root);
+        let baseline = codewhale_skills::SkillRegistry::discover(&skill_root);
         let projection = |snapshots: &[PluginSkillSnapshot]| {
             snapshots
                 .iter()
@@ -837,7 +823,7 @@ mod tests {
         engine.sync().await.unwrap();
         let plugins = engine.plugin_view();
         let skills_dir = fixture.workspace().join("empty-skills");
-        let catalog = crate::skills::discover_for_workspace_and_dir_with_mode_and_plugins(
+        let catalog = codewhale_skills::discover_for_workspace_and_dir_with_mode_and_plugins(
             fixture.workspace(),
             &skills_dir,
             SkillDiscoveryMode::CodeWhaleOnly,
@@ -851,7 +837,7 @@ mod tests {
         provenance
             .verify_for(fixture.workspace(), Some(&plugins))
             .unwrap();
-        let block = crate::skills::render_available_skills_context_for_workspace_and_dir_with_mode_and_plugins(fixture.workspace(), &skills_dir, SkillDiscoveryMode::CodeWhaleOnly, "en", Some(&plugins), 8192).unwrap();
+        let block = codewhale_skills::render_available_skills_context_for_workspace_and_dir_with_mode_and_plugins(fixture.workspace(), &skills_dir, SkillDiscoveryMode::CodeWhaleOnly, "en", Some(&plugins), codewhale_skills::SkillListingConfig::default(), 8192).unwrap();
         assert!(block.contains("skills-root:quick-check"));
         let context =
             ToolContext::new(fixture.workspace()).with_plugin_registry(Arc::clone(&plugins));
@@ -885,7 +871,7 @@ mod tests {
                 .verify_for(fixture.workspace(), Some(&plugins))
                 .is_err()
         );
-        let empty = crate::skills::discover_for_workspace_and_dir_with_mode_and_plugins(
+        let empty = codewhale_skills::discover_for_workspace_and_dir_with_mode_and_plugins(
             fixture.workspace(),
             &skills_dir,
             SkillDiscoveryMode::CodeWhaleOnly,
@@ -914,7 +900,7 @@ mod tests {
         let engine = manager.attach(Arc::clone(&plugins));
         engine.sync().await.unwrap();
         let plugins = engine.plugin_view();
-        let catalog = crate::skills::discover_in_workspace_with_mode_and_plugins(
+        let catalog = codewhale_skills::discover_in_workspace_with_mode_and_plugins(
             fixture.workspace(),
             SkillDiscoveryMode::CodeWhaleOnly,
             Some(&plugins),
@@ -962,7 +948,7 @@ mod tests {
                 .is_err(),
             "restart must not revive old handles"
         );
-        let current = crate::skills::discover_in_workspace_with_mode_and_plugins(
+        let current = codewhale_skills::discover_in_workspace_with_mode_and_plugins(
             fixture.workspace(),
             SkillDiscoveryMode::CodeWhaleOnly,
             Some(&plugins),

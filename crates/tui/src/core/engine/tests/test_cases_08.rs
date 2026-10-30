@@ -58,7 +58,7 @@ async fn max_steps_exhaustion_fails_as_budget_never_completed() {
     // The terminal error reduces to BudgetExhausted for machine consumers —
     // this is the same reduction the headless exec receipt applies, and it is
     // what gates persistent-service release on Completed-only turns.
-    let category = crate::error_taxonomy::classify_error_message(&error);
+    let category = codewhale_error_taxonomy::classify_error_message(&error);
     assert_eq!(category, ErrorCategory::Budget);
     assert_eq!(
         crate::core::termination::classify_turn_termination(status, Some(category), false, false),

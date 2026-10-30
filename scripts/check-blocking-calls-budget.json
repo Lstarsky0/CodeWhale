@@ -23,8 +23,8 @@
     "thread_sleep": 1
   },
   "crates/cli/src/update/uninstall.rs": {
-    "path_canonicalize": 5,
-    "std_fs": 5
+    "path_canonicalize": 8,
+    "std_fs": 6
   },
   "crates/cloud-facts/src/lib.rs": {
     "std_fs": 1
@@ -341,8 +341,11 @@
     "thread_sleep": 1
   },
   "crates/tui/src/runtime_threads.rs": {
-    "path_canonicalize": 6,
+    "path_canonicalize": 2,
     "thread_sleep": 2
+  },
+  "crates/tui/src/runtime_threads/manager.rs": {
+    "path_canonicalize": 3
   },
   "crates/tui/src/session_export.rs": {
     "path_canonicalize": 1
@@ -511,7 +514,7 @@
   "crates/tui/src/voice.rs": {
     "std_fs": 3
   },
-  "crates/tui/src/working_set.rs": {
+  "crates/runtime/src/working_set.rs": {
     "path_canonicalize": 1,
     "std_fs": 1
   },

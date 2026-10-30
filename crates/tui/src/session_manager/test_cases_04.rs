@@ -311,3 +311,38 @@
             );
         }
     }
+
+    #[test]
+    fn whitespace_home_override_is_consistent_across_tui_state_entry_points() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempfile::TempDir::new().expect("temporary root");
+        let home = tmp.path().join("home");
+        let userprofile = tmp.path().join("userprofile");
+        let _home = crate::test_support::EnvVarGuard::set("HOME", &home);
+        let _userprofile = crate::test_support::EnvVarGuard::set("USERPROFILE", &userprofile);
+        let _codewhale_home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", " \t ");
+        let _config_path = crate::test_support::EnvVarGuard::remove("CODEWHALE_CONFIG_PATH");
+        let _legacy_config_path = crate::test_support::EnvVarGuard::remove("DEEPSEEK_CONFIG_PATH");
+        let primary = home.join(".codewhale");
+
+        assert_eq!(codewhale_paths::user_home(), Some(home.clone()));
+        assert_eq!(
+            codewhale_runtime::config::workspace_trust_config_candidate_paths(),
+            vec![
+                primary.join("config.toml"),
+                home.join(".deepseek").join("config.toml")
+            ]
+        );
+        assert_eq!(
+            codewhale_runtime::runtime_log::log_directory(),
+            Some(primary.join("logs"))
+        );
+        assert_eq!(
+            crate::automation_manager::default_automations_dir(),
+            primary.join("automations")
+        );
+        assert_eq!(
+            default_sessions_dir().expect("session directory"),
+            primary.join("sessions")
+        );
+    }

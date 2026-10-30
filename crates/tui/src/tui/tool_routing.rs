@@ -1567,7 +1567,7 @@ fn push_orphan_tool_completion(
             .files
             .first()
             .map_or_else(|| "<file>".to_string(), |file| file.path.clone());
-        let summary = receipt.semantic_summary();
+        let summary = receipt.semantic_summary(app.ui_locale);
         HistoryCell::Tool(ToolCell::PatchSummary(PatchSummaryCell {
             path,
             summary,

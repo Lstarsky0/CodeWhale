@@ -76,6 +76,7 @@ pub(crate) fn test_app_with_options(options: crate::tui::app::TuiOptions) -> cra
     app.auto_model = false;
     app.last_effective_model = None;
     app.active_route_limits = None;
+    app.active_context_window = None;
     app.active_context_window_override = None;
     // Fixtures replace `app.workspace` freely. Do not retain `App::new`'s real
     // process cwd as a second discovery root: parallel tests and a large

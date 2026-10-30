@@ -1,8 +1,8 @@
 //! Projection of the existing Runtime owner; no direct provider/tool authority.
 use super::*;
 use crate::runtime_threads::{
-    ExternalApprovalDecision, RuntimeEventRecord, RuntimeTurnStatus, RuntimeTurnStopReason,
-    StartTurnRequest, TurnRecord,
+    RuntimeEventRecord, RuntimeTurnStatus, RuntimeTurnStopReason, TurnRecord,
+    manager::ExternalApprovalDecision, manager::StartTurnRequest,
 };
 use std::time::Duration;
 struct Permission {

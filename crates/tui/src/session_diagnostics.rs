@@ -11,7 +11,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::error_taxonomy::{ErrorCategory, classify_error_message};
+use codewhale_error_taxonomy::{ErrorCategory, classify_error_message};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -283,7 +283,7 @@ fn classify_session_failure(value: &Value, message: &str) -> SessionFailureClass
         // classifier files it under Parse only so provider turns can say
         // "unreadable" (#6843).
         ErrorCategory::Parse
-            if crate::error_taxonomy::unreadable_error_notice(message).is_some() =>
+            if codewhale_error_taxonomy::unreadable_error_notice(message).is_some() =>
         {
             SessionFailureClass::Unknown
         }

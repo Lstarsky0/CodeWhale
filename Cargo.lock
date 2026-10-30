@@ -1047,6 +1047,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "codewhale-error-taxonomy"
+version = "0.10.2"
+dependencies = [
+ "codewhale-tools",
+ "serde",
+]
+
+[[package]]
 name = "codewhale-execpolicy"
 version = "0.10.2"
 dependencies = [
@@ -1152,6 +1160,7 @@ dependencies = [
 name = "codewhale-models"
 version = "0.10.2"
 dependencies = [
+ "chrono",
  "codewhale-config",
  "codewhale-core",
  "codewhale-sanitize",
@@ -1364,6 +1373,7 @@ dependencies = [
  "dirs 7.0.0",
  "fd-lock",
  "futures-util",
+ "ignore",
  "jsonwebtoken",
  "libc",
  "lru",
@@ -1383,6 +1393,7 @@ dependencies = [
  "toml 1.1.4+spec-1.1.0",
  "toml_edit 0.25.15+spec-1.1.0",
  "tracing",
+ "tracing-subscriber",
  "uuid",
  "wait-timeout",
  "windows",
@@ -1464,6 +1475,28 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "yaml-rust2",
+]
+
+[[package]]
+name = "codewhale-skills"
+version = "0.10.2"
+dependencies = [
+ "anyhow",
+ "codewhale-config",
+ "codewhale-localization",
+ "codewhale-net",
+ "codewhale-paths",
+ "codewhale-plugins",
+ "codewhale-runtime",
+ "codewhale-skill-install",
+ "codewhale-util",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "tokio",
+ "toml 1.1.4+spec-1.1.0",
+ "uuid",
 ]
 
 [[package]]
@@ -1558,6 +1591,7 @@ dependencies = [
  "codewhale-config",
  "codewhale-core",
  "codewhale-dependencies",
+ "codewhale-error-taxonomy",
  "codewhale-execpolicy",
  "codewhale-hooks",
  "codewhale-lane",
@@ -1580,9 +1614,11 @@ dependencies = [
  "codewhale-sanitize",
  "codewhale-secrets",
  "codewhale-skill-install",
+ "codewhale-skills",
  "codewhale-snapshot",
  "codewhale-telemetry",
  "codewhale-tools",
+ "codewhale-tui-kit",
  "codewhale-util",
  "codewhale-workflow",
  "codewhale-workflow-js",
@@ -1630,7 +1666,6 @@ dependencies = [
  "shlex 2.0.1",
  "similar",
  "syn 3.0.9",
- "syntect",
  "tar",
  "tempfile",
  "thiserror 2.0.21",
@@ -1655,6 +1690,21 @@ dependencies = [
  "windows-sys 0.61.2",
  "wiremock",
  "yaml-rust2",
+]
+
+[[package]]
+name = "codewhale-tui-kit"
+version = "0.10.2"
+dependencies = [
+ "codewhale-palette",
+ "codewhale-ratatui",
+ "codewhale-secrets",
+ "crossterm",
+ "ratatui",
+ "similar",
+ "syntect",
+ "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]

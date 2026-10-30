@@ -893,8 +893,8 @@ mod tests {
             tool_use("third", "Bash", json!({"command": "cargo test"})),
             tool_result("third", &long_output),
         ];
-        let recent_tokens = crate::compaction::estimate_tokens(&original[3..])
-            + original[3..].len() * 12;
+        let recent_tokens =
+            crate::compaction::estimate_tokens(&original[3..]) + original[3..].len() * 12;
         let kept = replacement_messages(&original, 20_000, recent_tokens);
         let kept_ids: Vec<&str> = kept
             .iter()
@@ -922,14 +922,8 @@ mod tests {
         assert!(shortened.starts_with("[tool result retained-history truncated from"));
 
         let header = crate::compaction::SUMMARY_HEADER;
-        assert!(
-            header.contains("current user instructions"),
-            "{header}"
-        );
-        assert!(
-            header.contains("tail selected by token budget"),
-            "{header}"
-        );
+        assert!(header.contains("current user instructions"), "{header}");
+        assert!(header.contains("tail selected by token budget"), "{header}");
         assert!(
             header.contains("Long tool output there is shortened"),
             "{header}"

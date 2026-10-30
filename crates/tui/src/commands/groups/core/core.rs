@@ -5,7 +5,6 @@ use crate::reasoning_preference::ReasoningEffort;
 use crate::tui::app::{App, AppAction};
 use crate::tui::views::{ModalKind, SubAgentsView, subagent_view_agents};
 use codewhale_config::ProviderKind;
-use codewhale_localization::Locale;
 use codewhale_localization::{MessageId, tr};
 use codewhale_runtime::config::{normalize_custom_model_id, normalize_model_name_for_provider};
 
@@ -142,15 +141,6 @@ pub(crate) fn reset_conversation_state(app: &mut App) -> bool {
     true
 }
 
-/// The site locale segment for a public Codewhale URL.
-///
-/// The mapping itself lives in the portable `navigation::links` module, which
-/// the navigation proof requires to stay free of host imports; this is the
-/// host-side adapter for callers that hold a `Locale`.
-pub(crate) fn public_site_locale_segment(locale: Locale) -> &'static str {
-    super::navigation::links::public_site_locale_segment(locale.tag())
-}
-
 /// Exit the application
 pub fn exit() -> CommandResult {
     CommandResult::action(AppAction::Quit)
@@ -187,6 +177,11 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
             let model_changed = !app.auto_model || app.model != "auto";
             app.set_model_selection("auto".to_string());
             app.active_route_limits = app.context_window_override_limits();
+            app.active_context_window = app.configured_context_window_for(&app.model);
+            app.active_context_window_source = app
+                .active_context_window
+                .map(|window| window.source)
+                .unwrap_or(crate::route_runtime::ContextWindowSource::Fallback);
             app.update_model_compaction_budget();
             if model_changed {
                 app.clear_model_scoped_telemetry();
@@ -290,10 +285,11 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
             app.set_active_route_resolution(
                 resolution.candidate.endpoint().base_url.clone(),
                 resolution.candidate.limits(),
-                resolution.context_window.source,
+                resolution.context_window,
             );
         } else {
             app.active_route_limits = app.context_window_override_limits();
+            app.active_context_window = app.configured_context_window_for(&app.model);
             app.active_context_window_source = app
                 .configured_context_window_for(&app.model)
                 .map(|resolution| resolution.source)
@@ -372,6 +368,7 @@ mod tests {
     use crate::client::PromptInspection;
     use crate::tui::app::{App, TuiOptions, TurnCacheRecord};
     use crate::tui::history::HistoryCell;
+    use codewhale_localization::Locale;
     use codewhale_models::Message;
     use codewhale_models::Role;
     use codewhale_runtime::config::Config;

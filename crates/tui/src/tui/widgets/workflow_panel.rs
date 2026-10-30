@@ -19,9 +19,9 @@ use ratatui::text::{Line, Span};
 use serde_json::{Value, json};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::tui::ui_text::truncate_line_to_width;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
+use codewhale_tui_kit::ui_text::truncate_line_to_width;
 
 /// Maximum phase summary chips shown in the expanded body.
 const MAX_PHASE_SUMMARY: usize = 6;
@@ -1103,7 +1103,8 @@ impl WorkflowPanel {
         if !self.phases.is_empty() {
             let mut chips = Vec::new();
             for (idx, phase) in self.phases.iter().take(MAX_PHASE_SUMMARY).enumerate() {
-                let marker = crate::tui::glyphs::selection_marker(idx == self.selected_phase);
+                let marker =
+                    codewhale_tui_kit::glyphs::selection_marker(idx == self.selected_phase);
                 chips.push(format!(
                     "{marker}{title} ({counts})",
                     title = short_label(&phase.title, 24),
@@ -1765,7 +1766,7 @@ impl WorkflowPanel {
             .saturating_sub(rest.width() + 3)
             .max(MIN_FINISH_TITLE_COLS);
         let facts = [
-            crate::tui::ui_text::semantic_truncate(&self.short_title(), title_cols),
+            codewhale_tui_kit::ui_text::semantic_truncate(&self.short_title(), title_cols),
             rest,
         ];
         let detail = match self.lifecycle {

@@ -18,9 +18,9 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::git_status::{self, GitStatusSnapshot, WorktreeEntry};
-use crate::tui::menu_style;
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 use codewhale_palette as palette;
+use codewhale_tui_kit::menu_style;
 
 /// Modes inside the worktree manager.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

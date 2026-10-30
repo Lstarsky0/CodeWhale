@@ -1375,19 +1375,19 @@
             (
                 401,
                 r#"{"error":"Unauthorized","message":"Invalid API key"}"#,
-                crate::error_taxonomy::ErrorCategory::Authentication,
+                codewhale_error_taxonomy::ErrorCategory::Authentication,
                 "Invalid API key",
             ),
             (
                 402,
                 r#"{"error":"Insufficient funds","message":"Your account has insufficient credits. Please add credits to continue."}"#,
-                crate::error_taxonomy::ErrorCategory::RateLimit,
+                codewhale_error_taxonomy::ErrorCategory::RateLimit,
                 "insufficient credits",
             ),
             (
                 400,
                 r#"{"error":"Bad Request","message":"Invalid model name: 'invalid-model-xyz'"}"#,
-                crate::error_taxonomy::ErrorCategory::InvalidInput,
+                codewhale_error_taxonomy::ErrorCategory::InvalidInput,
                 "Invalid model name",
             ),
         ] {
@@ -1420,7 +1420,7 @@
                 "HTTP {status}: message must carry the documented text, got: {message}"
             );
             assert_eq!(
-                crate::error_taxonomy::classify_error_message(&message),
+                codewhale_error_taxonomy::classify_error_message(&message),
                 expected,
                 "HTTP {status}: {message}"
             );

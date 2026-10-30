@@ -305,7 +305,7 @@ pub struct QueuedSessionMessage {
     #[serde(default)]
     pub skill_instruction: Option<String>,
     #[serde(default)]
-    pub skill_provenance: Option<crate::skills::SkillProvenance>,
+    pub skill_provenance: Option<codewhale_skills::SkillProvenance>,
 }
 
 /// Persisted queue state for recovery after restart/crash.
@@ -586,7 +586,7 @@ pub fn current_session_boot_id() -> &'static str {
 /// Which archive states a session listing includes.
 ///
 /// Deliberately the same three-way shape as
-/// [`crate::runtime_threads::ThreadListFilter`] so `/v1/sessions` and
+/// [`crate::runtime_threads::manager::ThreadListFilter`] so `/v1/sessions` and
 /// `/v1/threads` answer the same `include_archived` / `archived_only` query
 /// pair with the same semantics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -4355,7 +4355,8 @@ impl SessionManager {
         }
         let owns_legacy_checkpoint =
             matches!(&legacy_origin, Ok(Some(origin)) if origin == id.trim());
-        if matches!(removal, SessionRemoval::Explicit) && owns_legacy_checkpoint {
+        if matches!(removal, SessionRemoval::Explicit) && owns_legacy_checkpoint && !already_deleted
+        {
             return Err(io::Error::other(
                 "this session has a shared legacy checkpoint; remove that checkpoint separately before deleting the session",
             ));

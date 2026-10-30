@@ -19,7 +19,6 @@ use crate::tui::app::App;
 use crate::tui::approval::{ElevationOption, ReviewDecision};
 use crate::tui::focus_texture::FocusTextureMode;
 use crate::tui::history::{HistoryCell, SubAgentCell, summarize_tool_output};
-use crate::tui::menu_style;
 use crate::tui::tideline::{SettingApplySemantics, SettingAuthority, SettingFact, UiSnapshot};
 use crate::tui::widgets::agent_card::AgentLifecycle;
 use codewhale_agent_contract::role::FleetRole;
@@ -31,6 +30,7 @@ use codewhale_palette as palette;
 use codewhale_runtime::config::{ApprovalPolicyControl, Config};
 use codewhale_runtime::features::{FEATURES, Stage};
 use codewhale_runtime::settings::Settings;
+use codewhale_tui_kit::menu_style;
 
 pub mod automations;
 pub mod extensions;
@@ -162,7 +162,7 @@ pub(crate) fn render_underwater_surface(
     // that anything is missing. Reserve the corner cells and semantic-ellipsis
     // the title so compact terminals still read as intentional instruments.
     let title_width = usize::from(surface.width.saturating_sub(4));
-    let title = crate::tui::ui_text::semantic_truncate(&title.into(), title_width);
+    let title = codewhale_tui_kit::ui_text::semantic_truncate(&title.into(), title_width);
     let block = Block::default()
         .title(Line::from(Span::styled(
             format!(" {title} "),
@@ -1160,7 +1160,7 @@ pub enum ViewEvent {
     /// import / update / remove / trust action. The host runs the mutation
     /// controller and rebuilds the open manager view.
     SkillMutationRequested {
-        request: crate::skills::mutation::SkillMutationRequest,
+        request: codewhale_skills::mutation::SkillMutationRequest,
     },
     /// Toggle owned-only vs compatible audit scan inside the skills manager.
     SkillsManagerToggleCompatible,
@@ -1283,6 +1283,16 @@ pub struct ViewTick {
     pub redraw: bool,
 }
 
+/// Whether this view is the approval card for exactly `gate` (the projected
+/// approval id). Used by the web mirror to dismiss the matching card — never
+/// an unrelated approval that happens to be on top.
+fn view_is_approval_for_gate(view: &dyn ModalView, gate: &str) -> bool {
+    view.kind() == ModalKind::Approval
+        && view
+            .approval_request_id()
+            .is_some_and(|tool_id| crate::remote_control::projected_approval_id(tool_id) == gate)
+}
+
 impl ViewStack {
     pub fn new() -> Self {
         Self {
@@ -1335,7 +1345,7 @@ impl ViewStack {
         let before = self.views.len();
         let top = self.top_identity();
         self.views
-            .retain(|view| !crate::remote_control::view_is_approval_for_gate(view.as_ref(), gate));
+            .retain(|view| !view_is_approval_for_gate(view.as_ref(), gate));
         self.note_top_change(top);
         self.views.len() != before
     }
@@ -1485,7 +1495,7 @@ impl ViewStack {
         // is unchanged.
         for view in &self.views {
             let region = view.occupied_region(area);
-            crate::tui::osc8::overlay_frame_links(region, Vec::new());
+            codewhale_tui_kit::osc8::overlay_frame_links(region, Vec::new());
             render_modal_backdrop(region, buf);
             view.render(area, buf);
         }
@@ -2376,12 +2386,8 @@ impl ConfigView {
                 key: "effective_context_window".to_string(),
                 value: format!(
                     "{} tokens · {}",
-                    crate::route_budget::route_context_window_tokens(
-                        app.api_provider,
-                        app.effective_model_for_budget(),
-                        app.active_route_limits,
-                    ),
-                    app.active_context_window_source.display_label()
+                    app.effective_context_window(),
+                    app.effective_context_window_source().display_label()
                 ),
                 editable: false,
                 scope: ConfigScope::Session,
@@ -3343,7 +3349,7 @@ impl ConfigView {
             .iter()
             .position(|idx| *idx == self.selected)
             .unwrap_or(0);
-        let next = crate::tui::list_nav::wrap_index(current, matches.len(), delta);
+        let next = codewhale_tui_kit::list_nav::wrap_index(current, matches.len(), delta);
 
         self.selected = matches[next];
         self.clear_hover();
@@ -4509,7 +4515,7 @@ impl ModalView for ConfigView {
 
                 for (choice_idx, choice) in choices.iter().enumerate().take(end).skip(start) {
                     let selected = choice_idx == edit.selected_choice;
-                    let marker = crate::tui::glyphs::selection_marker(selected);
+                    let marker = codewhale_tui_kit::glyphs::selection_marker(selected);
                     let label = config_choice_label(self.locale, &edit.key, choice);
                     let line_y = inner.y.saturating_add(lines.len() as u16);
                     hitboxes.push((
@@ -4531,7 +4537,7 @@ impl ModalView for ConfigView {
                     } else if self.hovered_choice == Some(choice_idx) {
                         Style::default()
                             .fg(palette::TEXT_PRIMARY)
-                            .patch(crate::tui::menu_style::hovered_row_style())
+                            .patch(codewhale_tui_kit::menu_style::hovered_row_style())
                     } else {
                         Style::default().fg(palette::TEXT_PRIMARY)
                     };
@@ -4544,7 +4550,7 @@ impl ModalView for ConfigView {
                         < usize::from(inner.height)
                 {
                     lines.push(Line::from(Span::styled(
-                        crate::tui::ui_text::semantic_truncate(
+                        codewhale_tui_kit::ui_text::semantic_truncate(
                             selected_detail.as_ref(),
                             usize::from(inner.width),
                         ),
@@ -4609,7 +4615,7 @@ impl ModalView for ConfigView {
 impl ConfigView {
     /// Paint `[ Apply ]  [ Cancel ]` and record their exact hitboxes.
     fn render_editor_controls(&self, row: Rect, buf: &mut Buffer) {
-        use crate::tui::ui_text::text_display_width;
+        use codewhale_tui_kit::ui_text::text_display_width;
 
         let mut controls = Vec::new();
         let mut x = row.x;
@@ -4632,7 +4638,7 @@ impl ConfigView {
                     Style::default()
                         .fg(palette::TEXT_PRIMARY)
                         .add_modifier(Modifier::BOLD)
-                        .patch(crate::tui::menu_style::hovered_row_style())
+                        .patch(codewhale_tui_kit::menu_style::hovered_row_style())
                 } else {
                     Style::default()
                         .fg(palette::TEXT_PRIMARY)
@@ -4853,7 +4859,7 @@ pub(crate) fn render_settings_category_strip(
     hovered: Option<ConfigCategory>,
     hovered_nav: Option<NavStep>,
 ) -> CategoryStripHitboxes {
-    use crate::tui::ui_text::{text_display_width, truncate_line_to_width};
+    use codewhale_tui_kit::ui_text::{text_display_width, truncate_line_to_width};
 
     let mut hitboxes = CategoryStripHitboxes::default();
     if area.width < 4 || area.height == 0 {
@@ -4923,7 +4929,7 @@ pub(crate) fn render_settings_category_strip(
         let prev_style = if hovered_nav == Some(NavStep::Previous) {
             style
                 .marker
-                .patch(crate::tui::menu_style::hovered_row_style())
+                .patch(codewhale_tui_kit::menu_style::hovered_row_style())
         } else {
             style.marker
         };
@@ -4954,7 +4960,7 @@ pub(crate) fn render_settings_category_strip(
         } else if hovered == Some(category) {
             style
                 .normal
-                .patch(crate::tui::menu_style::hovered_row_style())
+                .patch(codewhale_tui_kit::menu_style::hovered_row_style())
         } else {
             style.normal
         };
@@ -4975,7 +4981,7 @@ pub(crate) fn render_settings_category_strip(
         let next_style = if hovered_nav == Some(NavStep::Next) {
             style
                 .marker
-                .patch(crate::tui::menu_style::hovered_row_style())
+                .patch(codewhale_tui_kit::menu_style::hovered_row_style())
         } else {
             style.marker
         };
@@ -5108,7 +5114,7 @@ impl ConfigView {
     /// The detail pane: label and key, then the typed facts for the row's
     /// kind, then the description and the activation copy.
     fn setting_detail_lines(&self, row: &ConfigRow, width: usize) -> Vec<Line<'static>> {
-        use crate::tui::ui_text::semantic_truncate;
+        use codewhale_tui_kit::ui_text::semantic_truncate;
 
         let label = config_label_for_key_for_locale(self.locale, &row.key);
         let kind = self.editor_kind(row);
@@ -5756,7 +5762,10 @@ impl ConfigView {
                 String::new()
             };
             let band = vec![Line::from(Span::styled(
-                crate::tui::ui_text::semantic_truncate(&bottom_text, usize::from(inner.width)),
+                codewhale_tui_kit::ui_text::semantic_truncate(
+                    &bottom_text,
+                    usize::from(inner.width),
+                ),
                 Style::default().fg(palette::TEXT_MUTED),
             ))];
             // With a detail pane the lanes are already on screen; without one
@@ -5779,7 +5788,7 @@ impl ConfigView {
                     ..bottom
                 };
                 Paragraph::new(Line::from(Span::styled(
-                    crate::tui::ui_text::semantic_truncate(
+                    codewhale_tui_kit::ui_text::semantic_truncate(
                         &self.setting_detail_summary(row),
                         usize::from(inner.width).saturating_mul(usize::from(folded.height)),
                     ),
@@ -6863,8 +6872,8 @@ fn truncate_view_text(text: &str, max_chars: usize) -> String {
 }
 
 fn fit_config_column(text: &str, width: usize) -> String {
-    let mut fitted = crate::tui::ui_text::truncate_line_to_width(text, width);
-    let padding = width.saturating_sub(crate::tui::ui_text::text_display_width(&fitted));
+    let mut fitted = codewhale_tui_kit::ui_text::truncate_line_to_width(text, width);
+    let padding = width.saturating_sub(codewhale_tui_kit::ui_text::text_display_width(&fitted));
     fitted.push_str(&" ".repeat(padding));
     fitted
 }
@@ -11949,7 +11958,7 @@ context_window = 131072
         // No rendered row may overflow the available columns.
         for (idx, row) in rows.iter().enumerate() {
             assert!(
-                crate::tui::ui_text::text_display_width(row) <= usize::from(area.width),
+                codewhale_tui_kit::ui_text::text_display_width(row) <= usize::from(area.width),
                 "line {idx} overflows: {row:?}"
             );
         }
@@ -12079,7 +12088,7 @@ context_window = 131072
     #[test]
     fn view_stack_masks_links_behind_opaque_modals() {
         let area = Rect::new(0, 0, 24, 8);
-        crate::tui::osc8::set_frame_links(vec![crate::tui::osc8::LinkRegion {
+        codewhale_tui_kit::osc8::set_frame_links(vec![codewhale_tui_kit::osc8::LinkRegion {
             row: 3,
             col_start: 2,
             col_end: 18,
@@ -12088,7 +12097,7 @@ context_window = 131072
         let mut stack = ViewStack::new();
         stack.push(BareModal);
         stack.render(area, &mut Buffer::empty(area));
-        assert!(crate::tui::osc8::take_frame_links().is_empty());
+        assert!(codewhale_tui_kit::osc8::take_frame_links().is_empty());
     }
 
     fn buffer_text(buf: &Buffer, area: Rect) -> String {

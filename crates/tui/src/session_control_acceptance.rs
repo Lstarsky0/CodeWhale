@@ -845,7 +845,7 @@ mod tests {
 
     #[test]
     fn session_and_thread_archive_filters_share_one_resolution() {
-        use crate::runtime_threads::ThreadListFilter;
+        use crate::runtime_threads::manager::ThreadListFilter;
 
         for (include, only, expected_session, expected_thread) in [
             (

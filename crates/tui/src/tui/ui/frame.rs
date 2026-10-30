@@ -949,15 +949,18 @@ pub(crate) async fn build_preview_request_inputs(
                 app.translation_enabled,
                 app.verbosity.clone(),
             );
+            prompt_context.context_window = Some(planned.route.context_window);
             let effort = planned.effective_reasoning_effort.as_deref();
-            prompt_context.planned_output_tokens =
-                Some(crate::route_budget::effective_max_output_tokens_for_turn(
+            prompt_context.planned_output_tokens = Some(
+                crate::route_budget::effective_max_output_tokens_for_turn_with_window(
                     planned.route.identity.provider,
                     &planned.route.model,
                     crate::route_budget::known_route_limits(planned.route.candidate.limits()),
+                    Some(planned.route.context_window.tokens),
                     None,
                     effort,
-                ));
+                ),
+            );
             posture(
                 Some(Box::new(PreviewNextTurn {
                     content,
@@ -1005,7 +1008,7 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         mcp_oauth_callback_port: config.mcp_oauth_callback_port,
         mcp_oauth_callback_url: config.mcp_oauth_callback_url.clone(),
         skills_dir: app.skills_dir.clone(),
-        skills_discovery_mode: app.skills_discovery_mode,
+        skills_config: app.skills_config.clone(),
         plugin_registry: Some(std::sync::Arc::clone(&app.plugin_registry)),
         instructions: configured_instruction_sources(config),
         project_context_pack_enabled: config.project_context_pack_enabled(),
@@ -1173,21 +1176,21 @@ pub(crate) fn build_app_system_prompt_with_goal(
     let budgets = crate::project_context::InstructionBudgets::resolve_or_default(
         &settings.budget,
         crate::route_runtime::ContextWindowResolution {
-            tokens: crate::route_budget::route_context_window_tokens(
-                app.api_provider,
-                &app.model,
-                app.active_route_limits,
-            ),
-            source: app.active_context_window_source,
+            tokens: app.effective_context_window(),
+            source: app.effective_context_window_source(),
         }
         .instruction_budget_tokens(),
-        Some(crate::route_budget::effective_max_output_tokens_for_turn(
-            app.api_provider,
-            &app.model,
-            app.active_route_limits,
-            None,
-            effort.as_deref(),
-        ) as usize),
+        Some({
+            let (provider, model, limits, window) = app.effective_budget_route();
+            crate::route_budget::effective_max_output_tokens_for_turn_with_window(
+                provider,
+                model,
+                limits,
+                window.map(|window| window.tokens),
+                None,
+                effort.as_deref(),
+            ) as usize
+        }),
     );
     prompts::system_prompt_with_instruction_assembly_for_host(
         &app.workspace,
@@ -1201,14 +1204,10 @@ pub(crate) fn build_app_system_prompt_with_goal(
             locale_tag: app.ui_locale.tag(),
             translation_enabled: app.translation_enabled,
             model_id: &app.model,
-            context_window_override: Some(crate::route_budget::route_context_window_tokens(
-                app.api_provider,
-                &app.model,
-                app.active_route_limits,
-            )),
+            context_window_override: Some(app.effective_context_window()),
             verbosity: app.verbosity.as_deref(),
             recovery_hint: recovery_hint.as_deref(),
-            skills_discovery_mode: app.skills_discovery_mode,
+            skills_config: app.skills_config.clone(),
             plugin_registry: Some(app.extension_plugin_view().as_ref()),
             mode: app.mode,
         },
@@ -1216,6 +1215,26 @@ pub(crate) fn build_app_system_prompt_with_goal(
         Some((&raw, &settings, budgets)),
     )
     .0
+}
+
+fn record_window_reroot(
+    session_id: Option<&str>,
+    previous_window: usize,
+    window: usize,
+    journal_entries: usize,
+) {
+    let details = serde_json::json!({
+        "session_id": session_id,
+        "reason": "first_message_changed",
+        "previous_window": previous_window,
+        "window": window,
+        "journal_entries": journal_entries,
+    });
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn_blocking(move || {
+            codewhale_runtime::audit::log_sensitive_event("session.window.rerooted", details);
+        });
+    }
 }
 
 /// Build the session snapshot every product caller queues into the
@@ -1242,8 +1261,17 @@ pub(crate) fn build_session_snapshot(
             tracing::warn!(%error, "kept archived journal entries in memory");
         }
     }
-    app.session_journal
+    let rebranch = app
+        .session_journal
         .rebranch_active_messages_stamped(&app.api_messages, &app.api_message_stamps);
+    if rebranch.replaced_from_root() && !app.api_messages.is_empty() {
+        record_window_reroot(
+            app.current_session_id.as_deref(),
+            rebranch.previous_active,
+            app.api_messages.len(),
+            app.session_journal.entries.len(),
+        );
+    }
     let mut session = crate::session_manager::create_saved_session_journal_only(
         app.current_session_id
             .clone()
@@ -1427,7 +1455,7 @@ pub(crate) fn accrue_streaming_token_estimate(app: &mut App, visible_text: &str)
 /// untouched (#7123). A text drain must never carry reasoning into the
 /// assistant cell, and must never take a block that is not its own: taking a
 /// reasoning tail here would append it to the prose and drop it from the card.
-pub(crate) fn drain_text_block(state: &mut crate::tui::streaming::StreamingState) -> String {
+pub(crate) fn drain_text_block(state: &mut codewhale_tui_kit::streaming::StreamingState) -> String {
     if state.block_is_thinking(0) {
         String::new()
     } else {
@@ -1449,7 +1477,8 @@ pub(crate) fn commit_streaming_display_tick(
     // function of the clock instead of the provider's chunking.
     let interval = stream_display_clock.interval();
     let mut updated = false;
-    let budget = crate::tui::streaming::reveal_budget(interval, app.streaming_state.pending_len(0));
+    let budget =
+        codewhale_tui_kit::streaming::reveal_budget(interval, app.streaming_state.pending_len(0));
     let committed = app.streaming_state.commit_text(0, budget);
     if !committed.is_empty() {
         // #7123: route by the block's own kind. An assistant cell stays live
@@ -2319,11 +2348,7 @@ pub(crate) fn estimated_context_tokens(app: &App) -> Option<i64> {
 }
 
 pub(crate) fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
-    let max = crate::route_budget::route_context_window_tokens(
-        app.api_provider,
-        app.effective_model_for_budget(),
-        app.active_route_limits,
-    );
+    let max = app.effective_context_window();
     context_usage_snapshot_for_window(app, max)
 }
 
@@ -2414,7 +2439,7 @@ mod tests {
     /// split sentence this fix exists to prevent.
     #[test]
     fn issue_7123_drain_text_block_leaves_a_reasoning_block_alone() {
-        use crate::tui::streaming::StreamingState;
+        use codewhale_tui_kit::streaming::StreamingState;
 
         let mut state = StreamingState::new();
         state.start_thinking(0);

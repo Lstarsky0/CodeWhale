@@ -3202,24 +3202,11 @@ fn unicode_prefix(value: &str, chars: usize) -> String {
     value.chars().take(chars).collect()
 }
 
-fn projected_approval_id(raw: &str) -> String {
+pub(crate) fn projected_approval_id(raw: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"local-runtime:approval\0");
     hasher.update(raw.as_bytes());
     format!("local_approval_{}", &bytes_to_hex(&hasher.finalize())[..24])
-}
-
-/// Whether this view is the approval card for exactly `gate` (the projected
-/// approval id). Used by the web mirror to dismiss the matching card — never
-/// an unrelated approval that happens to be on top.
-pub(crate) fn view_is_approval_for_gate(
-    view: &dyn crate::tui::views::ModalView,
-    gate: &str,
-) -> bool {
-    view.kind() == crate::tui::views::ModalKind::Approval
-        && view
-            .approval_request_id()
-            .is_some_and(|tool_id| projected_approval_id(tool_id) == gate)
 }
 
 fn projected_error_item_id(run_id: &str, turn_id: &str, code: &str) -> String {
@@ -6900,9 +6887,9 @@ mod tests {
         );
 
         controller.observe_engine_event(&EngineEvent::Error {
-            envelope: crate::error_taxonomy::ErrorEnvelope::new(
-                crate::error_taxonomy::ErrorCategory::Authentication,
-                crate::error_taxonomy::ErrorSeverity::Critical,
+            envelope: codewhale_error_taxonomy::ErrorEnvelope::new(
+                codewhale_error_taxonomy::ErrorCategory::Authentication,
+                codewhale_error_taxonomy::ErrorSeverity::Critical,
                 false,
                 "llm_auth_error",
                 message,
@@ -6963,7 +6950,7 @@ mod tests {
             .unwrap();
 
         controller.observe_engine_event(&EngineEvent::Error {
-            envelope: crate::error_taxonomy::ErrorEnvelope::network(
+            envelope: codewhale_error_taxonomy::ErrorEnvelope::network(
                 "temporary provider connection failure",
             ),
             recoverable: true,

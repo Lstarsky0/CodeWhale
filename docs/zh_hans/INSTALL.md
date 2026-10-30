@@ -664,43 +664,52 @@ tmux 会吃掉 **F1**，所以在 tmux 里请用 `/help`。有些组合键（Ctr
 
 ## 12. 卸载
 
-### 第 1 步：忘掉已保存的密钥（如果你用过 `auth set` 或 F3）
+### 第 1 步：清除需要移除的已保存密钥
+
+程序卸载不会自动清除系统钥匙串。先针对实际使用的提供商运行：
 
 ```bash
-codewhale auth clear --provider deepseek
+codewhale auth clear --provider <id>
 ```
 
-### 第 2 步：删除程序
+### 第 2 步：预览并删除所选安装
+
+先运行 `codewhale doctor --installs` 查看每个副本的路径、所有者和删除方式。
+使用要移除的程序的完整路径运行 `uninstall` 查看计划，确认后再加 `--yes`。
+普通卸载保留会话、配置和文件快照。
 
 | 安装方式 | 删除方法 |
 |---|---|
-| 安装器（§2）或手动下载（§3） | `rm ~/.local/bin/codewhale ~/.local/bin/codew`（或你的 `CODEWHALE_INSTALL_DIR`） |
-| npm | `npm uninstall -g codewhale` |
-| Cargo | `cargo uninstall codewhale-cli` |
-| Homebrew | `brew uninstall codewhale && brew untap Hmbown/deepseek-tui`（同时会移除它的 node 依赖） |
+| 当前 Unix 安装器 | 用完整路径运行 `codewhale uninstall`，确认计划后再运行 `uninstall --yes`。 |
+| Windows 发布归档（`install.ps1`） | 用完整路径运行 `codewhale.exe uninstall`，再加 `--yes`；已知旧安装可核对命令字节后建立收据，其他无收据副本会保留。 |
+| Windows 安装程序（NSIS） | 在“设置 > 应用”中卸载，或运行该安装目录的 `Uninstall.exe`。 |
+| WinGet / Scoop | `winget uninstall --id HunterBown.CodeWhale` / `scoop uninstall codewhale`。 |
+| npm | `npm uninstall -g codewhale`；`codewhale uninstall` 会显示该副本所属的 `--prefix`。 |
+| Cargo | `cargo uninstall codewhale-cli`；`codewhale uninstall` 会显示所属的 `--root`。 |
+| Homebrew | `brew uninstall codewhale`；不再使用该 tap 时才执行 untap。 |
+| 旧 curl 安装或其他手动副本 | 已知旧安装目录内、与当前程序字节完全一致且确属当前用户的文件可建立收据后移除；其他来源不明的文件会保留，需先核实具体路径和来源。 |
 
-### 第 3 步：删除数据。程序删除从不做这件事。
+卸载只移除所选安装收据拥有的命令、宿主文件和收据。它不会修改 shell 配置；
+匹配的 PATH 行会列出供手动核对。Windows 正在运行的程序会先改名，退出后由
+辅助进程删除。Windows 分支已通过编译检查，仍需在真实 Windows 主机上验证。
+重复卸载不会取得其他副本的所有权；重新安装会创建新的收据。
 
-| 路径 | 内容 | 所见大小 |
-|---|---|---|
-| `~/.codewhale/` | config.toml、**secrets/secrets.json（明文密钥）**、sessions/、logs/、catalog/（模型列表，约 5 MB）、skills/、builtin-plugins/、tasks/、automations/、crashes/、audit.log、输入框历史 | 6–7 MB |
-| `~/.deepseek/snapshots/` | v0.10.0 把每个回合的**工作区副本**存在这里（一个旧路径）。里面包含你运行过它的每个仓库的内容。 | 这里为 0.2–0.6 MB；随仓库大小增长 |
-| `<你用过的每个仓库>/.codewhale/` | 每个工作区的状态/锁目录 | 很小 |
-| 补全文件 | `~/.local/share/bash-completion/completions/codewhale`、`~/.zfunc/_codewhale`、`~/.config/fish/completions/codewhale.fish` | – |
-| 你添加的 PATH 行或 Codewhale PATH 代码块 | `~/.bashrc`、`~/.zshrc`、`~/.profile`、`~/.config/fish/conf.d/codewhale.fish` | – |
+### 第 3 步：可选的数据清理
 
-```bash
-rm -rf ~/.codewhale ~/.deepseek/snapshots
-rmdir ~/.deepseek 2>/dev/null   # removes the parent only if it is now empty
-# per-repo dirs, e.g.:
-find ~ -type d -name .codewhale -prune -print     # review, then delete the ones you want
-```
+`codewhale uninstall --purge-data` 先预览清理范围。未显式设置
+`CODEWHALE_HOME` 时，范围是 `~/.codewhale` 和旧的
+`~/.deepseek/snapshots`；显式设置后只考虑该目录，保留旧快照。
+自定义目录必须名为 `.codewhale` 才可自动清理。
 
-（注释含义：仅当父目录已为空时才会删除它；逐个仓库的目录，先查看再删除想删的。）
+数据清理必须与成功移除带收据安装的 `--yes` 操作在同一次运行中完成。
+包管理器安装、仅预览或移除失败时均保留数据。程序删除前会检查所有目标，拒绝
+符号链接、其他用户拥有的目录、主目录及其父目录，以及包含安装目录的目标。
+清理会删除这些目标内的会话、工作区快照和恢复副本；确认前应先核对预览并保留
+仍需使用的内容。重新安装程序不能恢复已清理的数据。
 
-Codewhale 没有在 `$HOME` 和它被使用过的仓库之外写入任何东西：没有系统文件、服务或 cron 任务。（我检查了测试用户在其主目录之外拥有的每一个文件。）上面的命令只删除 `~/.deepseek/snapshots`。如果你仍在使用较早的 DeepSeek-TUI，`~/.deepseek` 里的其余部分（它的配置和会话）不会被动。
-
-`codewhale uninstall --purge-data --yes` 只会在同一次运行中成功删除了一个带收据的安装之后，才删除数据目录（`~/.codewhale` 或 `$CODEWHALE_HOME`，以及 `~/.deepseek/snapshots`）。包管理器安装、仅预览的运行或删除失败时，数据都会保留。它也不会删除钥匙串条目、每个工作区的 `.codewhale` 目录、shell 配置行或补全文件。
+每个工作区的 `.codewhale`、系统钥匙串、shell PATH 行和补全文件不在自动清理
+范围内。请逐项检查已知路径；卸载不会扫描整个主目录。远程服务和桌面应用也有
+各自的安装所有权，不由所选 CLI 安装的收据代管。
 
 ---
 

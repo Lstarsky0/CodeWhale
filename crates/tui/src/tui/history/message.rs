@@ -4,15 +4,15 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use crate::tui::markdown_render;
-use crate::tui::ui_text::CopyLineSeparator;
 use codewhale_palette as palette;
+use codewhale_tui_kit::markdown_render;
+use codewhale_tui_kit::ui_text::CopyLineSeparator;
 
 use super::{ASSISTANT_GLYPH, USER_GLYPH};
 
 pub(crate) struct RenderedTranscriptLine {
     pub line: Line<'static>,
-    pub links: Vec<crate::tui::osc8::LineLink>,
+    pub links: Vec<codewhale_tui_kit::osc8::LineLink>,
     pub copy_prefix_width: usize,
     pub copy_separator_after: CopyLineSeparator,
 }
@@ -106,7 +106,7 @@ pub(crate) fn update_streaming_message_render(
     palette_mode: palette::PaletteMode,
     verified_append: bool,
     lines: &mut Vec<Line<'static>>,
-    links: &mut Vec<Vec<crate::tui::osc8::LineLink>>,
+    links: &mut Vec<Vec<codewhale_tui_kit::osc8::LineLink>>,
     copy_separators: &mut Vec<CopyLineSeparator>,
     copy_prefix_widths: &mut Vec<usize>,
 ) -> usize {

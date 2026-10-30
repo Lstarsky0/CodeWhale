@@ -770,7 +770,7 @@ fn deterministic_engine_config(workspace: &Path) -> EngineConfig {
 /// sees six and passes. That is the #5359 leak class, and the isolated home is
 /// what makes `deterministic_engine_config` actually deterministic here.
 #[test]
-fn automatic_compaction_continues_one_task_and_suppresses_failed_passes() {
+fn automatic_compaction_continues_one_task_and_preserves_failed_history() {
     let _env = lock_test_env();
     let home = tempdir().unwrap();
     let _codewhale_home = EnvVarGuard::set("CODEWHALE_HOME", home.path());
@@ -852,7 +852,15 @@ fn automatic_compaction_continues_one_task_and_suppresses_failed_passes() {
                         Event::CompactionCompleted { auto: true, .. } => completed += 1,
                         Event::CompactionFailed { auto: true, .. } => failed += 1,
                         Event::TurnComplete { status, error, .. } => {
-                            assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+                            if fail_summary {
+                                assert_eq!(status, TurnOutcomeStatus::Failed, "{error:?}");
+                                assert!(error.as_deref().is_some_and(|message| {
+                                    message.contains("tool call instead of a summary")
+                                        && message.contains("original conversation was preserved")
+                                }), "{error:?}");
+                            } else {
+                                assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+                            }
                             break;
                         }
                         _ => {}
@@ -864,18 +872,22 @@ fn automatic_compaction_continues_one_task_and_suppresses_failed_passes() {
                 .iter()
                 .filter(|r| r.stream == Some(true))
                 .collect::<Vec<_>>();
-            assert_eq!(
-                streaming.len(),
-                17,
-                "one user request must continue through all tool steps"
-            );
             if fail_summary {
+                assert!(
+                    (1..17).contains(&streaming.len()),
+                    "an unusable summary must stop before another model step"
+                );
                 assert_eq!(
                     (completed, failed),
                     (0, 1),
                     "failed compaction must not loop at every tool boundary"
                 );
             } else {
+                assert_eq!(
+                    streaming.len(),
+                    17,
+                    "one user request must continue through all tool steps"
+                );
                 assert!(
                     (2..=6).contains(&completed),
                     "expected repeated useful compaction: {completed}"
@@ -911,7 +923,15 @@ fn automatic_compaction_continues_one_task_and_suppresses_failed_passes() {
                 }
             }
             let snapshot = handle.get_session_snapshot().await.unwrap();
-            assert!(snapshot.messages.iter().any(|m| m.content.iter().any(|b| matches!(b, ContentBlock::Text {text,..} if text.contains("All sixteen reads verified")))));
+            if fail_summary {
+                assert!(!snapshot.messages.iter().any(crate::compaction::is_compaction_checkpoint_message));
+                for retained in ["Complete all sixteen reads; do not publish.", "Step 0:"] {
+                    assert!(snapshot.messages.iter().any(|message| message.content.iter().any(|block| matches!(block, ContentBlock::Text {text,..} if text.contains(retained)))), "lost original context: {retained}");
+                }
+                assert!(snapshot.messages.iter().any(|message| message.content.iter().any(|block| matches!(block, ContentBlock::ToolResult {..}))));
+            } else {
+                assert!(snapshot.messages.iter().any(|m| m.content.iter().any(|b| matches!(b, ContentBlock::Text {text,..} if text.contains("All sixteen reads verified")))));
+            }
             handle.send(Op::Shutdown).await.unwrap();
             task.await.unwrap();
         }

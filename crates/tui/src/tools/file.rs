@@ -113,7 +113,8 @@ fn verify_expected_hash(
 /// The hidden compatibility schema still has a byte budget, so this is only the
 /// instruction the legacy caller needs: what to pass and what happens on a
 /// mismatch. The rationale stays in doc comments rather than schema bytes.
-pub(super) const EXPECTED_HASH_DESCRIPTION: &str = "Prior read's content_hash; refuse the write if the file has changed.";
+pub(super) const EXPECTED_HASH_DESCRIPTION: &str =
+    "Prior read's content_hash; refuse the write if the file has changed.";
 
 // === Cross-harness parameter aliases ===
 
@@ -454,6 +455,10 @@ pub(crate) fn enforce_read_denylist(path: &Path, tool: &str) -> Result<(), ToolE
             Err(ToolError::permission_denied(message))
         }
     }
+}
+
+pub(crate) fn working_set_read_allowed(path: &Path) -> bool {
+    enforce_read_denylist(path, "working_set").is_ok()
 }
 
 /// Return whether `read_file` must refuse a CodeWhale-owned credential file.

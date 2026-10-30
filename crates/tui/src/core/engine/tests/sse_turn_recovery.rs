@@ -274,7 +274,7 @@ async fn verify_next_user_turn_after_loss(failure: Failure) {
             first
                 .iter()
                 .any(|event| matches!(event, Event::Error { envelope, .. }
-            if envelope.category == crate::error_taxonomy::ErrorCategory::Network
+            if envelope.category == codewhale_error_taxonomy::ErrorCategory::Network
                 && envelope.message.contains("error decoding response body")))
         );
     }

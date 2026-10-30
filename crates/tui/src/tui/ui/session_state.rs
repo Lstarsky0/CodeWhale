@@ -19,7 +19,7 @@ pub(crate) struct OfflineQueueTransition {
 pub(crate) fn surface_session_load_failure(app: &mut App, message: String) {
     app.add_message(crate::tui::history::HistoryCell::Error {
         message: message.clone(),
-        severity: crate::error_taxonomy::ErrorSeverity::Error,
+        severity: codewhale_error_taxonomy::ErrorSeverity::Error,
     });
     app.status_message = Some(message);
 }
@@ -158,8 +158,7 @@ pub(crate) fn persist_with_pending_work_boundary(
         .as_ref()
         .is_some_and(|work| work.has_pending_publish());
     if !has_pending {
-        persistence_actor::persist(request);
-        return Ok(());
+        return persistence_actor::persist_checked(request);
     }
     if !persistence_actor::try_persist(request) {
         return Err("persistence actor is unavailable".to_string());
@@ -480,28 +479,39 @@ pub(crate) fn persist_recovery_snapshot(app: &mut App) {
 }
 
 pub(crate) fn persist_full_reset_snapshot(app: &mut App) {
-    if let Ok(manager) = SessionManager::default_location()
-        && let Ok(session) = build_session_snapshot(app, &manager)
-    {
-        let projection = saved_work_projection(app, &session);
-        app.current_session_id = Some(session.metadata.id.clone());
-        if let Err(err) = persist_with_pending_work_boundary(
-            app,
-            PersistRequest::SessionSnapshot(session),
-            &projection,
-        ) {
-            app.status_message = Some(format!(
-                "To-do list update pending while saving reset snapshot ({err})"
-            ));
+    let session = SessionManager::default_location()
+        .map_err(|err| err.to_string())
+        .and_then(|manager| build_session_snapshot(app, &manager));
+    let session = match session {
+        Ok(session) => session,
+        Err(err) => {
+            let id = app
+                .current_session_id
+                .as_deref()
+                .map(crate::session_manager::truncate_id)
+                .unwrap_or("—");
+            let message = app
+                .tr(MessageId::SessionSaveFailed)
+                .replace("{id}", id)
+                .replace("{error}", &err);
+            app.add_message(crate::tui::history::HistoryCell::Error {
+                message: message.clone(),
+                severity: codewhale_error_taxonomy::ErrorSeverity::Error,
+            });
+            app.status_message = Some(message);
+            return;
         }
-    }
-    // `/clear` and `/new` are explicit boundaries. Never let an older
-    // in-flight checkpoint resurrect the session the user just discarded,
-    // even if the replacement snapshot could not be constructed.
-    // `build_session_snapshot` reuses `current_session_id`, so this id is the
-    // discarded session's id whether or not the snapshot above succeeded.
-    if let Some(session_id) = app.current_session_id.clone() {
-        persistence_actor::persist(PersistRequest::ClearCheckpoint { session_id });
+    };
+    let projection = saved_work_projection(app, &session);
+    app.current_session_id = Some(session.metadata.id.clone());
+    if let Err(err) = persist_with_pending_work_boundary(
+        app,
+        PersistRequest::CompletedCommit { session },
+        &projection,
+    ) {
+        app.status_message = Some(format!(
+            "To-do list update pending while saving reset snapshot ({err})"
+        ));
     }
 }
 
@@ -653,7 +663,7 @@ pub(crate) fn recover_engine_event_disconnect(app: &mut App) -> bool {
     app.add_message(HistoryCell::Error {
         message: "Engine stopped before completing the turn. Check ~/.codewhale/crashes and retry."
             .to_string(),
-        severity: crate::error_taxonomy::ErrorSeverity::Error,
+        severity: codewhale_error_taxonomy::ErrorSeverity::Error,
     });
     app.push_status_toast(
         "Engine stopped before completing the turn.",
@@ -1334,6 +1344,7 @@ pub(crate) fn restore_loaded_session_provider(
     app.set_active_context_window_override(config, &identity);
     app.active_route_limits = app.context_window_override_limits();
     app.active_route_base_url = config.active_route_base_url();
+    app.active_context_window = app.configured_context_window_for(&app.model);
     app.active_context_window_source = app
         .configured_context_window_for(&app.model)
         .map(|resolution| resolution.source)
@@ -1359,6 +1370,7 @@ pub(crate) fn resolve_loaded_session_route(app: &mut App, config: &Config) {
     if app.auto_model {
         app.active_route_limits = app.context_window_override_limits();
         app.active_route_base_url = config.active_route_base_url();
+        app.active_context_window = app.configured_context_window_for(&app.model);
         app.active_context_window_source = app
             .configured_context_window_for(&app.model)
             .map(|resolution| resolution.source)
@@ -1375,12 +1387,13 @@ pub(crate) fn resolve_loaded_session_route(app: &mut App, config: &Config) {
             app.set_active_route_resolution(
                 resolution.candidate.endpoint().base_url.clone(),
                 resolution.candidate.limits(),
-                resolution.context_window.source,
+                resolution.context_window,
             );
         }
         Err(_) => {
             app.active_route_limits = app.context_window_override_limits();
             app.active_route_base_url = config.active_route_base_url();
+            app.active_context_window = app.configured_context_window_for(&app.model);
             app.active_context_window_source = app
                 .configured_context_window_for(&app.model)
                 .map(|resolution| resolution.source)

@@ -118,13 +118,20 @@ pub trait LlmClient: Send + Sync {
         None
     }
 
+    fn effective_context_window(&self, _model: &str) -> Option<u32> {
+        None
+    }
+
     /// Output cap for a request sent through this exact client route.
     fn effective_max_output_tokens(&self, requested_model: &str) -> u32 {
         let route = self.effective_route_envelope(requested_model, chrono::Utc::now());
-        crate::route_budget::effective_max_output_tokens_for_route(
+        crate::route_budget::effective_max_output_tokens_for_turn_with_window(
             route.provider,
             &route.model,
             self.route_limits(),
+            self.effective_context_window(requested_model),
+            None,
+            None,
         )
     }
 
@@ -1815,7 +1822,7 @@ mod tests {
                     assert!(matches!(error, LlmError::QuotaExhausted(_)), "{error:?}");
                     assert!(!error.is_retryable());
                     assert!(error.to_string().contains("ChatGPT Settings > Usage"));
-                    let envelope = crate::error_taxonomy::envelope_for_llm_error(
+                    let envelope = crate::llm_error_envelope::envelope_for_llm_error(
                         error.into(),
                         "allowance unavailable".into(),
                     );

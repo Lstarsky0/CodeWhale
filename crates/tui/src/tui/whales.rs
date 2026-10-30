@@ -34,12 +34,12 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 
 use crate::tools::subagent::{AgentWorkerStatus, SubAgentResult, SubAgentStatus};
-use crate::tui::glyphs;
 use crate::tui::motion::mode::MotionMode;
 use crate::tui::underwater::ShellPhase;
 use codewhale_agent_contract::role::FleetRole;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette::{self as palette, UiTheme};
+use codewhale_tui_kit::glyphs;
 
 /// Cells occupied by a badge (species mark + body).
 #[cfg(test)]

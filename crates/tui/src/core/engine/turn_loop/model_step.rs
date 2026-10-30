@@ -332,6 +332,12 @@ impl Engine {
                         progress.context_recovery_attempts.saturating_add(1);
                     return PhaseResult::Retry;
                 }
+                if self.cancel_token.is_cancelled() {
+                    return PhaseResult::Return((TurnOutcomeStatus::Interrupted, None));
+                }
+                if let Some(message) = self.report_context_recovery_failure(turn).await {
+                    return PhaseResult::Return((TurnOutcomeStatus::Failed, Some(message)));
+                }
                 if !body_size_rejection
                     && self.rlm_host.is_none()
                     && is_image_input_rejection_message(&message)
@@ -362,7 +368,7 @@ impl Engine {
                             _ => None,
                         });
                 let mut envelope =
-                    crate::error_taxonomy::envelope_for_llm_error(e, message.clone());
+                    crate::llm_error_envelope::envelope_for_llm_error(e, message.clone());
                 // #6699: the request never became a stream (connect
                 // failure, response-header stall). The transport layer
                 // already spent its own retries; re-issue the identical
@@ -424,7 +430,8 @@ impl Engine {
                     match self.retract_child_unsent_message(mark).await {
                         Ok(true) => {
                             envelope.code =
-                                crate::error_taxonomy::CREDENTIAL_REJECTED_UNSENT_CODE.to_string();
+                                codewhale_error_taxonomy::CREDENTIAL_REJECTED_UNSENT_CODE
+                                    .to_string();
                             self.emit_session_updated().await;
                         }
                         Ok(false) => {}
@@ -439,8 +446,8 @@ impl Engine {
                     }
                 }
                 progress.turn_error = Some(display_message);
-                if envelope.severity == crate::error_taxonomy::ErrorSeverity::Warning {
-                    envelope.severity = crate::error_taxonomy::ErrorSeverity::Error;
+                if envelope.severity == codewhale_error_taxonomy::ErrorSeverity::Warning {
+                    envelope.severity = codewhale_error_taxonomy::ErrorSeverity::Error;
                 }
                 let _ = self.send_event(Event::error(envelope)).await;
                 return PhaseResult::Return((
@@ -1309,7 +1316,7 @@ impl Engine {
         progress.turn_error = Some(display_message.clone());
         let _ = self
             .send_event(Event::error(
-                crate::error_taxonomy::ErrorEnvelope::image_count_exceeded(display_message),
+                codewhale_error_taxonomy::ErrorEnvelope::image_count_exceeded(display_message),
             ))
             .await;
         Some(PhaseResult::Return((

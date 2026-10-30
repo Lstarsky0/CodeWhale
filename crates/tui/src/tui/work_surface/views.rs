@@ -6,6 +6,7 @@
 
 use crate::agent_roster::format_tokens;
 use crate::tui::app::{App, SidebarRowAction};
+use codewhale_localization::{MessageId, tr};
 
 use super::model::{RailPanel, WorkRow, WorkRowId, WorkTone};
 
@@ -57,7 +58,14 @@ pub(super) fn files_rows(app: &mut App) -> Vec<WorkRow> {
     let mut out = Vec::new();
     let edited = edited_files(&activity);
     if !edited.is_empty() {
-        out.push(heading("files:edited", format!("Edited {}", edited.len())));
+        out.push(heading(
+            "files:edited",
+            format!(
+                "{} {}",
+                tr(activity.locale, MessageId::FileActivityEditedLabel),
+                edited.len()
+            ),
+        ));
         for (path, receipt) in &edited {
             let Some(receipt) = receipt else {
                 out.push(WorkRow {
@@ -68,7 +76,8 @@ pub(super) fn files_rows(app: &mut App) -> Vec<WorkRow> {
                 continue;
             };
             let across = if receipt.files.len() > 1 {
-                format!(" across {} files", receipt.files.len())
+                tr(activity.locale, MessageId::FileMutationAcrossFiles)
+                    .replace("{count}", &receipt.files.len().to_string())
             } else {
                 String::new()
             };
@@ -80,10 +89,14 @@ pub(super) fn files_rows(app: &mut App) -> Vec<WorkRow> {
                 tone: WorkTone::Success,
                 selectable: true,
                 primary_action: Some(SidebarRowAction::InspectWork {
-                    title: format!("File · {path}"),
+                    title: format!(
+                        "{} · {path}",
+                        tr(activity.locale, MessageId::ApprovalLabelFile)
+                    ),
                     body: super::model::settled_mutation_body(
                         std::slice::from_ref(*receipt),
                         activity.inline_diff_mode,
+                        activity.locale,
                     ),
                     stop_action: None,
                 }),
@@ -94,7 +107,11 @@ pub(super) fn files_rows(app: &mut App) -> Vec<WorkRow> {
     if !activity.read.is_empty() {
         out.push(heading(
             "files:read",
-            format!("Read {}", activity.read.len()),
+            format!(
+                "{} {}",
+                tr(activity.locale, MessageId::FileActivityReadLabel),
+                activity.read.len()
+            ),
         ));
         for path in &activity.read {
             out.push(WorkRow {
@@ -212,7 +229,7 @@ pub(super) fn context_rows(app: &mut App) -> Vec<WorkRow> {
         fact(
             "automatic",
             "automatic compaction off".to_string(),
-            "Emergency compaction may still occur",
+            "Use /compact to make room manually",
         )
     };
     automatic.selectable = true;

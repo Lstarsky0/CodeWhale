@@ -46,8 +46,6 @@ use crate::provider_readiness::{
     credential_state_for_provider, route_identity_for_model,
 };
 use crate::reasoning_preference::ReasoningEffort;
-use crate::tui::list_nav::{self, Motion};
-use crate::tui::menu_style;
 use crate::tui::views::{
     ActionHint, EmptyState, ListDetailLayout, ModalKind, ModalView, ViewAction, ViewEvent,
     centered_modal_area, render_modal_footer, render_modal_surface, render_underwater_surface,
@@ -64,6 +62,8 @@ use codewhale_palette as palette;
 use codewhale_runtime::config::{
     Config, ProviderIdentity, base_url_uses_local_host, provider_is_configured,
 };
+use codewhale_tui_kit::list_nav::{self, Motion};
+use codewhale_tui_kit::menu_style;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -128,7 +128,7 @@ impl ProviderOffer {
             )
             .footer_chord,
         );
-        let label = crate::tui::ui_text::semantic_truncate(
+        let label = codewhale_tui_kit::ui_text::semantic_truncate(
             &tr(locale, MessageId::OrcaRouterOfferRecommended),
             usize::from(area.width)
                 .saturating_sub(unicode_width::UnicodeWidthStr::width(chord.as_ref()) + 3),
@@ -331,7 +331,7 @@ pub struct ProviderPickerView {
     last_choice_mouse_selected: Option<(Stage, char)>,
     /// Pointer hover positions. Advisory only — hover never moves the
     /// keyboard selection; it renders with the shared
-    /// [`crate::tui::menu_style::hovered_row_style`] primitive.
+    /// [`codewhale_tui_kit::menu_style::hovered_row_style`] primitive.
     hovered_list_idx: Option<usize>,
     hovered_model_idx: Option<usize>,
     hovered_consent_idx: Option<usize>,
@@ -2494,7 +2494,7 @@ impl ProviderPickerView {
         matches!(
             self.rows[self.selected_idx].readiness,
             ResolvedProviderReadiness::SavedLastCheckFailed {
-                category: crate::error_taxonomy::ErrorCategory::Authentication,
+                category: codewhale_error_taxonomy::ErrorCategory::Authentication,
                 ..
             }
         )
@@ -3037,14 +3037,14 @@ impl ProviderPickerView {
             ProviderListView::Catalog => self.tr(MessageId::PickerActionConfigured),
             ProviderListView::Local => self.tr(MessageId::PickerActionBrowseAll),
         };
-        let action_label = crate::tui::ui_text::semantic_truncate(
+        let action_label = codewhale_tui_kit::ui_text::semantic_truncate(
             &view_action,
             usize::from(area.width.saturating_sub(20)),
         );
         let action_width = unicode_width::UnicodeWidthStr::width(action_label.as_str()) as u16;
         let show_action = !self.onboarding_mode && area.width >= 28 && area.height > 0;
         let title = if show_action {
-            crate::tui::ui_text::semantic_truncate(
+            codewhale_tui_kit::ui_text::semantic_truncate(
                 title.trim(),
                 usize::from(area.width.saturating_sub(action_width + 8)),
             )
@@ -3226,7 +3226,7 @@ impl ProviderPickerView {
         self.list_row_hitboxes.borrow_mut().clear();
         let name_column = filtered
             .iter()
-            .map(|(_, row)| crate::tui::ui_text::text_display_width(&row.display_name))
+            .map(|(_, row)| codewhale_tui_kit::ui_text::text_display_width(&row.display_name))
             .max()
             .unwrap_or(0);
         let mut lines: Vec<Line> = Vec::with_capacity(visible_rows);
@@ -3239,7 +3239,7 @@ impl ProviderPickerView {
             let is_selected = *idx == self.selected_idx;
             debug_assert_eq!(is_selected, pos == selected_pos);
             let is_active = row.is_active;
-            let arrow = crate::tui::glyphs::selection_marker(is_selected);
+            let arrow = codewhale_tui_kit::glyphs::selection_marker(is_selected);
             let active_dot = if is_active { " *" } else { "  " };
             let spacer_style = if is_selected {
                 menu_style::selected_row_bg_style()
@@ -3276,16 +3276,18 @@ impl ProviderPickerView {
             let full_hint = row.list_row_hint(self.view);
             let unpadded_prefix = format!(" {arrow} {}{active_dot}  ", row.display_name);
             let spare = usize::from(layout.list.width).saturating_sub(
-                crate::tui::ui_text::text_display_width(&unpadded_prefix)
-                    + crate::tui::ui_text::text_display_width(&full_hint),
+                codewhale_tui_kit::ui_text::text_display_width(&unpadded_prefix)
+                    + codewhale_tui_kit::ui_text::text_display_width(&full_hint),
             );
             let name_pad = " ".repeat(
                 name_column
-                    .saturating_sub(crate::tui::ui_text::text_display_width(&row.display_name))
+                    .saturating_sub(codewhale_tui_kit::ui_text::text_display_width(
+                        &row.display_name,
+                    ))
                     .min(spare),
             );
             let prefix = format!(" {arrow} {}{active_dot}{name_pad}  ", row.display_name);
-            let hint = crate::tui::ui_text::semantic_truncate_between_affixes(
+            let hint = codewhale_tui_kit::ui_text::semantic_truncate_between_affixes(
                 &prefix,
                 &full_hint,
                 "",
@@ -3370,7 +3372,7 @@ impl ProviderPickerView {
             area.width.saturating_sub(action_width + 1),
             1,
         );
-        Paragraph::new(crate::tui::ui_text::semantic_truncate(
+        Paragraph::new(codewhale_tui_kit::ui_text::semantic_truncate(
             &row.display_name,
             usize::from(title.width),
         ))
@@ -3492,7 +3494,7 @@ impl ProviderPickerView {
             let message = if full {
                 message.clone()
             } else {
-                crate::tui::ui_text::semantic_truncate(
+                codewhale_tui_kit::ui_text::semantic_truncate(
                     message,
                     usize::from(width.saturating_sub(2)),
                 )
@@ -3584,7 +3586,7 @@ impl ProviderPickerView {
         let pane_models = provider_pane_models(&self.route_config, row, 8);
         let name_budget = usize::from(width).saturating_sub(22).max(8);
         for (model, price, is_default) in &pane_models {
-            let name = crate::tui::ui_text::truncate_line_to_width(model, name_budget);
+            let name = codewhale_tui_kit::ui_text::truncate_line_to_width(model, name_budget);
             let mut spans = vec![
                 Span::styled("  ", Style::default()),
                 Span::styled(name, Style::default().fg(palette::TEXT_PRIMARY)),
@@ -3984,7 +3986,7 @@ impl ProviderPickerView {
         for (slot, (choice, digit, label, detail)) in options.iter().enumerate() {
             let is_selected = selected == *choice;
             let is_hovered = self.hovered_consent_idx == Some(slot);
-            let marker = crate::tui::glyphs::selection_marker(is_selected);
+            let marker = codewhale_tui_kit::glyphs::selection_marker(is_selected);
             let label_style = if is_selected {
                 menu_style::selected_row_style_with_fg(palette::WHALE_ACTION)
             } else if is_hovered {
@@ -4204,7 +4206,7 @@ impl ProviderPickerView {
         {
             let is_selected = idx == self.model_selected_idx;
             let is_hovered = self.hovered_model_idx == Some(idx);
-            let arrow = crate::tui::glyphs::selection_marker(is_selected);
+            let arrow = codewhale_tui_kit::glyphs::selection_marker(is_selected);
             let label_style = if is_selected {
                 menu_style::selected_row_style_with_fg(palette::SELECTION_TEXT)
             } else if is_hovered {
@@ -4379,7 +4381,7 @@ impl ProviderPickerView {
                 };
                 Paragraph::new(format!(
                     "{} {key}. {label}",
-                    crate::tui::glyphs::selection_marker(selected == idx)
+                    codewhale_tui_kit::glyphs::selection_marker(selected == idx)
                 ))
                 .style(style)
                 .wrap(Wrap { trim: false })
@@ -4566,7 +4568,7 @@ impl ProviderPickerView {
         placeholder: &str,
     ) {
         let selected = self.custom_provider_field == field;
-        let marker = crate::tui::glyphs::selection_marker(selected);
+        let marker = codewhale_tui_kit::glyphs::selection_marker(selected);
         let value = self.custom_form_field_value(field);
         let display = if value.is_empty() { placeholder } else { value };
         let value_style = if selected {
@@ -4586,7 +4588,7 @@ impl ProviderPickerView {
             Span::styled(" ", label_style),
             Span::styled(format!("{label}: "), label_style),
             Span::styled(
-                crate::tui::ui_text::truncate_line_to_width(
+                codewhale_tui_kit::ui_text::truncate_line_to_width(
                     display,
                     usize::from(area.width).saturating_sub(18),
                 ),
@@ -4601,7 +4603,7 @@ impl ProviderPickerView {
 
     /// Slice D two-pane pointer support: hover is advisory (it never moves
     /// the keyboard selection) and renders with the shared
-    /// [`crate::tui::menu_style::hovered_row_style`] primitive; click selects
+    /// [`codewhale_tui_kit::menu_style::hovered_row_style`] primitive; click selects
     /// and a second click activates, mirroring the model picker rhythm.
     fn list_hit_at(&self, mouse: MouseEvent) -> Option<usize> {
         let pos = Position::new(mouse.column, mouse.row);
@@ -5876,7 +5878,7 @@ mod tests {
             let text = render_text(&picker, width, 16);
             for (idx, line) in text.lines().enumerate() {
                 assert!(
-                    crate::tui::ui_text::text_display_width(line) <= usize::from(width),
+                    codewhale_tui_kit::ui_text::text_display_width(line) <= usize::from(width),
                     "line {idx} overflows at {width}: {line:?}"
                 );
             }
@@ -7013,7 +7015,7 @@ mod tests {
             &config,
             &(config).test_identity_for_kind(ProviderKind::Deepseek),
             &row_model,
-            crate::error_taxonomy::ErrorCategory::Authentication,
+            codewhale_error_taxonomy::ErrorCategory::Authentication,
             "credential rejected",
         );
         let failed =
@@ -7058,7 +7060,7 @@ mod tests {
                 "model-the-turn-ran",
             ),
             "model-the-turn-ran",
-            &crate::error_taxonomy::ErrorEnvelope::fatal_auth(
+            &codewhale_error_taxonomy::ErrorEnvelope::fatal_auth(
                 "Authentication failed: invalid API key",
             ),
         );
@@ -7076,7 +7078,7 @@ mod tests {
             matches!(
                 readiness,
                 ResolvedProviderReadiness::SavedLastCheckFailed {
-                    category: crate::error_taxonomy::ErrorCategory::Authentication,
+                    category: codewhale_error_taxonomy::ErrorCategory::Authentication,
                     ..
                 }
             ),
@@ -8854,12 +8856,12 @@ mod tests {
 
         let rendered = render_text(&picker, 40, 12);
         assert!(
-            rendered.contains(crate::tui::glyphs::SELECTION),
+            rendered.contains(codewhale_tui_kit::glyphs::SELECTION),
             "{rendered}"
         );
         for (idx, line) in rendered.lines().enumerate() {
             assert!(
-                crate::tui::ui_text::text_display_width(line) <= 40,
+                codewhale_tui_kit::ui_text::text_display_width(line) <= 40,
                 "40x12 line {idx} clips: {line:?}\n{rendered}"
             );
         }
@@ -9470,7 +9472,7 @@ mod tests {
             );
             for (idx, line) in rendered.lines().enumerate() {
                 assert!(
-                    crate::tui::ui_text::text_display_width(line) <= w as usize,
+                    codewhale_tui_kit::ui_text::text_display_width(line) <= w as usize,
                     "{w}x{h} billing-route line {idx} overflows: {line:?}"
                 );
             }
@@ -9910,7 +9912,7 @@ mod tests {
             );
             for (idx, line) in model_text.lines().enumerate() {
                 assert!(
-                    crate::tui::ui_text::text_display_width(line) <= w as usize,
+                    codewhale_tui_kit::ui_text::text_display_width(line) <= w as usize,
                     "{w}x{h} model pick line {idx} overflows: {line:?}"
                 );
             }
@@ -9935,7 +9937,7 @@ mod tests {
             );
             for (idx, line) in confirm_text.lines().enumerate() {
                 assert!(
-                    crate::tui::ui_text::text_display_width(line) <= w as usize,
+                    codewhale_tui_kit::ui_text::text_display_width(line) <= w as usize,
                     "{w}x{h} confirm line {idx} overflows: {line:?}"
                 );
             }

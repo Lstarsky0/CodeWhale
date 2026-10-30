@@ -15,27 +15,17 @@ use codewhale_protocol::{
 };
 
 use super::{ApiError, RuntimeApiState};
+use crate::runtime_threads::manager::history::{
+    HistorySizeBound, history_owner_work, saved_document_digest,
+};
 use crate::runtime_threads::{
-    CreateThreadRequest, RuntimeHistoryOperation, RuntimeHistoryWitness, RuntimeThreadManager,
-    ThreadListFilter,
+    RuntimeHistoryOperation, RuntimeHistoryWitness, manager::CreateThreadRequest,
+    manager::RuntimeThreadManager, manager::ThreadListFilter,
 };
 use crate::session_manager::{SavedSession, SessionManager};
 use codewhale_runtime::session_tree::{
     SessionEntry, SessionEntryKind, SessionImportContainer, SessionJournal,
 };
-
-pub(crate) async fn history_owner_work<T: Send + 'static>(
-    work: impl FnOnce() -> Result<T> + Send + 'static,
-) -> Result<T> {
-    #[cfg(test)]
-    let ticket = crate::test_support::env_scope_ticket();
-    codewhale_app_server::daemon_socket::owner_work(move || {
-        #[cfg(test)]
-        let _membership = crate::test_support::join_env_scope(ticket);
-        work()
-    })
-    .await
-}
 
 /// Validate every branch before traversing the active projection or creating a
 /// canonical record. The existing journal validator alone does not reject cycles
@@ -740,14 +730,6 @@ fn stable_projection_entries(
 }
 
 const CANONICAL_REQUEST_ENVELOPE_BYTES: usize = 64 * 1024;
-
-pub(crate) fn saved_document_digest(session: &SavedSession) -> Result<String> {
-    let mut size = HistorySizeBound(MAX_CANONICAL_HISTORY_BYTES);
-    serde_json::to_writer(&mut size, &session.transport_form())?;
-    Ok(codewhale_runtime::hashing::sha256_hex(
-        codewhale_runtime::hashing::canonical_json(&serde_json::to_value(session)?).as_bytes(),
-    ))
-}
 
 pub(super) async fn mutate_thread_history(
     State(state): State<RuntimeApiState>,
@@ -1926,7 +1908,7 @@ fn decode_history_overrides(
     value: &serde_json::Value,
     config: &codewhale_runtime::config::Config,
     workspace: &Path,
-) -> Result<Option<crate::runtime_threads::UpdateThreadRequest>> {
+) -> Result<Option<crate::runtime_threads::manager::UpdateThreadRequest>> {
     if value.is_null() {
         return Ok(None);
     }
@@ -2034,7 +2016,7 @@ fn decode_history_overrides(
 
 fn apply_history_create_overrides(
     create: &mut CreateThreadRequest,
-    update: &crate::runtime_threads::UpdateThreadRequest,
+    update: &crate::runtime_threads::manager::UpdateThreadRequest,
 ) {
     if update.model.is_some() {
         create.model.clone_from(&update.model);
@@ -2068,23 +2050,6 @@ fn apply_history_create_overrides(
     }
     if update.system_prompt.is_some() {
         create.system_prompt.clone_from(&update.system_prompt);
-    }
-}
-
-pub(crate) struct HistorySizeBound(pub(crate) usize);
-impl std::io::Write for HistorySizeBound {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if bytes.len() > self.0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "full history exceeds byte transport bound; source retained",
-            ));
-        }
-        self.0 -= bytes.len();
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
     }
 }
 

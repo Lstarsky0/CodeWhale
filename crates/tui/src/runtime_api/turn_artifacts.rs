@@ -20,9 +20,9 @@ use super::workspace::{
 };
 use super::{ApiError, RuntimeApiState, map_thread_err};
 use crate::runtime_threads::{
-    CallWorkspaceSpan, FileChangeKind, RuntimeStoreRecordFailure, RuntimeStoreRecordKind,
-    TurnArtifactKind, TurnArtifactRef, TurnArtifactsView, TurnItemLifecycleStatus,
-    TurnWorkspaceArtifacts,
+    FileChangeKind, RuntimeStoreRecordFailure, RuntimeStoreRecordKind, TurnArtifactKind,
+    TurnArtifactRef, TurnItemLifecycleStatus, TurnWorkspaceArtifacts, manager::CallWorkspaceSpan,
+    manager::TurnArtifactsView,
 };
 
 pub(super) async fn list_turn_artifacts(

@@ -81,14 +81,20 @@ pub(crate) fn startup_route_configured(config: &Config) -> bool {
         || config.active_route_endpoint_configured()
 }
 
-pub(crate) async fn adopt_live_local_ollama_for_run(config: &mut Config) -> Option<String> {
+pub(crate) async fn adopt_live_local_ollama_for_run(
+    config: &mut Config,
+    read_only: bool,
+) -> Option<String> {
     let provider = config.active_provider_identity().ok()?.provider;
-    if !should_adopt_live_local_ollama(
-        startup_route_configured(config),
-        provider,
-        false,
-        !crate::provider_readiness::has_api_key(config),
-    ) {
+    if !should_adopt_live_local_ollama(startup_route_configured(config), provider, false, true) {
+        return None;
+    }
+    let has_key = if read_only {
+        config.active_route_api_key_read_only().is_ok()
+    } else {
+        crate::provider_readiness::has_api_key(config)
+    };
+    if has_key {
         return None;
     }
     let catalog = spawn_local_ollama_adoption_probe(config, true)?

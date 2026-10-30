@@ -774,8 +774,8 @@ async fn batch_contains_no_planted_sentinel() {
         "this test is only meaningful against a batch that was actually sent"
     );
     for batch in &batches {
-        assert_eq!(batch["schema_version"], 3);
-        assert_eq!(batch["notice_version"], 5);
+        assert_eq!(batch["schema_version"], 4);
+        assert_eq!(batch["notice_version"], 6);
         assert!(batch.get("consent_version").is_none());
     }
     let shown = SetupState::load_from(&fixture.setup_state_path()).expect("disclosure marker");
