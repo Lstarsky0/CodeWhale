@@ -445,6 +445,12 @@ pub(super) fn fire_runtime_tool_completion_hooks(
 /// drop it, and `extract_user_prompt` is the repository's one rule for what a
 /// user's prompt is once that envelope is removed (it trims the block's edges
 /// too, and applies the same way on both sides).
+///
+/// What is left is the prompt a person typed, which is exactly what a turn
+/// record keeps. Everything the engine wraps around it — the metadata block,
+/// an attachment's `<image path=…>` tags — and everything the engine injects
+/// in its place — compaction checkpoints, runtime-owned control messages —
+/// contributes nothing, because no reconstruction can reproduce it.
 pub(super) fn projected_user_text(message: &Message) -> Option<String> {
     if message.role.as_str() != "user" {
         return None;
@@ -456,12 +462,28 @@ pub(super) fn projected_user_text(message: &Message) -> Option<String> {
     // the settled history that carries the checkpoint, so leaving it in took
     // the cut away from the fork itself: `/undo`, retry and fork-again each
     // refused with "cannot identify an exact saved-history boundary".
-    if codewhale_models::turn_classify::is_wire_compaction_checkpoint_message(message) {
+    //
+    // Runtime-owned control messages are the same case for the same reason:
+    // the MCP-server notice, a shell-completion handoff and the deferred-
+    // toolbox snapshot are injected by the engine into the model-visible
+    // history and are never recorded on a turn, so reading one as a kept
+    // prompt made every conversation that had received one uncuttable. They
+    // carry the runtime provenance line in their `<turn_meta>` envelope;
+    // a person's own prompt does not, which is what keeps this recognition
+    // from swallowing a real turn.
+    if codewhale_models::turn_classify::is_wire_compaction_checkpoint_message(message)
+        || codewhale_models::turn_classify::is_runtime_owned_user_message(message)
+    {
         return None;
     }
     let text = message
         .content
         .iter()
+        // An attachment's tags are the engine's envelope, not what the user
+        // wrote: the record keeps the text block naming `[Attached image: …]`,
+        // so counting the tags as prompt text made every prompt carrying a
+        // screenshot unmatchable.
+        .filter(|block| !crate::image_attach::is_attachment_tag_block(block))
         .filter_map(|block| match block {
             ContentBlock::Text { text, .. } if !text.trim().is_empty() => Some(text.as_str()),
             _ => None,
@@ -8763,9 +8785,14 @@ impl RuntimeThreadManager {
                 forked.model.clone(),
             )
             .map_err(anyhow::Error::msg)?;
-            let mut size =
-                history::HistorySizeBound(codewhale_protocol::MAX_CANONICAL_HISTORY_BYTES);
-            serde_json::to_writer(&mut size, &session)?;
+            // Judge the fork's history the way its reader will: a document
+            // repeats its own messages while it carries a journal, and
+            // `load_session_snapshot_bounded` — which reads this fork back
+            // on its next turn — accepts an oversized file whose carried form
+            // fits. Measuring the stored shape here refused forks of
+            // conversations the runtime was still opening, saving and running
+            // turns on.
+            history::ensure_history_transport_fits(&session)?;
             let session_id = session.metadata.id.clone();
             let target_lease = manager.reserve_session_for_external_write(&session_id)?;
             anyhow::ensure!(
