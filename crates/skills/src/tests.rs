@@ -344,7 +344,7 @@ fn render_available_skills_context_lists_paths_and_usage() {
         "---\nname: test-skill\ndescription: A test skill\n---\nDo something special",
     );
 
-    let rendered = crate::skills::render_available_skills_context(&tmpdir.path().join("skills"))
+    let rendered = crate::render_available_skills_context(&tmpdir.path().join("skills"))
         .expect("skill context");
 
     // #4632: paths render relative to the skills base dir (privacy-safe),
@@ -365,7 +365,7 @@ fn render_available_skills_context_lists_paths_and_usage() {
 
 #[test]
 fn workspace_prompt_omits_disabled_skills_without_configured_directory() {
-    let _env_lock = crate::test_support::lock_test_env();
+    let _env_lock = codewhale_runtime::test_support::lock_test_env();
     let tmpdir = TempDir::new().unwrap();
     let home = tmpdir.path().join("home");
     let workspace = tmpdir.path().join("workspace");
@@ -383,11 +383,13 @@ fn workspace_prompt_omits_disabled_skills_without_configured_directory() {
         "Disabled skill",
         "Instructions",
     );
-    let _home = crate::test_support::EnvVarGuard::set("HOME", &home);
-    let _userprofile = crate::test_support::EnvVarGuard::set("USERPROFILE", &home);
-    let _codewhale_home =
-        crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.join(".codewhale"));
-    crate::test_support::trust_workspace(&workspace);
+    let _home = codewhale_runtime::test_support::EnvVarGuard::set("HOME", &home);
+    let _userprofile = codewhale_runtime::test_support::EnvVarGuard::set("USERPROFILE", &home);
+    let _codewhale_home = codewhale_runtime::test_support::EnvVarGuard::set(
+        "CODEWHALE_HOME",
+        home.join("isolated-product-state"),
+    );
+    codewhale_runtime::test_support::trust_workspace(&workspace);
 
     let mut state = codewhale_runtime::skill_state::SkillStateStore::load_default().unwrap();
     state.set_enabled("disabled-skill", false).unwrap();
@@ -398,12 +400,112 @@ fn workspace_prompt_omits_disabled_skills_without_configured_directory() {
         super::SkillDiscoveryMode::Compatible,
         "en",
         None,
+        super::SkillListingConfig::default(),
         super::MAX_AVAILABLE_SKILLS_CHARS,
     )
     .expect("enabled skill context");
 
     assert!(rendered.contains("enabled-skill"));
     assert!(!rendered.contains("disabled-skill"));
+    let owned = codewhale_runtime::config::owned_skills_dir().unwrap();
+    let config = codewhale_runtime::config::SkillsConfig {
+        bundled: codewhale_runtime::config::BundledSkillsConfig {
+            install: Some(codewhale_runtime::config::BundledSkillsInstall::All),
+            selected: Some(vec!["debug".into(), "documents".into(), "pdf".into()]),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    super::install_system_skills(&owned, &config.bundled).unwrap();
+    write_skill(
+        &home.join(".agents/skills"),
+        "debug",
+        "User debug",
+        "from compatible root",
+    );
+    let baseline = super::discover_for_workspace(&workspace, None, &config, None);
+    assert!(baseline.get("debug").unwrap().path.starts_with(&owned));
+    let mut filtered = config.clone();
+    filtered.bundled.disabled = Some(vec!["debug".into(), "docx".into()]);
+    filtered.bundled.explicit_only = Some(vec![
+        "pdf".into(),
+        "debug\n".into(),
+        "unknown-xyz".into(),
+        "odd\n\u{1b}name".into(),
+    ]);
+    let registry = super::discover_for_workspace(&workspace, None, &filtered, None);
+    assert!(
+        registry
+            .get("debug")
+            .unwrap()
+            .body
+            .contains("from compatible root")
+    );
+    assert!(
+        registry
+            .list()
+            .iter()
+            .all(|skill| skill.name != "docx" && skill.name != "documents")
+    );
+    assert_eq!(
+        registry.get("pdf").unwrap().invocation,
+        super::SkillInvocation::ExplicitOnly
+    );
+    assert!(registry.get("pdf").unwrap().invocation.user_invocable());
+    let index = super::render_index(&workspace, None, &filtered, "en", None, None).unwrap();
+    assert!(
+        !index
+            .lines()
+            .any(|line| line == "- pdf" || line.starts_with("- pdf:"))
+    );
+    let status = super::bundled_skills_status(&filtered, &registry).unwrap();
+    assert!(status.disabled.contains(&"debug"));
+    assert!(status.disabled.contains(&"documents"));
+    assert!(status.explicit_only.contains(&"pdf"));
+    assert_eq!(
+        status.unknown,
+        vec![
+            "explicit_only=unknown-xyz".to_string(),
+            format!("explicit_only={}", "odd\n\u{1b}name".escape_debug())
+        ]
+    );
+    assert_eq!(status.ignored, vec![r"debug\n"]);
+    assert!(status.unknown.iter().all(|name| !name.contains('\n')));
+    assert!(!status.inspection().join("\n").contains('\u{1b}'));
+    assert!(
+        status
+            .inspection()
+            .iter()
+            .any(|line| line.contains("disabled by config"))
+    );
+    assert!(
+        super::discover_for_workspace(&workspace, None, &config, None)
+            .get("debug")
+            .unwrap()
+            .path
+            .starts_with(&owned)
+    );
+    std::fs::write(owned.join("debug/.installed-from"), "managed-marker").unwrap();
+    assert!(
+        super::discover_for_workspace(&workspace, None, &filtered, None)
+            .get("debug")
+            .unwrap()
+            .path
+            .starts_with(&owned)
+    );
+    std::fs::remove_file(owned.join("debug/.installed-from")).unwrap();
+    std::fs::write(
+        owned.join("debug/SKILL.md"),
+        "---\nname: debug\ndescription: manual\n---\nuser owned\n",
+    )
+    .unwrap();
+    assert!(
+        super::discover_for_workspace(&workspace, None, &filtered, None)
+            .get("debug")
+            .unwrap()
+            .body
+            .contains("user owned")
+    );
 }
 
 #[test]
@@ -420,7 +522,7 @@ fn render_available_skills_context_uses_real_dir_name_not_frontmatter_name() {
         "---\nname: friendly-name\ndescription: drift case\n---\nbody",
     );
 
-    let rendered = crate::skills::render_available_skills_context(&tmpdir.path().join("skills"))
+    let rendered = crate::render_available_skills_context(&tmpdir.path().join("skills"))
         .expect("skill context");
 
     // #4632: rendered relative to the skills base dir; the regression
@@ -443,10 +545,10 @@ fn render_available_skills_context_returns_none_when_empty() {
     let tmpdir = TempDir::new().unwrap();
     let empty = tmpdir.path().join("skills");
     std::fs::create_dir_all(&empty).unwrap();
-    assert!(crate::skills::render_available_skills_context(&empty).is_none());
+    assert!(crate::render_available_skills_context(&empty).is_none());
 
     let missing = tmpdir.path().join("does-not-exist");
-    assert!(crate::skills::render_available_skills_context(&missing).is_none());
+    assert!(crate::render_available_skills_context(&missing).is_none());
 }
 
 #[test]
@@ -471,16 +573,40 @@ fn render_available_skills_context_truncates_long_descriptions() {
     let long_desc = "x".repeat(2_000);
     let body = format!("---\nname: bigdesc\ndescription: {long_desc}\n---\nbody");
     create_skill_dir(&tmpdir, "bigdesc", &body);
-
-    let rendered = crate::skills::render_available_skills_context(&tmpdir.path().join("skills"))
+    let registry = super::SkillRegistry::discover(&tmpdir.path().join("skills"));
+    for cap in [80, super::DEFAULT_SKILL_DESCRIPTION_CHARS, 1024] {
+        let config = codewhale_runtime::config::SkillsConfig {
+            listing_max_description_chars: Some(cap),
+            ..Default::default()
+        };
+        let listing = super::SkillListingConfig::from_config(&config);
+        let rendered = super::render_skills_block_with_configured_root(
+            &registry,
+            "en",
+            tmpdir.path(),
+            None,
+            listing,
+            listing.budget_chars(None),
+        )
         .expect("skill context");
-
-    let max = super::MAX_SKILL_DESCRIPTION_CHARS;
-    assert!(rendered.contains('…'), "expected truncation marker");
-    assert!(
-        !rendered.contains(&"x".repeat(max + 1)),
-        "untruncated long run should not appear"
-    );
+        assert!(rendered.contains('…'), "expected truncation marker");
+        assert!(
+            !rendered.contains(&"x".repeat(cap + 1)),
+            "description exceeded {cap}"
+        );
+        assert!(
+            rendered.contains(&format!("{cap}-character index limit")),
+            "{rendered}"
+        );
+        assert_eq!(
+            super::shortened_skills_note(&rendered).as_deref(),
+            Some("descriptions shortened for 1 of 1 skills")
+        );
+        assert!(super::description_exceeds_index_cap(
+            &long_desc,
+            listing.max_description_chars()
+        ));
+    }
 }
 
 #[test]
@@ -492,7 +618,7 @@ fn render_available_skills_context_collapses_internal_whitespace() {
         "---\nname: spaced-skill\ndescription: alpha  \t  beta   gamma\n---\nbody",
     );
 
-    let rendered = crate::skills::render_available_skills_context(&tmpdir.path().join("skills"))
+    let rendered = crate::render_available_skills_context(&tmpdir.path().join("skills"))
         .expect("skill context");
 
     let line = rendered
@@ -508,13 +634,13 @@ fn render_available_skills_context_collapses_internal_whitespace() {
 #[test]
 fn render_available_skills_context_keeps_every_name_when_descriptions_overflow() {
     let tmpdir = TempDir::new().unwrap();
-    let big_desc = "y".repeat(super::MAX_SKILL_DESCRIPTION_CHARS - 20);
+    let big_desc = "y".repeat(super::DEFAULT_SKILL_DESCRIPTION_CHARS - 20);
     for i in 0..200 {
         let body = format!("---\nname: skill-{i:03}\ndescription: {big_desc}\n---\nbody");
         create_skill_dir(&tmpdir, &format!("skill-{i:03}"), &body);
     }
 
-    let rendered = crate::skills::render_available_skills_context(&tmpdir.path().join("skills"))
+    let rendered = crate::render_available_skills_context(&tmpdir.path().join("skills"))
         .expect("skill context");
 
     // 200 × ~380 chars of description is ~76k, far over the default budget:
@@ -579,14 +705,22 @@ fn render_skills_block_shortens_summary_before_trigger() {
 /// than a small local window, both clamped to sane bounds.
 #[test]
 fn skills_prompt_budget_scales_with_context_window() {
-    let small = super::skills_prompt_budget_chars(Some(8_000));
-    let default = super::skills_prompt_budget_chars(None);
-    let large = super::skills_prompt_budget_chars(Some(1_000_000));
+    let small = super::SkillListingConfig::default().budget_chars(Some(8_000));
+    let default = super::SkillListingConfig::default().budget_chars(None);
+    let large = super::SkillListingConfig::default().budget_chars(Some(1_000_000));
     assert_eq!(small, 2_400, "floor holds for tiny windows");
     assert_eq!(default, 25_600, "128k window × 4 chars × 5%");
     assert_eq!(large, 40_000, "ceiling holds for 1M windows");
+    let configured =
+        super::SkillListingConfig::from_config(&codewhale_runtime::config::SkillsConfig {
+            listing_budget_fraction: Some(0.01),
+            ..Default::default()
+        });
+    assert_eq!(configured.budget_chars(None), 5_120);
+    assert_eq!(configured.budget_chars(Some(8_000)), 2_400);
+    assert_eq!(configured.budget_chars(Some(1_000_000)), 40_000);
     assert_eq!(
-        super::skills_prompt_budget_chars(Some(0)),
+        super::SkillListingConfig::default().budget_chars(Some(0)),
         default,
         "a zero window is treated as unknown"
     );
@@ -701,7 +835,7 @@ fn render_skills_block_preserves_registry_precedence_under_prompt_budget() {
         source: super::SkillSource::Native,
     });
 
-    let big_desc = "y".repeat(super::MAX_SKILL_DESCRIPTION_CHARS - 20);
+    let big_desc = "y".repeat(super::DEFAULT_SKILL_DESCRIPTION_CHARS - 20);
     for i in 0..200 {
         registry.skills.push(super::Skill {
             legacy_activation_name: None,
@@ -954,7 +1088,7 @@ fn create_dir_symlink(target: &std::path::Path, link: &std::path::Path) -> std::
 fn skills_directories_returns_existing_dirs_in_precedence_order() {
     let tmpdir = TempDir::new().unwrap();
     let workspace = tmpdir.path();
-    crate::test_support::trust_workspace(workspace);
+    codewhale_runtime::test_support::trust_workspace(workspace);
 
     // Create four of the five workspace candidate dirs (skip `.opencode`).
     std::fs::create_dir_all(workspace.join(".agents").join("skills")).unwrap();
@@ -1043,7 +1177,7 @@ fn existing_skill_dirs_keeps_agents_global_before_deepseek_global() {
 fn discover_in_workspace_merges_with_first_wins_precedence() {
     let tmpdir = TempDir::new().unwrap();
     let workspace = tmpdir.path();
-    crate::test_support::trust_workspace(workspace);
+    codewhale_runtime::test_support::trust_workspace(workspace);
 
     // Same skill name `shared` in two locations — the higher-precedence
     // dir's version should win.
@@ -1132,7 +1266,7 @@ fn same_root_slug_collision_warns_and_keeps_one() {
 fn discover_in_workspace_pulls_skills_from_opencode_dir() {
     let tmpdir = TempDir::new().unwrap();
     let workspace = tmpdir.path();
-    crate::test_support::trust_workspace(workspace);
+    codewhale_runtime::test_support::trust_workspace(workspace);
     write_skill(
         &workspace.join(".opencode").join("skills"),
         "opencode-only",
@@ -1151,7 +1285,7 @@ fn discover_in_workspace_pulls_skills_from_opencode_dir() {
 fn discover_in_workspace_pulls_skills_from_cursor_dir() {
     let tmpdir = TempDir::new().unwrap();
     let workspace = tmpdir.path();
-    crate::test_support::trust_workspace(workspace);
+    codewhale_runtime::test_support::trust_workspace(workspace);
     write_skill(
         &workspace.join(".cursor").join("skills"),
         "cursor-only",
@@ -1245,7 +1379,7 @@ fn discover_warns_for_plain_markdown_without_heading() {
 fn render_available_skills_context_for_workspace_picks_up_cross_tool_dirs() {
     let tmpdir = TempDir::new().unwrap();
     let workspace = tmpdir.path();
-    crate::test_support::trust_workspace(workspace);
+    codewhale_runtime::test_support::trust_workspace(workspace);
     write_skill(
         &workspace.join(".claude").join("skills"),
         "from-claude",
@@ -1264,7 +1398,7 @@ fn codewhale_only_mode_ignores_cross_tool_skill_dirs() {
     let home = tmpdir.path().join("home");
     let configured_dir = home.join(".codewhale").join("skills");
     std::fs::create_dir_all(&workspace).unwrap();
-    crate::test_support::trust_workspace(&workspace);
+    codewhale_runtime::test_support::trust_workspace(&workspace);
     write_skill(
         &workspace.join(".claude").join("skills"),
         "from-claude",
@@ -1366,7 +1500,7 @@ fn discover_for_workspace_and_dir_merges_workspace_and_configured_sources() {
     let home = tmpdir.path().join("home");
     let configured_dir = tmpdir.path().join("configured-skills");
     std::fs::create_dir_all(&workspace).unwrap();
-    crate::test_support::trust_workspace(&workspace);
+    codewhale_runtime::test_support::trust_workspace(&workspace);
     write_skill(
         &workspace.join(".claude").join("skills"),
         "workspace-skill",
@@ -1628,7 +1762,7 @@ fn discover_finds_both_workspace_and_global_skills() {
         "body",
     );
 
-    crate::test_support::trust_workspace(&workspace);
+    codewhale_runtime::test_support::trust_workspace(&workspace);
     let skills_dir = workspace.join(".agents").join("skills");
     let registry =
         super::discover_for_workspace_and_dir_with_home(&workspace, &skills_dir, Some(&home));
@@ -1656,7 +1790,7 @@ fn parse_skill_folded_block_scalar() {
         "folded-skill",
         "---\nname: folded-skill\ndescription: >\n  line one chinese\n  line two chinese\n---\nbody",
     );
-    let rendered = crate::skills::render_available_skills_context(&tmpdir.path().join("skills"))
+    let rendered = crate::render_available_skills_context(&tmpdir.path().join("skills"))
         .expect("skill context");
     assert!(
         rendered.contains("line one chinese line two chinese"),
@@ -1674,7 +1808,7 @@ fn parse_skill_literal_block_scalar() {
         "literal-skill",
         "---\nname: literal-skill\ndescription: |\n  line one\n  line two\n---\nbody",
     );
-    let rendered = crate::skills::render_available_skills_context(&tmpdir.path().join("skills"))
+    let rendered = crate::render_available_skills_context(&tmpdir.path().join("skills"))
         .expect("skill context");
     // `truncate_for_prompt` collapses whitespace, so the newlines
     // become spaces. The key assertion is that the content is
@@ -1695,7 +1829,7 @@ fn parse_skill_folded_strip_block_scalar() {
         "strip-skill",
         "---\nname: strip-skill\ndescription: >-\n  alpha\n  beta\n\n---\nbody",
     );
-    let rendered = crate::skills::render_available_skills_context(&tmpdir.path().join("skills"))
+    let rendered = crate::render_available_skills_context(&tmpdir.path().join("skills"))
         .expect("skill context");
     assert!(
         rendered.contains("alpha beta"),
@@ -1713,7 +1847,7 @@ fn parse_skill_single_line_description_still_works() {
         "plain-skill",
         "---\nname: plain-skill\ndescription: A simple description\n---\nbody",
     );
-    let rendered = crate::skills::render_available_skills_context(&tmpdir.path().join("skills"))
+    let rendered = crate::render_available_skills_context(&tmpdir.path().join("skills"))
         .expect("skill context");
     assert!(
         rendered.contains("- plain-skill: A simple description"),
@@ -2084,7 +2218,7 @@ fn clear_skill_discovery_cache_forces_a_fresh_walk() {
 
 #[test]
 fn workspace_and_dir_entry_point_shares_the_same_cache() {
-    let _env_lock = crate::test_support::lock_test_env();
+    let _env_lock = codewhale_runtime::test_support::lock_test_env();
     super::clear_skill_discovery_cache();
     let tmpdir = TempDir::new().unwrap();
     let home = tmpdir.path().join("home");
@@ -2098,10 +2232,12 @@ fn workspace_and_dir_entry_point_shares_the_same_cache() {
         "Configured skill",
         "Instructions",
     );
-    let _home = crate::test_support::EnvVarGuard::set("HOME", &home);
-    let _userprofile = crate::test_support::EnvVarGuard::set("USERPROFILE", &home);
-    let _codewhale_home =
-        crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.join(".codewhale"));
+    let _home = codewhale_runtime::test_support::EnvVarGuard::set("HOME", &home);
+    let _userprofile = codewhale_runtime::test_support::EnvVarGuard::set("USERPROFILE", &home);
+    let _codewhale_home = codewhale_runtime::test_support::EnvVarGuard::set(
+        "CODEWHALE_HOME",
+        home.join(".codewhale"),
+    );
 
     let (first, walked, second, rewalked) = measure_on_undisturbed_cache(|| {
         super::reset_discovery_metrics();
@@ -2130,7 +2266,7 @@ fn workspace_and_dir_entry_point_shares_the_same_cache() {
 
 #[test]
 fn configured_skill_prompt_uses_a_stable_root_in_entries_and_warnings() {
-    let _env_lock = crate::test_support::lock_test_env();
+    let _env_lock = codewhale_runtime::test_support::lock_test_env();
     super::clear_skill_discovery_cache();
     let tmpdir = TempDir::new().unwrap();
     let home = tmpdir.path().join("home");
@@ -2154,11 +2290,13 @@ fn configured_skill_prompt_uses_a_stable_root_in_entries_and_warnings() {
         "---\nname: Visual Design\ndescription: Design assets\n---\nInstructions",
     )
     .unwrap();
-    let _home = crate::test_support::EnvVarGuard::set("HOME", &home);
-    let _userprofile = crate::test_support::EnvVarGuard::set("USERPROFILE", &home);
-    let _codewhale_home =
-        crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.join(".codewhale"));
-    crate::test_support::trust_workspace(&workspace);
+    let _home = codewhale_runtime::test_support::EnvVarGuard::set("HOME", &home);
+    let _userprofile = codewhale_runtime::test_support::EnvVarGuard::set("USERPROFILE", &home);
+    let _codewhale_home = codewhale_runtime::test_support::EnvVarGuard::set(
+        "CODEWHALE_HOME",
+        home.join(".codewhale"),
+    );
+    codewhale_runtime::test_support::trust_workspace(&workspace);
 
     let rendered =
         super::render_available_skills_context_for_workspace_and_dir_with_mode_and_plugins(
@@ -2167,6 +2305,7 @@ fn configured_skill_prompt_uses_a_stable_root_in_entries_and_warnings() {
             super::SkillDiscoveryMode::Compatible,
             "en",
             None,
+            super::SkillListingConfig::default(),
             super::MAX_AVAILABLE_SKILLS_CHARS,
         )
         .expect("configured skill context");
@@ -2185,7 +2324,7 @@ fn configured_skill_prompt_uses_a_stable_root_in_entries_and_warnings() {
 
 #[test]
 fn default_workspace_skill_prompt_preserves_its_discoverable_path() {
-    let _env_lock = crate::test_support::lock_test_env();
+    let _env_lock = codewhale_runtime::test_support::lock_test_env();
     super::clear_skill_discovery_cache();
     let tmpdir = TempDir::new().unwrap();
     let home = tmpdir.path().join("home");
@@ -2198,11 +2337,13 @@ fn default_workspace_skill_prompt_preserves_its_discoverable_path() {
         "Workspace skill",
         "Instructions",
     );
-    let _home = crate::test_support::EnvVarGuard::set("HOME", &home);
-    let _userprofile = crate::test_support::EnvVarGuard::set("USERPROFILE", &home);
-    let _codewhale_home =
-        crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.join(".codewhale"));
-    crate::test_support::trust_workspace(&workspace);
+    let _home = codewhale_runtime::test_support::EnvVarGuard::set("HOME", &home);
+    let _userprofile = codewhale_runtime::test_support::EnvVarGuard::set("USERPROFILE", &home);
+    let _codewhale_home = codewhale_runtime::test_support::EnvVarGuard::set(
+        "CODEWHALE_HOME",
+        home.join(".codewhale"),
+    );
+    codewhale_runtime::test_support::trust_workspace(&workspace);
 
     let rendered =
         super::render_available_skills_context_for_workspace_and_dir_with_mode_and_plugins(
@@ -2211,6 +2352,7 @@ fn default_workspace_skill_prompt_preserves_its_discoverable_path() {
             super::SkillDiscoveryMode::Compatible,
             "en",
             None,
+            super::SkillListingConfig::default(),
             super::MAX_AVAILABLE_SKILLS_CHARS,
         )
         .expect("workspace skill context");
@@ -2227,15 +2369,15 @@ fn global_skill_roots_come_from_the_os_home_only() {
     // home once produced `Failed to read /Users/<handle>/.codewhale/skills/
     // delegate/SKILL.md`; pin the source so every global root is provably
     // under the faked OS home.
-    let _env_lock = crate::test_support::lock_test_env();
+    let _env_lock = codewhale_runtime::test_support::lock_test_env();
     let tmpdir = TempDir::new().unwrap();
     let home = tmpdir.path().join("os-home");
     let workspace = tmpdir.path().join("workspace");
     std::fs::create_dir_all(home.join(".codewhale").join("skills")).unwrap();
     std::fs::create_dir_all(&workspace).unwrap();
-    let _home = crate::test_support::EnvVarGuard::set("HOME", &home);
-    let _userprofile = crate::test_support::EnvVarGuard::set("USERPROFILE", &home);
-    let _codewhale_home = crate::test_support::EnvVarGuard::remove("CODEWHALE_HOME");
+    let _home = codewhale_runtime::test_support::EnvVarGuard::set("HOME", &home);
+    let _userprofile = codewhale_runtime::test_support::EnvVarGuard::set("USERPROFILE", &home);
+    let _codewhale_home = codewhale_runtime::test_support::EnvVarGuard::remove("CODEWHALE_HOME");
 
     let dirs =
         super::skills_directories_for_mode(&workspace, super::SkillDiscoveryMode::Compatible);
@@ -2294,7 +2436,7 @@ fn assert_skills_dir_held_to_workspace_trust(
         registry.warnings()
     );
 
-    crate::test_support::trust_workspace(workspace);
+    codewhale_runtime::test_support::trust_workspace(workspace);
     let registry = super::discover_for_workspace_and_dir_with_mode_and_plugins(
         workspace, skills_dir, mode, None,
     );
@@ -2505,7 +2647,7 @@ fn owned_global_root_shadows_claude_compat() {
 fn installed_skill_wins_over_agents_copy() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().join("ws");
-    crate::test_support::trust_workspace(&workspace);
+    codewhale_runtime::test_support::trust_workspace(&workspace);
     write_skill(
         &workspace.join(".codewhale/skills"),
         "shared",
@@ -2538,7 +2680,7 @@ fn installed_skill_wins_over_agents_copy() {
 fn flat_skills_root_opt_in() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().join("ws");
-    crate::test_support::trust_workspace(&workspace);
+    codewhale_runtime::test_support::trust_workspace(&workspace);
     write_skill(
         &workspace.join("skills"),
         "flat",

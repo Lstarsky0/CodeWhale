@@ -72,7 +72,7 @@ impl Engine {
         if let Some(skills_dir) = authority.runtime.context.skills_dir.as_ref() {
             config.skills_dir = skills_dir.clone();
         }
-        config.skills_discovery_mode = authority.runtime.context.skills_discovery_mode;
+        config.skills_config = authority.runtime.context.skills_config.clone();
         config.features = authority.runtime.context.features.clone();
         config.snapshots_enabled = false;
         config.memory_enabled = false;

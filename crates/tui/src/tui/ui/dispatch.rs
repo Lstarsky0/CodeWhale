@@ -997,6 +997,7 @@ pub(crate) async fn spawned_dispatch_inner(
         batch: Some(initial_routed_usage.clone()),
     };
     let route_limits = turn_route.candidate.limits();
+    let context_window = turn_route.context_window;
     let op = Op::SendMessage(TurnSpec {
         profile_constitution: None,
         max_output_tokens: None,
@@ -1042,6 +1043,7 @@ pub(crate) async fn spawned_dispatch_inner(
         effective_reasoning_effort: effective_reasoning_receipt,
         auto_selection,
         route_limits,
+        context_window,
     };
     Box::new(move |app, current_engine, config| {
         // Admission stays serialized by this flag until its callback retires,
@@ -1113,6 +1115,21 @@ pub(crate) fn build_dispatch_success_closure(
             app.clear_receipt();
             app.tool_evidence.clear();
 
+            if prepare.auto_model {
+                app.last_effective_model = Some(outcome.effective_model.clone());
+                app.last_effective_budget = Some((
+                    outcome.effective_provider,
+                    outcome.effective_model.clone(),
+                    crate::route_budget::known_route_limits(outcome.route_limits),
+                    outcome.context_window,
+                ));
+            } else {
+                app.set_active_route_limits(outcome.route_limits);
+                app.active_context_window = Some(outcome.context_window);
+                app.active_context_window_source = outcome.context_window.source;
+            }
+            app.update_model_compaction_budget();
+
             app.system_prompt = Some(build_app_system_prompt_with_goal(
                 app,
                 config,
@@ -1147,8 +1164,6 @@ pub(crate) fn build_dispatch_success_closure(
                 app.last_effective_provider = None;
                 app.last_effective_provider_identity = None;
                 app.last_auto_route_receipt = None;
-                app.set_active_route_limits(outcome.route_limits);
-                app.update_model_compaction_budget();
             }
             app.pending_auto_route_receipt = outcome
                 .auto_selection

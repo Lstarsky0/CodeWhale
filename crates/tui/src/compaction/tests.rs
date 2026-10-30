@@ -628,3 +628,15 @@ fn pruning_metadata_belongs_to_the_exact_execution() {
             .any(|item| item.message_idx == 1)
     );
 }
+
+#[test]
+fn estimate_tokens_is_available_for_future_budgeting() {
+    let messages = vec![Message {
+        role: codewhale_models::Role::from("user"),
+        content: vec![ContentBlock::Text {
+            text: "src/main.rs".to_string(),
+            cache_control: None,
+        }],
+    }];
+    assert!(estimate_tokens(&messages) > 0);
+}

@@ -210,7 +210,7 @@ fn open_log_file(path: &Path) -> std::io::Result<std::fs::File> {
     }
 }
 
-pub(crate) fn log_directory() -> Option<PathBuf> {
+pub fn log_directory() -> Option<PathBuf> {
     // $CODEWHALE_HOME is a hard override of the base data directory
     // (docs/CONFIGURATION.md): when SET, logs live under it and we do NOT fall
     // back to the legacy ~/.deepseek path — silent fallback would defeat the
@@ -408,38 +408,6 @@ mod tests {
         assert!(open_log_file(&link).is_err());
         assert_eq!(std::fs::read_to_string(&target).expect("read"), "keep");
         assert_eq!(mode(&target), 0o644);
-    }
-
-    #[test]
-    fn whitespace_home_override_is_consistent_across_tui_state_entry_points() {
-        let _lock = crate::test_support::lock_test_env();
-        let tmp = tempfile::TempDir::new().expect("temporary root");
-        let home = tmp.path().join("home");
-        let userprofile = tmp.path().join("userprofile");
-        let _home = crate::test_support::EnvVarGuard::set("HOME", &home);
-        let _userprofile = crate::test_support::EnvVarGuard::set("USERPROFILE", &userprofile);
-        let _codewhale_home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", " \t ");
-        let _config_path = crate::test_support::EnvVarGuard::remove("CODEWHALE_CONFIG_PATH");
-        let _legacy_config_path = crate::test_support::EnvVarGuard::remove("DEEPSEEK_CONFIG_PATH");
-        let primary = home.join(".codewhale");
-
-        assert_eq!(codewhale_paths::user_home(), Some(home.clone()));
-        assert_eq!(
-            codewhale_runtime::config::workspace_trust_config_candidate_paths(),
-            vec![
-                primary.join("config.toml"),
-                home.join(".deepseek").join("config.toml")
-            ]
-        );
-        assert_eq!(log_directory(), Some(primary.join("logs")));
-        assert_eq!(
-            crate::automation_manager::default_automations_dir(),
-            primary.join("automations")
-        );
-        assert_eq!(
-            crate::session_manager::default_sessions_dir().expect("session directory"),
-            primary.join("sessions")
-        );
     }
 
     fn set_modified(path: &Path, modified: SystemTime) {

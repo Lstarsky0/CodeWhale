@@ -34,12 +34,12 @@ use crate::tui::shell_key_routing::{
 };
 use crate::tui::views::ConfigView;
 use crate::tui::views::{HelpView, ModalView, ViewAction};
-use crate::working_set::Workspace;
 use codewhale_config::ProviderKind;
 use codewhale_config::descriptors::defaults::{
     DEFAULT_OPENROUTER_MODEL, DEFAULT_TEXT_MODEL, DEFAULT_ZAI_MODEL,
 };
 use codewhale_runtime::config::{Config, ProviderConfig, ProvidersConfig};
+use codewhale_runtime::working_set::Workspace;
 use codewhale_tui_kit::ui_text::{line_to_plain, truncate_line_to_width};
 use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -1656,7 +1656,10 @@ fn canonical_file_mutations_attach_receipts_only_to_successful_outcomes() {
             );
             assert!(cell.receipt.is_some(), "{approval_mode:?} File.{action}");
             assert_eq!(
-                cell.receipt.as_ref().unwrap().outcome_label(),
+                cell.receipt
+                    .as_ref()
+                    .unwrap()
+                    .outcome_label(codewhale_localization::Locale::En),
                 "Updated src/lib.rs",
                 "{approval_mode:?} File.{action}"
             );
@@ -12872,8 +12875,12 @@ async fn paused_dispatch_at_compaction_threshold_enqueues_one_atomic_send() {
     app.auto_compact_threshold_percent = 10.0;
     app.api_messages =
         std::sync::Arc::new(vec![text_message("assistant", &"context ".repeat(240_000))]);
-    let planned_compaction =
-        app.compaction_config_for_route(app.api_provider, &app.model, app.active_route_limits);
+    let planned_compaction = app.compaction_config_for_route(
+        app.api_provider,
+        &app.model,
+        app.active_route_limits,
+        app.active_context_window,
+    );
     let fixture_used =
         estimated_context_tokens(&app).expect("fixture context estimate should be available");
     assert!(
@@ -13520,8 +13527,12 @@ fn auto_routed_turn_compaction_uses_selected_route_not_stale_app_route() {
         .expect("preflight auto-selected route");
     let route_limits = crate::route_budget::known_route_limits(route.candidate.limits());
 
-    let compaction =
-        app.compaction_config_for_route(route.identity.provider, &route.model, route_limits);
+    let compaction = app.compaction_config_for_route(
+        route.identity.provider,
+        &route.model,
+        route_limits,
+        Some(route.context_window),
+    );
 
     assert_eq!(compaction.model, "vendor/model-b");
     assert_eq!(compaction.effective_context_window, Some(196_000));
@@ -26150,7 +26161,9 @@ fn orphan_success_with_mutation_metadata_keeps_the_file_receipt() {
     };
     assert_eq!(cell.status, ToolStatus::Success);
     assert_eq!(
-        cell.receipt.as_ref().map(|receipt| receipt.outcome_label()),
+        cell.receipt
+            .as_ref()
+            .map(|receipt| receipt.outcome_label(codewhale_localization::Locale::En)),
         Some("Updated src/lib.rs".to_string())
     );
     assert_eq!(app.tool_details_by_cell[&0].tool_name, "File");
@@ -27455,7 +27468,9 @@ fn patch_approval_modal_does_not_displace_the_active_file_receipt() {
     };
     assert_eq!(cell.status, ToolStatus::Success);
     assert_eq!(
-        cell.receipt.as_ref().map(|receipt| receipt.outcome_label()),
+        cell.receipt
+            .as_ref()
+            .map(|receipt| receipt.outcome_label(codewhale_localization::Locale::En)),
         Some("Updated src/lib.rs".to_string())
     );
 }
@@ -33673,6 +33688,41 @@ async fn offline_queue_lifecycle_preserves_edits_and_explicit_reset() {
         assert_eq!(app.current_session_id, active);
         assert_eq!(app.input, "preserve on failed resume");
     }
+    let mut reset_app = create_test_app();
+    let reset_id = "reset-snapshot-build-failure";
+    reset_app.current_session_id = Some(reset_id.into());
+    let checkpoint = create_saved_session_with_id_and_mode(
+        reset_id.into(),
+        &[text_message("user", "recover this")],
+        &reset_app.model,
+        &reset_app.workspace,
+        0,
+        None,
+        None,
+    );
+    let checkpoint_path = manager
+        .save_checkpoint(&checkpoint)
+        .expect("save checkpoint");
+    let bad_home = directory.path().join("blocked-state-home");
+    std::fs::write(&bad_home, b"not a directory").unwrap();
+    {
+        let _bad_home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &bad_home);
+        persist_full_reset_snapshot(&mut reset_app);
+    }
+    flush_offline_queue_test_actor(&handle).await;
+    assert!(
+        checkpoint_path.exists(),
+        "failed reset must retain recovery"
+    );
+    let failure = reset_app
+        .status_message
+        .as_deref()
+        .expect("failed reset status");
+    assert!(failure.contains("could not be saved"), "{failure}");
+    assert!(matches!(
+        reset_app.history.last(),
+        Some(HistoryCell::Error { message, .. }) if message == failure
+    ));
     assert!(handle.try_send(PersistRequest::Shutdown));
     task.await.expect("queue actor shutdown");
 }
@@ -33805,6 +33855,14 @@ fn stale_session_projection_cannot_rewind_a_host_launch() {
     }
     app.runtime_turn_id = None;
     app.is_loading = false;
+    let accepted_window = crate::route_runtime::ContextWindowResolution {
+        tokens: 128_000,
+        source: crate::route_runtime::ContextWindowSource::Fallback,
+    };
+    app.active_route_limits = None;
+    app.active_context_window = Some(accepted_window);
+    app.active_context_window_source = accepted_window.source;
+    app.pending_turn_route = Some((app.api_provider, "canonical-model".into(), false));
     assert!(super::event_loop::apply_engine_session_projection(
         &mut app,
         &Config::default(),
@@ -33816,7 +33874,7 @@ fn stale_session_projection_cannot_rewind_a_host_launch() {
             ]),
             system_prompt: None,
             instruction_assembly: None,
-            model,
+            model: "canonical-model".into(),
             workspace,
         }
     ));
@@ -33826,6 +33884,8 @@ fn stale_session_projection_cannot_rewind_a_host_launch() {
         vec![text_message("user", "expected engine transcript")]
     );
     assert_eq!(app.input, "typing remains responsive");
+    assert_eq!(app.active_context_window, Some(accepted_window));
+    assert_eq!(app.effective_context_window(), 128_000);
 }
 
 #[test]
@@ -34879,13 +34939,15 @@ fn background_skill_cache_refuses_stale_epoch_workspace_and_plugin_snapshot() {
     stale_dir.skills_dir = app.skills_dir.join("different");
     assert!(!app.install_skill_cache_if_current(&stale_dir, 7, result.clone()));
     let mut stale_mode = current.clone();
-    stale_mode.mode = if app.skills_discovery_mode == crate::skills::SkillDiscoveryMode::Compatible
-    {
-        crate::skills::SkillDiscoveryMode::CodeWhaleOnly
-    } else {
-        crate::skills::SkillDiscoveryMode::Compatible
-    };
+    let mut config = (*app.skills_config).clone();
+    config.scan_codewhale_only = Some(!config.scan_codewhale_only());
+    stale_mode.config = Arc::new(config);
     assert!(!app.install_skill_cache_if_current(&stale_mode, 7, result.clone()));
+    let mut stale_bundle = current.clone();
+    let mut config = (*app.skills_config).clone();
+    config.bundled.disabled = Some(vec!["debug".into()]);
+    stale_bundle.config = Arc::new(config);
+    assert!(!app.install_skill_cache_if_current(&stale_bundle, 7, result.clone()));
     let mut stale_plugins = current.clone();
     stale_plugins.plugins = Arc::new(codewhale_plugins::PluginRegistry::empty(&app.workspace));
     assert!(!app.install_skill_cache_if_current(&stale_plugins, 7, result.clone()));
@@ -34911,9 +34973,9 @@ async fn persisted_queued_native_skill_is_denied_after_host_withdrawal() {
     let engine = manager.attach(Arc::clone(&plugins));
     engine.sync().await.unwrap();
     let plugins = engine.plugin_view();
-    let catalog = crate::skills::discover_in_workspace_with_mode_and_plugins(
+    let catalog = codewhale_skills::discover_in_workspace_with_mode_and_plugins(
         fixture.workspace(),
-        crate::skills::SkillDiscoveryMode::CodeWhaleOnly,
+        codewhale_skills::SkillDiscoveryMode::CodeWhaleOnly,
         Some(&plugins),
     );
     let skill = catalog.get("skills-root:quick-check").unwrap();

@@ -230,7 +230,7 @@ fn detail_status_label(job: &ShellJobSnapshot) -> String {
         u64::try_from(crate::tools::shell::QUIET_NO_OUTPUT_AFTER.as_millis()).unwrap_or(u64::MAX);
     match job.elapsed_since_output_ms {
         Some(ms) if job.status == ShellStatus::Running && !job.stale && ms >= quiet => {
-            crate::tui::history::stale_shell_status_label(ms)
+            crate::tui::history::stale_shell_status_label(ms, codewhale_localization::Locale::En)
         }
         _ => status_label(&job.status, job.stale).to_string(),
     }

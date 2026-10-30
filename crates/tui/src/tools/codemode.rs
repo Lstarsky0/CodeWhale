@@ -1752,8 +1752,8 @@ mod tests {
             "---\nname: greet\ndescription: Say hello\n---\n# Greet\nSay hello warmly.\n",
         )
         .unwrap();
-        let context = ToolContext::new(&workspace)
-            .with_skills_config(&skills_root, crate::skills::SkillDiscoveryMode::Compatible);
+        let context =
+            ToolContext::new(&workspace).with_skills_config(&skills_root, Default::default());
         let registry = ToolRegistryBuilder::new()
             .with_tool(Arc::new(crate::tools::skill::LoadSkillTool))
             .build(context.clone());

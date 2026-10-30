@@ -508,6 +508,7 @@ pub(crate) fn rollback_provider_after_auth_failure(
         previous_route_limits,
         previous_route_base_url,
         previous_context_window_source,
+        previous_context_window,
         previous_context_window_override,
         previous_config,
         previous_onboarding,
@@ -541,6 +542,7 @@ pub(crate) fn rollback_provider_after_auth_failure(
     app.active_route_limits = previous_route_limits;
     app.active_route_base_url = previous_route_base_url;
     app.active_context_window_source = previous_context_window_source;
+    app.active_context_window = previous_context_window;
     app.update_model_compaction_budget();
     app.clear_model_scoped_telemetry();
     app.offline_mode = false;
@@ -594,6 +596,7 @@ pub(crate) fn compaction_for_validated_route(
         route.identity.provider,
         &route.model,
         crate::route_budget::known_route_limits(route.candidate.limits()),
+        Some(route.context_window),
     );
     config.image_input = route.candidate.capabilities().image_input;
     config
@@ -718,6 +721,7 @@ async fn switch_provider_inner(
         previous_route_limits: app.active_route_limits,
         previous_route_base_url: app.active_route_base_url.clone(),
         previous_context_window_source: app.active_context_window_source,
+        previous_context_window: app.active_context_window,
         previous_context_window_override: app.active_context_window_override,
         previous_config: previous_config.clone(),
         previous_onboarding: app.onboarding,
@@ -825,14 +829,14 @@ async fn switch_provider_inner(
     let target_identity = target_identity_record.key.to_string();
     let new_base_url = validated_route.candidate.endpoint().base_url.clone();
     let route_limits = validated_route.candidate.limits();
-    let context_window_source = validated_route.context_window.source;
+    let context_window = validated_route.context_window;
     let new_model = validated_route.model.clone();
     let apply_route = || {
         *config = *validated_route.config;
         app.set_provider_identity_record(target_identity_record.clone());
         app.set_model_selection(new_model.clone());
         app.set_active_context_window_override(config, &target_identity_record);
-        app.set_active_route_resolution(new_base_url.clone(), route_limits, context_window_source);
+        app.set_active_route_resolution(new_base_url.clone(), route_limits, context_window);
     };
     let applied = if let Some((endpoint, ticket)) = probe {
         crate::provider_catalog_live::with_current_route_ticket(

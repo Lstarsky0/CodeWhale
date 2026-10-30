@@ -748,8 +748,8 @@ fn localized_tier(locale: Locale, tier: &str) -> String {
     tr(locale, id).into_owned()
 }
 
-fn localized_skill_root(locale: Locale, kind: crate::skills::roots::SkillRootKind) -> String {
-    use crate::skills::roots::SkillRootKind;
+fn localized_skill_root(locale: Locale, kind: codewhale_skills::roots::SkillRootKind) -> String {
+    use codewhale_skills::roots::SkillRootKind;
 
     match kind {
         SkillRootKind::CodeWhaleProject => {
@@ -1134,7 +1134,7 @@ fn marketplace_model(app: &App, locale: Locale) -> ExtensionsTabModel {
 }
 
 fn skills_model(app: &App, locale: Locale) -> ExtensionsTabModel {
-    use crate::skills::audit::{ParserState, SkillAuditMode, scan_with_configured};
+    use codewhale_skills::audit::{ParserState, SkillAuditMode, scan_with_configured};
 
     let home = codewhale_paths::user_home();
     let audit = scan_with_configured(
@@ -1164,7 +1164,7 @@ fn skills_model(app: &App, locale: Locale) -> ExtensionsTabModel {
             detail: skill.safe_display_path,
             // Enter opens the skills manager, which is where install, update,
             // remove and trust already live (`views/skills_manager.rs`, 1,000
-            // lines, driving `skills::mutation::SkillMutationRequest`). This
+            // lines, driving `codewhale_skills::mutation::SkillMutationRequest`). This
             // tab used to dead-end on `action: None` — founder live-test:
             // "skills - no way to delete them or edit or anything either" —
             // even though the manager it needed was one command away. Routing

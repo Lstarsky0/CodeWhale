@@ -54,6 +54,7 @@ execpolicy        cargo test -p codewhale-execpolicy --lib --locked
 hooks             cargo test -p codewhale-hooks --lib --locked
 lane              cargo test -p codewhale-lane --lib --locked
 mcp               cargo test -p codewhale-mcp --lib --locked
+models            cargo test -p codewhale-models --lib --locked
 net               cargo test -p codewhale-net --lib --locked
 notify            cargo test -p codewhale-notify --lib --locked
 paths             cargo test -p codewhale-paths --lib --locked
@@ -70,6 +71,7 @@ tools             cargo test -p codewhale-tools --lib --locked
 tui               cargo test -p codewhale-tui --lib --locked
 tui-kit           cargo test -p codewhale-tui-kit --lib --locked
 skill-install     cargo test -p codewhale-skill-install --lib --locked
+skills            cargo test -p codewhale-skills --lib --locked
 plugins           cargo test -p codewhale-plugins --lib --locked
 util              cargo test -p codewhale-util --lib --locked
 dependencies      cargo test -p codewhale-dependencies --lib --locked
@@ -209,6 +211,7 @@ case $area in
   hooks) pkg=codewhale-hooks ;;
   lane) pkg=codewhale-lane ;;
   mcp) pkg=codewhale-mcp ;;
+  models) pkg=codewhale-models ;;
   net) pkg=codewhale-net ;;
   notify) pkg=codewhale-notify ;;
   paths) pkg=codewhale-paths ;;
@@ -225,6 +228,7 @@ case $area in
   tui) pkg=codewhale-tui ;;
   tui-kit) pkg=codewhale-tui-kit ;;
   skill-install) pkg=codewhale-skill-install ;;
+  skills) pkg=codewhale-skills ;;
   plugins) pkg=codewhale-plugins ;;
   util) pkg=codewhale-util ;;
   dependencies) pkg=codewhale-dependencies ;;

@@ -1428,10 +1428,10 @@ fn a_card_verb_agrees_with_its_own_label_in_every_locale() {
         (
             "Searching for `TranscriptScroll`",
             "find done",
-            "find 完成",
+            "搜索 完成",
             "read done",
         ),
-        ("Reading src/foo.rs", "read done", "read 完成", "find done"),
+        ("Reading src/foo.rs", "read done", "读取 完成", "find done"),
     ] {
         let cell = super::ExploringCell {
             entries: vec![super::ExploringEntry {
@@ -1534,6 +1534,18 @@ fn receipts_count_only_what_they_actually_counted() {
         "running",
         "an unfinished read has nothing to count yet"
     );
+    for (status, text) in [
+        (ToolStatus::Running, "运行中"),
+        (ToolStatus::Failed, "失败"),
+        (ToolStatus::Stopped, "已停止"),
+        (ToolStatus::Hydrated, "已加载，未运行"),
+        (ToolStatus::Warning, "存在问题"),
+    ] {
+        assert_eq!(
+            super::tool_receipt_label(ToolFamily::Run, status, None, Locale::ZhHans),
+            text
+        );
+    }
 }
 
 /// The same truthfulness contract through the real shell render path, where a
@@ -1563,7 +1575,7 @@ fn shell_headers_stay_truthful_through_the_output_formatters() {
 
         for (locale, done, unit) in [
             (Locale::En, "done", "lines"),
-            (Locale::ZhHans, "完成", "行"),
+            (Locale::ZhHans, "完成", " 行"),
         ] {
             let header = line_text(&cell.render_with_locale(80, true, RenderMode::Live, locale)[0]);
             assert!(
@@ -1654,6 +1666,16 @@ fn agent_cards_stay_one_line_and_spawn_cards_yield_to_the_delegate_card() {
         text.contains(" agent "),
         "the agent family label should appear once in the summary: {text:?}"
     );
+    let mut failed = agent("action: peek agent_id: agent_scout_1", Some("failed"));
+    failed.status = ToolStatus::Failed;
+    let text = lines_text(&failed.lines_with_mode_and_locale(
+        120,
+        true,
+        RenderMode::Live,
+        codewhale_localization::Locale::ZhHans,
+    ));
+    assert!(text.contains("失败"), "{text}");
+    assert!(!text.contains("已检查"), "{text}");
 }
 
 /// A tool the catalog does not have produces one useful sentence — the catalog
@@ -2230,6 +2252,15 @@ fn an_activity_group_renders_as_a_single_metadata_line() {
     assert_eq!(lines.len(), 1);
     assert_eq!(lines_text(&lines), "Explored 2 files, 1 search ›");
     assert!(!lines_text(&lines).contains("activity_group"));
+    cell.input_summary = None;
+    let localized = cell.lines_with_mode_and_locale(
+        120,
+        true,
+        RenderMode::Live,
+        codewhale_localization::Locale::ZhHans,
+    );
+    assert!(lines_text(&localized).contains("更新了元数据"));
+    assert!(!lines_text(&localized).contains("Updated metadata"));
 }
 
 // ---------------------------------------------------------------------------
@@ -2573,38 +2604,47 @@ fn a_collapsed_run_summary_names_what_actually_happened() {
     };
 
     assert_eq!(
-        super::tool_run_summary(&run(
-            &["read_file", "list_dir"],
-            super::ToolRunActivitySummary {
-                files: 4,
-                searches: 1,
-                ..Default::default()
-            }
-        )),
+        super::tool_run_summary(
+            &run(
+                &["read_file", "list_dir"],
+                super::ToolRunActivitySummary {
+                    files: 4,
+                    searches: 1,
+                    ..Default::default()
+                }
+            ),
+            codewhale_localization::Locale::En
+        ),
         "Explored 4 files, 1 search: read file, list dir"
     );
 
     assert_eq!(
-        super::tool_run_summary(&run(
-            &["read_file", "run_tests", "validate_data"],
-            super::ToolRunActivitySummary {
-                files: 2,
-                commands: 2,
-                ..Default::default()
-            }
-        )),
+        super::tool_run_summary(
+            &run(
+                &["read_file", "run_tests", "validate_data"],
+                super::ToolRunActivitySummary {
+                    files: 2,
+                    commands: 2,
+                    ..Default::default()
+                }
+            ),
+            codewhale_localization::Locale::En
+        ),
         "Explored 2 files: read file, ran 2 commands: run tests, validate data",
         "each clause lists only its own families"
     );
 
     assert_eq!(
-        super::tool_run_summary(&run(
-            &["session_sync"],
-            super::ToolRunActivitySummary {
-                other: 2,
-                ..Default::default()
-            }
-        )),
+        super::tool_run_summary(
+            &run(
+                &["session_sync"],
+                super::ToolRunActivitySummary {
+                    other: 2,
+                    ..Default::default()
+                }
+            ),
+            codewhale_localization::Locale::En
+        ),
         "Updated metadata",
         "a run of tools with no user-facing family falls back to a plain note"
     );
@@ -2621,7 +2661,7 @@ fn a_collapsed_run_summary_names_what_actually_happened() {
     );
     assert_eq!(commands[0].activity.commands, 3);
     assert_eq!(
-        super::tool_run_summary(&commands[0]),
+        super::tool_run_summary(&commands[0], codewhale_localization::Locale::En),
         "Ran 3 commands: run tests, run verifiers, validate data"
     );
 
@@ -2635,9 +2675,29 @@ fn a_collapsed_run_summary_names_what_actually_happened() {
     );
     assert_eq!(git[0].activity.files, 3);
     assert_eq!(
-        super::tool_run_summary(&git[0]),
+        super::tool_run_summary(&git[0], codewhale_localization::Locale::En),
         "Explored 3 files: git log, git show, git blame"
     );
+    let sample = run(
+        &["read_file", "search"],
+        super::ToolRunActivitySummary {
+            files: 2,
+            searches: 1,
+            ..Default::default()
+        },
+    );
+    for (locale, expected) in [
+        (codewhale_localization::Locale::ZhHans, "浏览了2个文件"),
+        (codewhale_localization::Locale::ZhHant, "瀏覽了2個檔案"),
+        (codewhale_localization::Locale::Ja, "2ファイル"),
+        (codewhale_localization::Locale::Ru, "Просмотрено: файлы — 2"),
+        (codewhale_localization::Locale::Uk, "Переглянуто: файли — 2"),
+    ] {
+        let text = super::tool_run_summary(&sample, locale);
+        assert!(text.contains(expected), "{locale:?}: {text}");
+        assert!(!text.contains("Explored"), "{text}");
+        assert!(text.contains("read file"), "{text}");
+    }
 }
 
 /// The small pure helpers behind the cards, as one table each. Every row is a
@@ -2700,11 +2760,14 @@ fn the_card_helpers_accept_their_documented_forms_and_decline_the_rest() {
     // The elapsed badge appears at three seconds and not before, so quick
     // reads and greps do not visually churn.
     for secs in [0, 1, 2] {
-        assert_eq!(running_status_label_with_elapsed(secs), "running");
+        assert_eq!(
+            running_status_label_with_elapsed(secs, codewhale_localization::Locale::En),
+            "running"
+        );
     }
     for secs in [3u64, 7, 120] {
         assert_eq!(
-            running_status_label_with_elapsed(secs),
+            running_status_label_with_elapsed(secs, codewhale_localization::Locale::En),
             format!("running ({secs}s)")
         );
     }

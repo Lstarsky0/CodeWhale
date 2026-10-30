@@ -2364,7 +2364,7 @@ mod tests {
             .find(|row| row.id.0 == "context:automatic")
             .unwrap();
         assert_eq!(automatic.label, "automatic compaction off");
-        assert!(automatic.detail.contains("Emergency compaction"));
+        assert!(automatic.detail.contains("/compact"));
     }
 
     #[test]

@@ -2355,11 +2355,12 @@ pub(super) fn runtime_compaction_config(
     config: &Config,
     provider: ProviderKind,
     model: &str,
-    route_limits: Option<codewhale_config::route::RouteLimits>,
+    route_budget: (Option<codewhale_config::route::RouteLimits>, Option<u32>),
     auto_compact: bool,
     auto_compact_explicit: bool,
     threshold_percent: f64,
 ) -> CompactionConfig {
+    let (route_limits, effective_window) = route_budget;
     CompactionConfig {
         enabled: if auto_compact_explicit {
             auto_compact
@@ -2367,13 +2368,17 @@ pub(super) fn runtime_compaction_config(
             auto_compact_default_for_route(provider, model, route_limits)
         },
         model: model.to_string(),
-        token_threshold: compaction_threshold_for_route_at_percent(
+        token_threshold: crate::route_budget::compaction_threshold_for_route_at_percent_with_window(
             provider,
             model,
             route_limits,
+            effective_window,
             threshold_percent,
         ),
-        effective_context_window: Some(route_context_window_tokens(provider, model, route_limits)),
+        effective_context_window: Some(
+            effective_window
+                .unwrap_or_else(|| route_context_window_tokens(provider, model, route_limits)),
+        ),
         summary_instructions: config.compaction_summary_instructions(),
         retained_user_message_tokens: config.compaction_retained_user_message_tokens(),
         ..Default::default()
@@ -3602,7 +3607,7 @@ impl RuntimeThreadManager {
                 &route.config,
                 provider,
                 &route.model,
-                route_limits,
+                (route_limits, Some(route.context_window.tokens)),
                 settings.auto_compact,
                 codewhale_runtime::settings::Settings::auto_compact_explicitly_configured(),
                 settings.auto_compact_threshold_percent,
@@ -11997,10 +12002,11 @@ impl RuntimeThreadManager {
         let model = route.model.clone();
         let route_limits = known_route_limits(route.candidate.limits());
         let max_output_tokens = req.max_output_tokens.and_then(|requested| {
-            std::num::NonZeroU32::new(crate::route_budget::effective_max_output_tokens_for_turn(
+            std::num::NonZeroU32::new(crate::route_budget::effective_max_output_tokens_for_turn_with_window(
                 provider,
                 &model,
                 route_limits,
+                Some(route.context_window.tokens),
                 Some(requested),
                 reasoning_effort.as_deref(),
             ))
@@ -12010,7 +12016,7 @@ impl RuntimeThreadManager {
             &route.config,
             provider,
             &model,
-            route_limits,
+            (route_limits, Some(route.context_window.tokens)),
             settings.auto_compact,
             codewhale_runtime::settings::Settings::auto_compact_explicitly_configured(),
             settings.auto_compact_threshold_percent,
@@ -12546,7 +12552,7 @@ impl RuntimeThreadManager {
             &route.config,
             route_provider,
             &route_model,
-            route_limits,
+            (route_limits, Some(route.context_window.tokens)),
             settings.auto_compact,
             codewhale_runtime::settings::Settings::auto_compact_explicitly_configured(),
             settings.auto_compact_threshold_percent,
@@ -12818,6 +12824,7 @@ impl RuntimeThreadManager {
             // route limits, compaction budget, and restored session all agree.
             let base_config = self.read_config().clone();
             let route = self.resolved_route_for_thread(&base_config, &thread)?;
+            let context_window = route.context_window;
             let provider = route.identity.provider;
             let route_identity = route.identity;
             let route_model = route.model;
@@ -12832,7 +12839,7 @@ impl RuntimeThreadManager {
                 &cfg,
                 provider,
                 &route_model,
-                route_limits,
+                (route_limits, Some(context_window.tokens)),
                 settings.auto_compact,
                 codewhale_runtime::settings::Settings::auto_compact_explicitly_configured(),
                 settings.auto_compact_threshold_percent,
@@ -12958,9 +12965,7 @@ impl RuntimeThreadManager {
                 mcp_oauth_callback_port: cfg.mcp_oauth_callback_port,
                 mcp_oauth_callback_url: cfg.mcp_oauth_callback_url.clone(),
                 skills_dir: cfg.skills_dir(),
-                skills_discovery_mode: crate::skills::SkillDiscoveryMode::from_config(
-                    &cfg.skills_config(),
-                ),
+                skills_config: std::sync::Arc::new(cfg.skills_config()),
                 instructions: if isolated_chat {
                     Vec::new()
                 } else {

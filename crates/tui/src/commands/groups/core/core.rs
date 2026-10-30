@@ -177,6 +177,11 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
             let model_changed = !app.auto_model || app.model != "auto";
             app.set_model_selection("auto".to_string());
             app.active_route_limits = app.context_window_override_limits();
+            app.active_context_window = app.configured_context_window_for(&app.model);
+            app.active_context_window_source = app
+                .active_context_window
+                .map(|window| window.source)
+                .unwrap_or(crate::route_runtime::ContextWindowSource::Fallback);
             app.update_model_compaction_budget();
             if model_changed {
                 app.clear_model_scoped_telemetry();
@@ -280,10 +285,11 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
             app.set_active_route_resolution(
                 resolution.candidate.endpoint().base_url.clone(),
                 resolution.candidate.limits(),
-                resolution.context_window.source,
+                resolution.context_window,
             );
         } else {
             app.active_route_limits = app.context_window_override_limits();
+            app.active_context_window = app.configured_context_window_for(&app.model);
             app.active_context_window_source = app
                 .configured_context_window_for(&app.model)
                 .map(|resolution| resolution.source)

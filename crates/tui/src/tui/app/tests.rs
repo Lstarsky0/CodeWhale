@@ -1422,7 +1422,7 @@ fn reasoning_effort_uses_one_strict_alias_table_and_legacy_fallback() {
     assert!(ReasoningEffort::parse_strict("surprise").is_err());
     assert_eq!(
         ReasoningEffort::from_setting("surprise"),
-        ReasoningEffort::Max
+        ReasoningEffort::Auto
     );
 }
 

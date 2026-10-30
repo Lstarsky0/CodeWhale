@@ -4618,6 +4618,62 @@ impl McpPool {
         names
     }
 
+    pub(crate) fn model_server_statuses(
+        &self,
+        permitted: impl Fn(&str) -> bool,
+        visible_tools: &HashSet<String>,
+        discovery_available: bool,
+        failed: &HashSet<String>,
+    ) -> Vec<(String, codewhale_mcp::ModelServerStatus)> {
+        use codewhale_mcp::ModelServerStatus;
+
+        let mut names: BTreeSet<String> = if discovery_available {
+            self.discoverable_configured_servers(&permitted)
+                .into_iter()
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
+        names.extend(
+            self.resolved_tool_servers()
+                .into_iter()
+                .filter(|(tool, server)| {
+                    visible_tools.contains(tool)
+                        && permitted(server)
+                        && self
+                            .server_config(server)
+                            .is_some_and(|config| config.is_enabled())
+                })
+                .map(|(_, server)| server),
+        );
+        let generation = self.current_catalog_generation();
+        let mut rows: Vec<_> = names
+            .into_iter()
+            .map(|name| {
+                let connection = self.connections.get(&name);
+                let status = if self.needs_auth_servers.contains(&name) {
+                    ModelServerStatus::AuthorizationRequired
+                } else if self.connecting.contains(&name) {
+                    ModelServerStatus::Connecting
+                } else if connection.is_some_and(|conn| conn.catalog_generation != generation) {
+                    ModelServerStatus::Unknown
+                } else if connection.is_some_and(McpConnection::is_ready) {
+                    ModelServerStatus::Connected
+                } else if connection.is_some()
+                    || self.connect_backoff.contains_key(&name)
+                    || failed.contains(&name)
+                {
+                    ModelServerStatus::Failed
+                } else {
+                    ModelServerStatus::Configured
+                };
+                (name, status)
+            })
+            .collect();
+        rows.sort_by(|(left, a), (right, b)| a.cmp(b).then_with(|| left.cmp(right)));
+        rows
+    }
+
     /// Match discovery intent against actual configured server identities only.
     /// No guessed tool/schema is inserted; the caller still obtains tools/list.
     pub(crate) fn configured_servers_for_search(
@@ -5171,7 +5227,8 @@ impl McpPool {
             .into_iter()
             .filter_map(|server| {
                 let conn = self.connections.get(&server)?;
-                if conn.state() != ConnectionState::Ready {
+                if conn.catalog_generation != self.current_catalog_generation() || !conn.is_ready()
+                {
                     return None;
                 }
                 let text = conn.instructions()?.to_string();
@@ -5230,7 +5287,7 @@ impl McpPool {
             cancel_token: tokio_util::sync::CancellationToken::new(),
             authority_revocation_reason: Arc::new(std::sync::Mutex::new(None)),
             authority_watch: None,
-            catalog_generation: 0,
+            catalog_generation: self.current_catalog_generation(),
             catalog_revision: 0,
             catalog_fresh_until: None,
             catalog_stale: false,

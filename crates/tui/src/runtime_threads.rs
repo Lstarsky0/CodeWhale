@@ -40,8 +40,7 @@ use crate::cost_status::{
 };
 use crate::provider_catalog_live::ProviderLivePricingQuote;
 use crate::route_budget::{
-    auto_compact_default_for_route, compaction_threshold_for_route_at_percent, known_route_limits,
-    route_context_window_tokens,
+    auto_compact_default_for_route, known_route_limits, route_context_window_tokens,
 };
 use crate::route_runtime::{ResolvedRuntimeRoute, resolve_runtime_route_for_identity};
 use crate::tools::plan::new_shared_plan_state;

@@ -11,6 +11,19 @@ A lower `crates/tui` line count alone does not establish the split. A crate
 boundary counts when it lets an agent build, test and land work without the
 rest of the workspace.
 
+This document defines the decomposition target. [CW-6129](https://linear.app/shannonlabs/issue/CW-6129)
+and its existing children own current source status, claims and acceptance;
+[the roadmap](DECONSTRUCTION_ROADMAP.md) orders structural dependencies. The
+complete program remains in 0.10.3. Dated audits below are rationale, not current
+assignments or permission to create another checkout or build cache.
+
+The terminal UI becomes a presentation adapter over the existing headless
+runtime. A boundary counts when it moves real ownership, migrates every
+consumer and reduces dependency/rebuild closure. Moving a monolith or adding a
+facade does not establish that result. Aim around 10,000 production lines per
+crate and complete the existing 50,000 ceiling across the resulting workspace.
+Production lines, physical lines, SCCs and build timings measure different things.
+
 ## Audited baseline (2026-10-09, `bd2a7b49c`)
 
 Physical Rust lines, tests included. These are ownership clues, not production
@@ -114,40 +127,28 @@ Patterns rejected, because each defeats agent isolation:
 4. **Each crate owns its tests.** Unit tests move with their code; a crate's
    tests build with only that crate's dependency closure. Cross-crate behavior
    is tested at the host level.
-5. **A crate directory is the claim unit.** A Linear claim names crate paths.
-   Two agents never own the same crate at once.
+5. **Claims name exact paths and shared compiler inputs.** The target is a
+   crate that can be owned independently. Until a large crate is split,
+   coordinate disjoint files and one frozen build batch instead of creating
+   another checkout.
 6. **Dependencies point down only** (tiers below). Cargo enforces it; an
    upward import is a compile error, not a ratchet count.
 
-## Sandboxed agent contract
+## Future sandbox qualification
 
-The rules exist so an agent can work in a sandbox that does not hold the
-workspace:
+Small dependency closures should eventually permit a confined agent to change
+one owner while consuming read-only contracts. That is a product qualification
+target, not a separate local development workflow or authorization to create
+cloud resources. Preserve path confinement, cancellation, credential boundaries
+and the existing Engine authority in any such journey.
 
-- **Payload = one crate + its dependency closure.** The sandbox receives the
-  owned crate, the contract and utility crates it depends on, `Cargo.lock`, and
-  a generated minimal workspace manifest. Closure size per crate is the
-  primary architecture metric; it must stay small for every leaf.
-- **Only the owned crate is writable.** Contract crates are mounted read-only.
-  A needed contract change comes back as a request, not an edit.
-- **Tests are self-contained.** The owned crate's tests pass with the closure
-  alone: a mock provider from `codewhale-test-support`, no `~/.codewhale`, no
-  network, no sibling crates.
-- **The patch is path-confined.** The integrator rejects any hunk outside the
-  owned crate, applies it to canonical `main`, and runs the host-level gate.
-  Disjoint paths cannot conflict, so no branch or worktree is needed.
-- **Builds are local to the sandbox.** Each sandbox has its own target
-  directory, so parallel agents never wait on one Cargo lock or fill a shared
-  build disk. Sandbox images carry prebuilt third-party and contract artifacts keyed by
-  the `Cargo.lock` hash, so the agent compiles only its crate.
-- **Integrator-owned files.** `Cargo.lock`, the workspace manifest,
-  `[workspace.dependencies]`, the composition root's wiring list and new-crate
-  creation. A sandbox cannot add a dependency or a crate by itself.
-
-Codewhale ships cloud sandboxes and the `agent` tool. Once crates meet this
-contract, a lead session can partition work by crate and dispatch children into
-per-crate sandboxes. That makes this workspace a proving ground for the
-product's own delegation.
+Current work uses the canonical checkout on main, exact path claims and one
+frozen batch per shared native input set. Use the existing shared build cache
+and two-slot lock. Do not create sandbox copies, per-agent target directories,
+worktrees or alternate integration lanes to bypass a conflict or build owner.
+Contracts, workspace manifests, Cargo.lock and composition changes require the
+same coordinated source review as their consumers. Run focused existing checks
+locally; no new tests or code comments are implied by this design.
 
 ## Target map
 
@@ -418,119 +419,57 @@ RS-13 (#6940, first sub-slice) landed; X2 completes RS-13; W0-S1 and W0-S2 repla
 RS-10 (#6937) and the test-support half of RS-11 (#6938); RS-14 (#6941) is
 replaced by this table pending the founder's decision.
 
-## Execution status and plan, 2026-10-24
+## Execution and current ownership
 
-Re-measured on `main` at this date. The map above stands; this section records
-why execution stalled and orders the remaining work by what removes the most
-coupling per slice.
+Canonical source and the dated receipts on CW-6129 establish what has landed.
+S35 thread ownership, S52 terminal helpers, N13 error taxonomy, pure model
+pricing and native skill ownership have moved with their consumers. Runtime
+configuration now lives in `crates/runtime/src/config.rs`; do not recreate the
+removed TUI config owner. Skill listing and bundled policy share the existing
+registry/configuration rather than separate prompt or activation stores.
+These moves do not complete the target: the TUI remains far above 50,000
+production lines and the remaining runtime/UI ownership cycle must be cut.
 
-### Where it stands
+Continue from the current dependency graph and owning children, in this order:
 
-| Measure | 2026-10-09 | 2026-10-24 |
-| --- | ---: | ---: |
-| `crates/tui/src` physical lines | 1,280,430 | 1,281,546 |
-| of which outside test files | ~949k | ~960k |
-| Largest strongly connected component | 98 modules, then 85 | 84 modules |
-| Wave-0 modules (claimable now) | 30 / ~17k prod lines | same set, ~17k prod lines |
-| `crates/commands` | 0 | 4.5k (tui keeps 76k under `src/commands`) |
-| `crates/runtime` | ~7k | ~11k (W0-S1 residents landed) |
+1. Preserve integrity, trust boundaries, durable writes and cancellation while
+   cutting actual contract/configuration ownership edges. Read the existing
+   runtime and config owners before proposing another abstraction.
+2. Move feature and provider implementations with their final callers and
+   existing checks. Preserve reviewed plugin authority, tool permission
+   ceilings, credentials, typed human decisions and model-visible receipts.
+   The remaining MCP/DSH, durable Tasks, isolated UI and gix work stays in 0.10.3.
+3. Complete Engine, agents, sessions, runtime API and tool ownership without a
+   second turn loop, event authority or session store. Keep the runtime API
+   separate from transport-only app-server routing; avoid another large hub.
+4. Finish the terminal reducer/render boundary and make the CLI the composition
+   root. Remove superseded shims only after the last consumer migrates.
+5. Measure every resulting crate, dependency closure and affected edit/build
+   path. Complete internal splits where an ownership move still leaves an
+   oversized crate. Do not claim speedups from line counts or a passing compile.
 
-`crates/tui` did not shrink in fifteen days. Extractions so far (commands
-shapes, runtime residents, X2) cut graph edges but moved little mass, and
-feature work added back what they removed. The wave-0 set is under 2% of the
-production lines, so leaf extraction alone cannot move the number. The mass
-(`tools` 156k, `core` 52k, `fleet` 40k, `runtime_api` 32k, `client` 27k,
-`runtime_threads` 22k, `plugins` 22k, `extension_host` 21k, `mcp` 16k) sits
-inside the 84-module component, and only edge cuts release it.
+The target map above describes responsibilities, not a required new directory
+layout or a second queue. Remaining RS/S/N and command/config/API children keep
+their full acceptance on CW-6129. Former wave branches, fixed patch-release
+ladders and the old RS-14 A/B narrative are historical proposals; none reduce
+the admitted scope or authorize relocating the whole component as completion.
 
-### What the report says to do first
+### Other product owners
 
-`partition_report.py` tags modules already moved to `codewhale-runtime` with
-`rt`. Several still show inbound references from the component: `hashing` (24
-inbound), `features` (10), `safe_label` (9), `logging` (8), `retry_status` (4).
-The largest blocker counts are consumers still reaching those through
-`crate::`, for example `core -> logging` 38, `tools -> hashing` 22,
-`tools -> features` 17, `runtime_api -> native_memory` 15. That is the
-"migrate the last consumer" rule failing in place: the module moved, its
-callers did not. Finishing those caller migrations is the cheapest cut in the
-whole plan and deletes the re-export shims that keep the component coupled.
+The desktop product is `codewhale-app`'s existing native root
+`codewhale-gpui`, using GPUI/weGPUI and Codewhale-owned components. It is active
+product source, not legacy code to freeze or delete. The founder's October 24/29 direction selects that native host and its
+component migration.
+`crates/client` is the separate browser client. The superseded Tauri
+`crates/desktop-host` was deleted; no extraction or packaging should target it.
+Coordinate App/weGPUI changes with their current writers and retain Engine,
+account, accessibility, IME, focus, drafts and locale contracts.
 
-`config` has 67 inbound modules but its own blockers are only four wave-0
-modules (`features` 4, `dsh_credentials` 3, `goal_loop` 2, `native_memory`
-1). Once those edges are cut it can leave the UI crate, which is the
-prerequisite CW-6382 identified.
-
-### Phases
-
-Each phase ends with `partition_report.py` re-run and its numbers pasted into
-this section. One extraction at a time per crate; at most two native builds
-per machine, each holding a build-lock slot.
-
-| Phase | Work | Exit gate |
-| --- | --- | --- |
-| P0 | `scripts/split/closure_report.py`: closure and reverse-closure lines per crate, sandbox manifest generator. Record warm-edit baselines (provider edit 30.3 s / 8.7 GB, renderer edit 46.6 s / 8.9 GB from CW-6382) | numbers in this file |
-| P1 | Migrate every remaining consumer of `rt` modules (`hashing`, `features`, `safe_label`, `logging`, `retry_status`, `native_memory`, `goal_loop`) to `codewhale_runtime`, delete the tui re-exports. Then move the unclaimed wave-0 leaves: `child_env`, `process_tree`, `session_tree`, `external_credentials`, `keybinding_table`, `runtime_log`, `skill_state`, `continual_harness`, `import_claude`, `remote_setup` into their tier owners | zero production references to the moved modules from `crates/tui`; SCC below 70 |
-| P2 | Contract tier, in the order of the slice table: X7 tool rules into `execpolicy`, X8 `agent-contract`, X4 `util-schema`, X3 tool contract, X5 `config-types`, X6 `runtime-wire` | `tools -> fleet`, `tools -> core`, `config -> core`, `client -> tools` edges at zero |
-| P3 | `config`, `settings`, `config_persistence`, `config_keys`, `credentials` and `oauth` leave the UI crate into `codewhale-runtime` (CW-6382; founder S7=(c), 2026-10-25). Plugin activation and catalog enrichment stay with their host owners | cut the remaining host edges, then re-run the SCC and crate-size reports |
-| P4 | `ext` contributor traits; delete `with_*_tools`, per-feature `config.rs` fields and command group lists slice by slice; pilot leaf `tools-web` with one sandboxed agent (step 3 above) | pilot receipt recorded; adjust map from it |
-| P5 | Feature leaves by ascending inbound count: `acp_server` (1), `operate`, `notify`, `receipts` (2), `repl` (3), `lsp`, `rlm` (4), `hooks` (9), `skills`, `extension_host` (13), `mcp` (14), `snapshot` (12), `plugins` (28) | each leaf builds and tests from its generated minimal workspace |
-| P6 | Providers: `client` (24 inbound) into `model-client` plus one crate per wire dialect; `llm_client`, `pricing`/`route_billing`/`cost_status`. OAuth and credentials move with config in P3 | provider edit rebuilds only its crate and the host |
-| P7 | Runtime tier: `core` engine, `fleet` and `tools/subagent` (19k-line `mod.rs`, CW-6722) as `agents`, `runtime_threads` and `session_manager` as `session-store`, `task_manager`, `runtime_api` as its own `runtime-api` crate. Do not fold `runtime_api` into `app-server`: that moves 32k prod and 31k test lines into a second mega crate | `crates/runtime` still has no `tui` or UI-library dependency |
-| P8 | TUI: split reducer from render (`tui/ui/event_loop.rs`, `tui/app`), then views behind `runtime-wire` only | TUI sandbox holds no runtime code |
-| P9 | `cli` becomes the only composition root; delete the `lib.rs` path alias, `module_graph.py` ratchet and every shim | Cargo enforces tiers; each resulting crate stays below 50k production lines |
-
-Measured after P1, RS-10, X7 and X8 (`refactor/0.10.3-crate-split`, against
-`ff466b2ed0`): the largest component went from 84 to 83 modules, and the one
-module that left it is `worker_profile`. P1's caller migration removed the
-`crate::` alias references but did not shrink the component, because the
-moved `rt` modules were already singleton components. The P1 gate (SCC below
-70) and the P2 gate (edges at zero) are not met; edge cuts in P2 and P3 remain
-the work that moves mass.
-
-Founder target (2026-10-25): about 10k production lines per crate, never
-over 50k. Record the line-count method. Independent targets remain feature
-and provider dependency closures under 60k lines, and warm provider edits
-under 10 s and 2 GB; these targets remain unverified.
-
-### Other oversized units
-
-- `crates/config` (54k, `lib.rs` 7.9k, tests 11k in this dated baseline):
-  split a logic-free `config-types` first (X5), then keep its loading and
-  persistence in `config`. P3 moves the TUI configuration and OAuth cluster
-  into `codewhale-runtime`; putting it in `codewhale-config` creates
-  dependency cycles.
-- `crates/cli` (39k, `lib.rs` 13.5k, `update.rs` 4.7k, `config_bundles.rs`
-  4.4k, `cloud*` 7k+): `lib.rs` is the composition root and absorbs `run` and
-  the wiring list in P9. `update`, `config_bundles` and `cloud` move to
-  feature crates in P5 so the root stays a list.
-- `crates/app-server` (14k, `lib.rs` 6.9k): split `lib.rs` by route family
-  before anything else lands in it.
-- `codewhale-app` root crate `codewhale-gpui` (290k, `src/workspace` 157k):
-  legacy source under §52. Do not split it. Freeze new features, extract only
-  what `crates/client` or `crates/desktop-host` actually imports
-  (`control_plane` 21k, `runtime`/`engine` adapters, `rfb`, `updater`), and
-  delete the rest through the qualification and retirement path with recovery
-  evidence kept. Deleting is not covered by this document.
-- `codewhale-platform` `services/control-plane/src/server.mjs` (30.6k lines)
-  has the same shape in JavaScript (CW-7112): extract route modules by family
-  and test behavior, not source regexes. `cwc-core` is vendored in both app
-  and platform at ~9.8k lines; keep one owner.
-
-### Tracker mapping
-
-CW-6129 is the umbrella. CW-6238 (mega files), CW-6382 (config blocker),
-CW-6722 (`subagent/mod.rs`), CW-6433 (`acp_server`), CW-7159 (RS-10) and
-CW-7161 (RS-12, partial) are children of it. RS-8 (CW-7157, d776dcb61f) and
-RS-9 (CW-7158, cc03c1d331) are in `main` and their issues are stale.
-
-`DECONSTRUCTION_ROADMAP.md` schedules this work one structural move per patch
-release and holds the open A/B decision on RS-14 (#6941, move the remaining
-component into one new crate). At the observed fifteen-day cadence its ten
-releases are about five months, and Option A relocates the 84-module component
-instead of cutting it, which Rules 1 and 6 above reject. This plan recommends
-Option B in its P1-P3 form (cut edges, then move `config`) and treats the A/B
-choice as still the founder's. If Option B is chosen, the roadmap's Track B
-items map to P1 (consumer migration), P2 (X1, X4, X7, X8, credentials) and P3.
+Platform route decomposition and shared protocol/client ownership remain with
+their actual repositories and existing issues. Derive current file/crate sizes
+from source rather than treating the October9/24 audit as today's inventory.
+A native, browser, mobile or CU source change needs evidence for that surface;
+Engine helper checks alone do not qualify it.
 
 ## Known limitations
 
@@ -547,8 +486,9 @@ items map to P1 (consumer migration), P2 (X1, X4, X7, X8, credentials) and P3.
   (`scripts/release/publish-crates.sh`, order derived by
   `validate-crate-publish-order.py`). Each new crate is a new public package
   whose name must be claimed at release. Publication remains a human gate.
-- **`engine`, `agents` and `tui` stay large after this map.** Their internal
-  splits are decided from churn and closure data after step 6, not in advance.
+- **An ownership move may leave an oversized crate.** Complete its internal
+  split within the admitted program, guided by current churn and closure data;
+  the initial map does not waive the 50,000 production-line ceiling.
 - **No speedup has been measured.** Claims wait for the step 0 report and the
   step 3 pilot.
 
@@ -564,81 +504,32 @@ items map to P1 (consumer migration), P2 (X1, X4, X7, X8, credentials) and P3.
 - Exercise mock-provider parent and child turns, approval and denial,
   streaming, cancel and steer, explicit goals, pause and resume, reconnect,
   restart recovery and terminal fan-in at each affected boundary.
-- For every extracted crate: its tests pass from a generated minimal workspace
-  holding only its closure, and its reverse closure contains only the
-  composition root (features) or is listed (contracts).
+- For every extracted crate, use a focused canonical Cargo invocation and
+  record its actual dependency and reverse closures. Do not create another
+  source checkout to demonstrate isolation. Existing tests move with ownership;
+  new test functions and comments require a task-specific request.
 - Measure warm edit/build/test cycles and peak memory for a provider edit,
   tool edit, renderer edit and locale edit before and after, with compiler,
   profile, features and cache state recorded.
 - Local tests, full gates, hosted CI, installed artifacts and PTY behavior
-  remain separate evidence.
+  remain separate evidence. Exhaustive and hosted checks run only against the
+  completed immutable candidate, with only invalidated evidence repeated.
 
 ## Model judgment and test-time compute
 
-Founder clarification, 2026-09-09: the harness should let the model decide
-when a goal, plan, delegation, further investigation, or verification is useful.
-Provide enough reasoning and tool-feedback opportunities for that judgment.
-Do not interpret unwanted automatic goals as a request to forbid inferred goals.
+The founder's September 9 direction calls for model judgment about useful
+planning, delegation, verification and durable continuation, including a useful
+inferred objective within the user's authorized task. Ordinary multi-step work
+need not create a goal. Preserve runtime-owned state, provenance, accounting,
+cancellation and user controls. Goal, reasoning
+and continuation policy must share the existing owners and preserve explicit
+route choices and spending authority. There is no authorization here for a
+classifier before every turn, another execution loop, a paid evaluation or an
+automatic expansion of compute budgets.
 
-The current goal path has conflicting authorities: `operate_goal_from_prompt`
-classifies an instruction with verb/question heuristics before inference, while
-`CreateGoalTool::description` tells the model to require explicit goal requests.
-`runtime_handoff` additionally tells the model the host already created a goal.
-Those three policies must become one model-facing contract with runtime-owned
-state transitions. Explicit `/goal` commands remain a direct user control.
-
-Reference inspection was local, not a claim about every upstream version:
-
-| Snapshot | Useful evidence |
-| --- | --- |
-| Codex `45eec73b11` (2026-09-09) | `ext/goal/src/spec.rs` leaves goal tool selection to the model but instructs explicit user/system intent. Base instructions let the model choose when planning helps. Goal state and continuation live outside the terminal renderer. |
-| Kimi Code `1414d4602` (2026-08-13; older snapshot) | `agent-core` exposes `CreateGoal` with completion criteria and a separate reusable turn loop. Creation guidance accepts explicit autonomous-outcome requests or host goal intake. Thinking effort is mapped against model capabilities. |
-| DSH `c389f96bf3` (2026-09-08) | `goal/tool-goal` explicitly permits inferring a long-running objective from a direct human request. Execution validates top-level human-turn provenance and exact state revisions. Goal state, goal tools, and continuation scheduling are separate consumers. |
-
-DSH most directly matches the requested goal discretion. Its runtime validates
-who may mutate state; the model judges whether persistence benefits the task.
-
-Implementation packet, coordinated separately from mechanical extraction (it
-lands in the `goal` feature crate once that exists):
-
-1. Remove host-side semantic goal classification. Present the request, session
-   state, tools, and existing goal to the model before deciding on persistence.
-2. Revise the existing goal-tool and Operate guidance together: infer a goal
-   when the requested outcome warrants durable continuation and has a useful
-   completion criterion; answer, investigate, or perform ordinary multi-step
-   work without a goal when that suffices. Honor corrections and opt-outs.
-   Explicit user controls and model actions use the same goal state owner.
-3. Treat test-time compute as reasoning effort, useful tool-feedback rounds,
-   and evidence-driven revision. `auto_reasoning::select` currently chooses
-   effort using message keywords; this is another semantic heuristic to
-   replace. Preserve explicit route/effort choices. Let the lead allocate
-   supported effort and execution budgets to work, with additional effort
-   requested for later steps when new evidence makes that useful. Reuse
-   `RequestTuning` and existing runtime/tool contracts; do not add an
-   always-on classifier or a second agent loop ahead of every prompt.
-4. Keep accounting, supported provider limits, permission checks, input
-   provenance, durable state, and cancellation in Rust. Emit current state,
-   remaining authorized resources, and tool/test results as compact feedback.
-   A goal does not grant new spend or execution authority. Preserve the pinned
-   prefix and append changing feedback to history.
-5. Qualify judgment with model-driven sessions, not only deterministic mocks.
-   Compare matched tasks at explicit effort/resource settings: a greeting,
-   architecture discussion, one-file repair, large migration, unrelated
-   followup, mid-run correction, false success evidence, cancellation, and
-   repeated failure. Judge objective quality, useful continuation, task
-   completion, verification quality, latency, tokens/cost, and correct
-   stopping. Do not score a run better merely for creating a goal or taking
-   more steps.
-
-Start with the existing model's ordinary reasoning/tool loop. Add independent
-review or multiple candidate attempts only where measured failures and task
-stakes justify the extra compute. No model-evaluation runs, provider spend, or
-performance gains were established by this source audit.
-
-The catalog installs once per process; first installation wins. Built-ins are
-host-owned metadata, and user rows are a point-in-time snapshot under the
-existing reload rules. Captured binding spellings preserve the live registry’s
-canonical-name precedence, alias selection and revoked-plugin filtering. The
-port never dispatches. Without installation, command registration is refused,
-`GET /v1/commands` reports an error and `tui_help` fails visibly. Extension
-commands remain omitted from the external Runtime command list.
+The [dated reference audit and implementation rationale](https://github.com/codewhale-hq/Codewhale/blob/2231d73df5d6d4538653a54920695a389d575451/docs/design/TUI_DECONSTRUCTION.md#model-judgment-and-test-time-compute)
+records the inspected DSH/Codex/Kimi snapshots and original acceptance scenarios.
+Its statements about the then-current goal implementation must be rechecked
+against the owning source; they are not current findings or assignments.
+Quality, correct stopping, continuity and authorized cost matter; merely
+creating a goal or taking more steps is not evidence of improvement.

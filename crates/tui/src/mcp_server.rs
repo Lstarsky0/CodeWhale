@@ -23,10 +23,10 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::skills::{SkillDiscoveryMode, SkillSource};
 use crate::tools::spec::{ToolError, ToolResult};
 use crate::tools::{ToolContext, ToolRegistryBuilder};
 use codewhale_skill_install::skill_parse::SkillInvocation;
+use codewhale_skills::SkillSource;
 
 const SUPPORTED_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[
     ProtocolVersion::V_2024_11_05,
@@ -97,14 +97,14 @@ struct ExposedTool {
 pub async fn run_mcp_server(
     workspace: PathBuf,
     skills_dir: PathBuf,
-    skills_mode: SkillDiscoveryMode,
+    skills_config: std::sync::Arc<codewhale_runtime::config::SkillsConfig>,
 ) -> Result<()> {
     // Settings load is a synchronous config read; keep it off the async
     // worker per the blocking-call convention.
     let settings = tokio::task::spawn_blocking(McpServerSettings::load)
         .await
         .context("MCP server settings task failed")??;
-    let server = McpServer::new(workspace, settings, skills_dir, skills_mode)?;
+    let server = McpServer::new(workspace, settings, skills_dir, skills_config)?;
     // stdout carries the protocol; the notice goes to stderr so an operator
     // whose config lists write tools sees why they are missing.
     for name in server.withheld_tools() {
@@ -127,7 +127,7 @@ struct McpServer {
     initialized: AtomicBool,
     tool_execution: Mutex<()>,
     skills_dir: PathBuf,
-    skills_mode: SkillDiscoveryMode,
+    skills_config: std::sync::Arc<codewhale_runtime::config::SkillsConfig>,
 }
 
 struct SkillResource {
@@ -140,7 +140,7 @@ impl McpServer {
         workspace: PathBuf,
         settings: McpServerSettings,
         skills_dir: PathBuf,
-        skills_mode: SkillDiscoveryMode,
+        skills_config: std::sync::Arc<codewhale_runtime::config::SkillsConfig>,
     ) -> Result<Self> {
         let exposed_tools = build_exposed_tools(&settings.expose_tools);
         let internal_names: HashSet<&str> = exposed_tools
@@ -156,7 +156,10 @@ impl McpServer {
         if internal_names.contains("exec_shell") {
             builder = builder.with_shell_tools();
         }
-        let registry = builder.build(ToolContext::new(workspace.clone()));
+        let registry = builder.build(
+            ToolContext::new(workspace.clone())
+                .with_skills_config(skills_dir.clone(), skills_config.clone()),
+        );
         let mut tools = Vec::new();
         let mut seen = HashSet::new();
         for entry in &exposed_tools {
@@ -189,7 +192,7 @@ impl McpServer {
             initialized: AtomicBool::new(false),
             tool_execution: Mutex::new(()),
             skills_dir,
-            skills_mode,
+            skills_config,
         })
     }
 
@@ -236,12 +239,12 @@ impl McpServer {
     ) -> Result<Vec<SkillResource>, ErrorData> {
         let workspace = self.workspace.clone();
         let skills_dir = self.skills_dir.clone();
-        let mode = self.skills_mode;
+        let skills_config = self.skills_config.clone();
         let discovery = tokio::task::spawn_blocking(move || {
-            let registry = crate::skills::discover_for_workspace_and_dir_with_mode_and_plugins(
+            let registry = codewhale_skills::discover_for_workspace(
                 &workspace,
-                &skills_dir,
-                mode,
+                Some(&skills_dir),
+                &skills_config,
                 None,
             );
             let mut resources: Vec<_> = registry
@@ -256,7 +259,7 @@ impl McpServer {
                     let description: String = skill
                         .description
                         .chars()
-                        .take(crate::skills::MAX_SKILL_DESCRIPTION_CHARS)
+                        .take(codewhale_skills::DEFAULT_SKILL_DESCRIPTION_CHARS)
                         .collect();
                     SkillResource {
                         resource: Resource::new(uri, skill.name.clone())
@@ -561,7 +564,10 @@ mod tests {
             workspace,
             settings,
             skills_dir,
-            SkillDiscoveryMode::CodeWhaleOnly,
+            std::sync::Arc::new(codewhale_runtime::config::SkillsConfig {
+                scan_codewhale_only: Some(true),
+                ..Default::default()
+            }),
         )
         .expect("build server")
     }
@@ -808,7 +814,10 @@ mod tests {
                 require_approval: false,
             },
             skills_dir,
-            SkillDiscoveryMode::CodeWhaleOnly,
+            std::sync::Arc::new(codewhale_runtime::config::SkillsConfig {
+                scan_codewhale_only: Some(true),
+                ..Default::default()
+            }),
         )
         .unwrap();
         let mut pipe = Pipe::new(server);

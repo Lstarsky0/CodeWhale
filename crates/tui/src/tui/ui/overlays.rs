@@ -497,7 +497,7 @@ pub(crate) fn refresh_config_view_after_commit(app: &mut App, focus_key: &str, r
 pub(crate) fn refresh_skills_manager_if_open(
     app: &mut App,
     status: Option<String>,
-    focus: Option<&crate::skills::audit::AuditedSkillId>,
+    focus: Option<&codewhale_skills::audit::AuditedSkillId>,
 ) {
     if app.view_stack.top_kind() != Some(ModalKind::SkillsManager) {
         return;

@@ -56,7 +56,7 @@ fn collect_workspace_file_suggestions(
     query: &str,
     limit: usize,
 ) -> Result<Vec<String>, ApiError> {
-    use crate::working_set::{Workspace, rank_completion_candidates};
+    use codewhale_runtime::working_set::{Workspace, rank_completion_candidates};
 
     let root = root
         .canonicalize()

@@ -14,6 +14,14 @@ pub use test_env_lock::{
     with_test_env_lock, with_test_env_lock_if_uncontended,
 };
 
+/// Mark `workspace` trusted in the test's config, creating it first so the
+/// trust key is the canonical path. Repository-supplied commands and skills
+/// load only in a trusted workspace.
+pub fn trust_workspace(workspace: &Path) {
+    std::fs::create_dir_all(workspace).expect("create test workspace");
+    crate::config::save_workspace_trust(workspace).expect("trust test workspace");
+}
+
 /// Process-wide state root for unit tests that do not intentionally provide an
 /// explicit config/settings path.
 ///

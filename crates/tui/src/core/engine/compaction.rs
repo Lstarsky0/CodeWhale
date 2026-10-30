@@ -209,10 +209,11 @@ impl Engine {
         }
         let input_tokens =
             self.active_input_tokens_with_current_text(current_text, system_prompt, messages);
-        let budget = route_context_budget_for_route(
+        let budget = crate::route_budget::route_context_budget_with_window(
             prompt_context.provider,
             &prompt_context.model,
             prompt_context.route_limits,
+            prompt_context.context_window.map(|window| window.tokens),
             input_tokens,
         )?;
         context_pressure_message(budget.usage_percent()).map(|warning| format!(
@@ -840,6 +841,22 @@ impl Engine {
         AutoCompactionStep::Proceed
     }
 
+    pub(super) async fn report_context_recovery_failure(
+        &mut self,
+        turn: &mut TurnContext,
+    ) -> Option<String> {
+        let rejection = turn.context_recovery_rejection.take()?;
+        let message =
+            self.decorate_auth_error_message(super::turn_loop::initial_stream_error_user_message(
+                &self.config.locale_tag,
+                &rejection,
+            ));
+        let envelope =
+            crate::llm_error_envelope::envelope_for_llm_error(rejection, message.clone());
+        let _ = self.send_event(Event::error(envelope)).await;
+        Some(message)
+    }
+
     pub(super) async fn recover_context_overflow(
         &mut self,
         client: &dyn crate::core::model_client::ModelClient,
@@ -847,12 +864,29 @@ impl Engine {
         reason: &str,
         turn: &mut TurnContext,
     ) -> bool {
-        let Some(target_budget) = context_input_budget_for_route(
+        if !self.config.compaction.enabled {
+            let message = "Automatic compaction is disabled. The request exceeds the context budget; the conversation was preserved. Choose a larger context route, shorten the new input, or compact explicitly before retrying.".to_string();
+            turn.context_recovery_rejection =
+                Some(crate::llm_client::LlmError::ContextLengthError(message).into());
+            self.record_compaction_event(
+                "compaction.refused",
+                serde_json::json!({
+                    "trigger": reason,
+                    "reason": "automatic_compaction_disabled",
+                    "messages": self.session.messages.len(),
+                }),
+            )
+            .await;
+            return false;
+        }
+        let Some(target_budget) = crate::route_budget::route_context_budget_with_window(
             self.api_provider,
             &self.session.model,
             self.active_route_limits,
+            self.active_context_window.map(|window| window.tokens),
             0,
-        ) else {
+        )
+        .and_then(|budget| usize::try_from(budget.available_input_tokens).ok()) else {
             return false;
         };
         if let Some(message) = turn.compaction_thrash_message() {

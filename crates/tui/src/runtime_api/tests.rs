@@ -11976,10 +11976,8 @@ async fn unicode_skill_activation_matches_api_load_and_owned_lifecycle() -> Resu
     .await?
     .context("isolated skill API fixture requires loopback")?;
     let client = codewhale_release::tls::reqwest_client();
-    let context = ToolContext::new(&workspace).with_skills_config(
-        workspace.join(".codewhale/skills"),
-        crate::skills::SkillDiscoveryMode::Compatible,
-    );
+    let context = ToolContext::new(&workspace)
+        .with_skills_config(workspace.join(".codewhale/skills"), Default::default());
     let tool = crate::tools::skill::LoadSkillTool;
 
     let before: serde_json::Value = client
@@ -12294,7 +12292,7 @@ fn skills_search_directories_includes_custom_skills_dir() {
     let directories = skills_search_directories(
         &workspace,
         &custom_skills,
-        crate::skills::SkillDiscoveryMode::Compatible,
+        codewhale_skills::SkillDiscoveryMode::Compatible,
     );
 
     assert!(
@@ -12332,7 +12330,7 @@ fn skill_entry_is_bundled_requires_configured_bundle_path() {
     )
     .expect("write override skill");
 
-    let bundled_skill = crate::skills::Skill {
+    let bundled_skill = codewhale_skills::Skill {
         legacy_activation_name: None,
         name: "delegate".to_string(),
         description: String::new(),
@@ -12342,9 +12340,9 @@ fn skill_entry_is_bundled_requires_configured_bundle_path() {
         argument_hint: None,
         body: String::new(),
         path: bundled_skill_path,
-        source: crate::skills::SkillSource::Native,
+        source: codewhale_skills::SkillSource::Native,
     };
-    let override_skill = crate::skills::Skill {
+    let override_skill = codewhale_skills::Skill {
         legacy_activation_name: None,
         name: "delegate".to_string(),
         description: String::new(),
@@ -12354,7 +12352,7 @@ fn skill_entry_is_bundled_requires_configured_bundle_path() {
         argument_hint: None,
         body: String::new(),
         path: override_skill_path,
-        source: crate::skills::SkillSource::Native,
+        source: codewhale_skills::SkillSource::Native,
     };
 
     assert!(skill_entry_is_bundled(&bundled_skill, &bundled_skills_dir));
@@ -17587,7 +17585,8 @@ fn create_managed_skill(root_dir: &std::path::Path, name: &str) -> Result<(PathB
     )?;
     // Write an `.installed-from` marker so the mutation module considers it
     // managed (and therefore eligible for update/remove/trust).
-    let digest = crate::skills::audit::compute_package_digest(&skill_dir).expect("package digest");
+    let digest =
+        codewhale_skills::audit::compute_package_digest(&skill_dir).expect("package digest");
     codewhale_skill_install::install::write_installed_from_v2(
         &skill_dir,
         &format!("github:test/{name}"),

@@ -1160,7 +1160,7 @@ pub enum ViewEvent {
     /// import / update / remove / trust action. The host runs the mutation
     /// controller and rebuilds the open manager view.
     SkillMutationRequested {
-        request: crate::skills::mutation::SkillMutationRequest,
+        request: codewhale_skills::mutation::SkillMutationRequest,
     },
     /// Toggle owned-only vs compatible audit scan inside the skills manager.
     SkillsManagerToggleCompatible,
@@ -2386,12 +2386,8 @@ impl ConfigView {
                 key: "effective_context_window".to_string(),
                 value: format!(
                     "{} tokens · {}",
-                    crate::route_budget::route_context_window_tokens(
-                        app.api_provider,
-                        app.effective_model_for_budget(),
-                        app.active_route_limits,
-                    ),
-                    app.active_context_window_source.display_label()
+                    app.effective_context_window(),
+                    app.effective_context_window_source().display_label()
                 ),
                 editable: false,
                 scope: ConfigScope::Session,

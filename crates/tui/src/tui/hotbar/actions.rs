@@ -1074,7 +1074,7 @@ impl HotbarAction for AppHotbarAction {
                     build_command_palette_entries(
                         app.ui_locale,
                         &app.skills_dir,
-                        app.skills_discovery_mode,
+                        &app.skills_config,
                         &app.workspace,
                         &app.mcp_config_path,
                         app.mcp_snapshot.as_ref(),
@@ -1829,7 +1829,10 @@ mod tests {
         let palette_slash_ids = build_command_palette_entries(
             Locale::En,
             tmp.path(),
-            crate::skills::SkillDiscoveryMode::CodeWhaleOnly,
+            &codewhale_runtime::config::SkillsConfig {
+                scan_codewhale_only: Some(true),
+                ..Default::default()
+            },
             tmp.path(),
             &tmp.path().join("mcp.json"),
             None,

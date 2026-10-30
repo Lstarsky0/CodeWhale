@@ -1968,17 +1968,23 @@ async fn create_summary(
         // compaction-only ceiling that can be consumed by hidden reasoning.
         let cost_route = client.effective_route_envelope(&config.model, chrono::Utc::now());
         let ceiling = client.effective_max_output_tokens(&cost_route.model);
-        let summary_floor = crate::route_budget::route_output_reservation(
+        let summary_floor = crate::route_budget::route_output_reservation_with_window(
             cost_route.provider,
             &cost_route.model,
             client.route_limits(),
+            client
+                .effective_context_window(&cost_route.model)
+                .or(config.effective_context_window),
         )
         .min(ceiling)
             / 2;
-        let max_tokens = match crate::route_budget::request_output_cap_for_input(
+        let max_tokens = match crate::route_budget::request_output_cap_for_input_with_window(
             cost_route.provider,
             &cost_route.model,
             client.route_limits(),
+            client
+                .effective_context_window(&cost_route.model)
+                .or(config.effective_context_window),
             ceiling,
             u64::try_from(calibrate_token_estimate(
                 estimate_request_input_tokens(&request_messages, system_prompt, tools),

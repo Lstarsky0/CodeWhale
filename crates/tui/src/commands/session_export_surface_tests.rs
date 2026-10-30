@@ -220,7 +220,7 @@ fn export_is_discoverable_by_name_and_alias_in_palette_and_slash_completion() {
     let entries = command_palette::build_entries(
         Locale::En,
         &skills_dir,
-        crate::skills::SkillDiscoveryMode::Compatible,
+        &Default::default(),
         workspace,
         &mcp_config,
         None,

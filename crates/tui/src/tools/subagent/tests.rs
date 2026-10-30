@@ -12608,10 +12608,13 @@ fn fresh_forked_and_nested_subagents_share_authority_bound_skill_catalogs() {
     let system =
         build_subagent_system_prompt_with_skills(&FleetRole::Reviewer, &assignment, &context);
 
-    assert!(system.contains("`native-review`"), "{system}");
-    assert!(system.contains("`demo:review`"), "{system}");
-    assert!(system.contains("reviewed plugin demo id="), "{system}");
-    assert!(system.contains("generation="), "{system}");
+    assert!(system.contains("- native-review:"), "{system}");
+    assert!(system.contains("- demo:review:"), "{system}");
+    assert!(
+        system.contains("reviewed plugin snapshot: demo ("),
+        "{system}"
+    );
+    assert!(system.contains("use load_skill"), "{system}");
     assert!(
         !system.contains(&plugin_root.display().to_string()),
         "{system}"
@@ -12644,7 +12647,7 @@ fn fresh_forked_and_nested_subagents_share_authority_bound_skill_catalogs() {
         forked
             .iter()
             .filter(|message| message.role == "system")
-            .any(|message| message_text(message).contains("`demo:review`")),
+            .any(|message| message_text(message).contains("- demo:review:")),
         "forked children must receive the same resolved catalog"
     );
 
@@ -12664,7 +12667,7 @@ fn fresh_forked_and_nested_subagents_share_authority_bound_skill_catalogs() {
         &assignment,
         &nested_runtime.context,
     );
-    assert!(nested_system.contains("`demo:review`"), "{nested_system}");
+    assert!(nested_system.contains("- demo:review:"), "{nested_system}");
 
     let isolated_workspace = tmp.path().join("isolated-worktree");
     std::fs::create_dir_all(&isolated_workspace).expect("isolated worktree");
@@ -12677,7 +12680,7 @@ fn fresh_forked_and_nested_subagents_share_authority_bound_skill_catalogs() {
     let isolated_system =
         build_subagent_system_prompt_with_skills(&FleetRole::Reviewer, &assignment, &isolated);
     assert!(
-        !isolated_system.contains("`demo:review`"),
+        !isolated_system.contains("- demo:review:"),
         "workspace plugin authority must not leak into another worktree: {isolated_system}"
     );
 }
@@ -19492,36 +19495,43 @@ async fn worker_stops_with_typed_wall_time_reason() {
 }
 
 /// Scripted provider for the child-compaction test. Task steps call
-/// `read_file` while billing `step_prompt_tokens` each; the compaction
+/// `read_file` while billing for the growing request; the compaction
 /// summary request (recognized by its instruction) returns a handoff; the
 /// first task step after it finishes the run and records whether the request
 /// carried the compaction checkpoint instead of the replaced history.
-async fn compacting_child_chat_client(
-    step_prompt_tokens: u64,
-) -> (
+async fn compacting_child_chat_client() -> (
     CodewhaleClient,
     Arc<AtomicUsize>,
     Arc<AtomicUsize>,
     Arc<AtomicBool>,
+    Arc<AtomicUsize>,
+    Arc<AtomicUsize>,
     codewhale_runtime::config::Config,
 ) {
     let calls = Arc::new(AtomicUsize::new(0));
     let summaries = Arc::new(AtomicUsize::new(0));
     let saw_checkpoint = Arc::new(AtomicBool::new(false));
+    let billed_total = Arc::new(AtomicUsize::new(0));
+    let largest_prompt = Arc::new(AtomicUsize::new(0));
     let app = Router::new().route(
         "/{*path}",
         post({
             let calls = Arc::clone(&calls);
             let summaries = Arc::clone(&summaries);
             let saw_checkpoint = Arc::clone(&saw_checkpoint);
+            let billed_total = Arc::clone(&billed_total);
+            let largest_prompt = Arc::clone(&largest_prompt);
             move |Json(body): Json<Value>| {
                 let calls = Arc::clone(&calls);
                 let summaries = Arc::clone(&summaries);
                 let saw_checkpoint = Arc::clone(&saw_checkpoint);
+                let billed_total = Arc::clone(&billed_total);
+                let largest_prompt = Arc::clone(&largest_prompt);
                 async move {
                     let attempt = calls.fetch_add(1, Ordering::SeqCst) + 1;
                     let wire = body["messages"].to_string();
                     let usage = |prompt: u64, completion: u64| {
+                        billed_total.fetch_add((prompt + completion) as usize, Ordering::SeqCst);
                         json!({
                             "prompt_tokens": prompt,
                             "completion_tokens": completion,
@@ -19537,7 +19547,7 @@ async fn compacting_child_chat_client(
                                 "index": 0,
                                 "message": {
                                     "role": "assistant",
-                                    "content": "Objective: inspect README.md. Progress: the file was read three times. Next action: report that the inspection is done."
+                                    "content": "Objective: inspect README.md. Progress: the file was read. Next action: report that the inspection is done."
                                 },
                                 "finish_reason": "stop"
                             }],
@@ -19552,7 +19562,7 @@ async fn compacting_child_chat_client(
                     } else {
                         json!({
                             "role": "assistant",
-                            "content": null,
+                            "content": "Progress ".repeat(25_000),
                             "tool_calls": [{
                                 "id": format!("call_read_{attempt}"),
                                 "type": "function",
@@ -19571,13 +19581,16 @@ async fn compacting_child_chat_client(
                     let prompt = if summaries.load(Ordering::SeqCst) > 0 {
                         3_000
                     } else {
-                        step_prompt_tokens
+                        let prompt = body.to_string().len().div_ceil(4) as u64;
+                        largest_prompt.fetch_max(prompt as usize, Ordering::SeqCst);
+                        prompt
                     };
+                    let completion = if summaries.load(Ordering::SeqCst) > 0 { 40 } else { 56_290 };
                     chat_fixture_response(body.get("stream").and_then(Value::as_bool).unwrap_or(false), json!({
                         "id": format!("chatcmpl-step-{attempt}"),
                         "model": "deepseek-v4-flash",
                         "choices": [{ "index": 0, "message": message, "finish_reason": finish }],
-                        "usage": usage(prompt, 40)
+                        "usage": usage(prompt, completion)
                     }))
                 }
             }
@@ -19592,12 +19605,25 @@ async fn compacting_child_chat_client(
         let _ = axum::serve(listener, app).await;
     });
 
-    let config = codewhale_runtime::config::Config::default().with_legacy_root(
+    let mut config = codewhale_runtime::config::Config::default().with_legacy_root(
         Some("test-key".to_string()),
         Some(format!("http://{addr}/v1")),
     );
+    config
+        .providers
+        .get_or_insert_default()
+        .deepseek
+        .context_window = Some(300_000);
     let client = CodewhaleClient::new(&config).expect("fake chat client");
-    (client, calls, summaries, saw_checkpoint, config)
+    (
+        client,
+        calls,
+        summaries,
+        saw_checkpoint,
+        billed_total,
+        largest_prompt,
+        config,
+    )
 }
 
 #[tokio::test]
@@ -19632,13 +19658,15 @@ async fn worker_compacts_past_its_context_window_and_keeps_working() {
         manager.register_worker(make_worker_spec(&agent_id, tmp.path().to_path_buf()));
     }
 
-    let (client, calls, summaries, saw_checkpoint, fixture_config) =
-        compacting_child_chat_client(900_000).await;
+    let (client, calls, summaries, saw_checkpoint, billed_total, largest_prompt, fixture_config) =
+        compacting_child_chat_client().await;
     let mut runtime = stub_runtime();
     runtime.client = client;
     runtime.api_config = Some(Arc::new(fixture_config));
     runtime.manager = Arc::clone(&manager);
     runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    runtime.compaction.effective_context_window = Some(300_000);
+    runtime.compaction.token_threshold = 200_000;
     assert!(runtime.compaction.enabled, "the inherited default compacts");
 
     let task = SubAgentTask {
@@ -19682,8 +19710,8 @@ async fn worker_compacts_past_its_context_window_and_keeps_working() {
         saw_checkpoint.load(Ordering::SeqCst),
         "the post-compaction request carries the checkpoint"
     );
-    // Three 900k-billed tool steps, the summary, and the finishing step.
-    assert_eq!(calls.load(Ordering::SeqCst), 5);
+    assert!(calls.load(Ordering::SeqCst) >= 5);
+    assert!(largest_prompt.load(Ordering::SeqCst) > 100_000);
 
     // The summarizer's tokens count toward the worker like any other step.
     let usage = manager
@@ -19696,7 +19724,7 @@ async fn worker_compacts_past_its_context_window_and_keeps_working() {
         .clone();
     assert_eq!(
         usage.total_tokens,
-        Some(3 * 900_040 + 1_200 + 3_040),
+        Some(billed_total.load(Ordering::SeqCst) as u64),
         "{usage:?}"
     );
 

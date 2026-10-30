@@ -137,7 +137,7 @@ impl ReasoningEffort {
     }
 
     /// Parse a persisted config-file string into an effort tier. Unknown
-    /// legacy values fall back to the default (`Max`) so an old malformed
+    /// legacy values fall back to the default (`Auto`) so an old malformed
     /// settings file never prevents startup. New user input should use
     /// [`Self::parse_strict`] instead.
     #[must_use]

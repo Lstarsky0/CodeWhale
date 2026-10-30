@@ -92,7 +92,6 @@ mod route_runtime;
 mod runtime_api;
 mod runtime_chat_relay;
 mod runtime_handoff;
-mod runtime_log;
 mod runtime_threads;
 #[cfg(test)]
 mod sandbox_stay_tests;
@@ -113,7 +112,6 @@ mod session_projection;
 mod session_reconcile;
 mod session_resume;
 mod session_secret_scrub;
-mod skills;
 mod superfast;
 mod task_manager;
 mod telemetry_notice;
@@ -132,7 +130,6 @@ mod vision;
 mod voice;
 pub mod whats_new;
 mod work_graph;
-mod working_set;
 mod workspace_lease;
 mod workspace_trust;
 
@@ -1940,7 +1937,7 @@ pub fn run(options: RuntimeOptions, args: Vec<String>) -> std::process::ExitCode
 /// args instead of reading `std::env::args()`. Startup facts are captured by
 /// the canonical CLI and applied before config/discovery or worker startup.
 fn run_with_args(options: RuntimeOptions, args: Vec<String>) -> Result<()> {
-    crate::extension_host::composition_review::install();
+    crate::extension_host::install_ports();
     let inherited_listener = prepare_runtime_listener_handoff()?;
     let args: Vec<String> = std::iter::once("codewhale".to_string())
         .chain(args)
@@ -2851,7 +2848,8 @@ async fn run_async_main_dispatch(
                     if !explicit_route_override
                         && !fleet_route_applied
                         && let Some(tag) =
-                            crate::local_ollama::adopt_live_local_ollama_for_run(&mut config).await
+                            crate::local_ollama::adopt_live_local_ollama_for_run(&mut config, false)
+                                .await
                     {
                         eprintln!(
                             "codewhale exec: no cloud API key, so this run uses local Ollama {tag}; nothing was saved."
@@ -3029,9 +3027,8 @@ async fn run_async_main_dispatch(
                 if args.mcp {
                     let config = load_structural_config_from_cli(&cli)?;
                     let skills_dir = config.skills_dir();
-                    let skills_mode =
-                        skills::SkillDiscoveryMode::from_config(&config.skills_config());
-                    mcp_server::run_mcp_server(workspace, skills_dir, skills_mode).await
+                    let skills_config = std::sync::Arc::new(config.skills_config());
+                    mcp_server::run_mcp_server(workspace, skills_dir, skills_config).await
                 } else if http_selected {
                     let (mut config, config_profile) =
                         load_config_from_cli_with_effective_profile(&cli)?;
@@ -4731,7 +4728,7 @@ fn skills_count_for(dir: &Path) -> usize {
     if !dir.exists() {
         return 0;
     }
-    crate::skills::SkillRegistry::discover(dir).len()
+    codewhale_skills::SkillRegistry::discover(dir).len()
 }
 
 fn run_setup_status(
@@ -5041,7 +5038,7 @@ async fn run_doctor(
     println!("{}", "==================".truecolor(sky_r, sky_g, sky_b));
     let local_route = if probes.probe_local {
         let mut local = config.clone();
-        crate::local_ollama::adopt_live_local_ollama_for_run(&mut local)
+        crate::local_ollama::adopt_live_local_ollama_for_run(&mut local, true)
             .await
             .map(|tag| (local, tag))
     } else {
@@ -5709,9 +5706,35 @@ async fn run_doctor(
     println!();
     println!("{}", "Skills:".bold());
     let global_skills_dir = config.skills_dir();
+    let skills_config = config.skills_config();
+    let skill_registry = codewhale_skills::discover_for_workspace(
+        workspace,
+        Some(&global_skills_dir),
+        &skills_config,
+        None,
+    );
+    if let Some(status) = codewhale_skills::bundled_skills_status(&skills_config, &skill_registry) {
+        println!("  {}", status.summary());
+        if !status.unknown.is_empty() {
+            println!("  ⚠ Unknown bundled names: {}", status.unknown.join(", "));
+        }
+        if !status.ignored.is_empty() {
+            println!(
+                "  ⚠ Ignored explicit_only entries: {}",
+                status.ignored.join(", ")
+            );
+        }
+        if !status.selected_missing.is_empty() {
+            println!(
+                "  Selected but not installed: {}",
+                status.selected_missing.join(", ")
+            );
+        }
+    }
+
     let agents_skills_dir = workspace.join(".agents").join("skills");
     let local_skills_dir = workspace.join("skills");
-    let agents_global_skills_dir = crate::skills::agents_global_skills_dir();
+    let agents_global_skills_dir = codewhale_skills::agents_global_skills_dir();
     // #432: cross-tool skill discovery dirs. Presence is reported here
     // even though they sit lower in the precedence chain so users can
     // see at a glance whether a `.opencode/skills/`, `.claude/skills/`,
@@ -5815,13 +5838,16 @@ async fn run_doctor(
         "·".dimmed(),
         codewhale_util::utils::display_path(&selected_skills_dir)
     );
-    let unrecognized_system_skills = crate::skills::unrecognized_system_skills(&global_skills_dir);
+    let unrecognized_system_skills = codewhale_runtime::config::owned_skills_dir()
+        .map(|dir| {
+            codewhale_skills::unrecognized_system_skills(&dir, &config.skills_config().bundled)
+        })
+        .unwrap_or_default();
     if !unrecognized_system_skills.is_empty() {
         println!(
-            "  {} {} bundled skill(s) in {} are customized or from an unknown generation and are never refreshed: {}",
+            "  {} {} bundled skill(s) in the owned global root are customized or from an unknown generation and are never refreshed: {}",
             "!".truecolor(sky_r, sky_g, sky_b),
             unrecognized_system_skills.len(),
-            codewhale_util::utils::display_path(&global_skills_dir),
             unrecognized_system_skills.join(", ")
         );
     }
@@ -8277,7 +8303,7 @@ fn run_doctor_json(
     let global_skills_dir = config.skills_dir();
     let agents_skills_dir = workspace.join(".agents").join("skills");
     let local_skills_dir = workspace.join("skills");
-    let agents_global_skills_dir = crate::skills::agents_global_skills_dir();
+    let agents_global_skills_dir = codewhale_skills::agents_global_skills_dir();
     // #432: cross-tool skill discovery dirs surface in the JSON
     // report so external dashboards can see whether any
     // `.opencode/skills/`, `.claude/skills/`, `.cursor/skills/`, or
@@ -8388,8 +8414,9 @@ fn run_doctor_json(
         "memory": memory_summary,
         "mcp": mcp_summary,
         "skills": {
+            "bundled": codewhale_skills::bundled_skills_status(&config.skills_config(), &codewhale_skills::discover_for_workspace(workspace, Some(&selected_skills_dir), &config.skills_config(), None)),
             "selected": selected_skills_dir.display().to_string(),
-            "unrecognized_system_skills": crate::skills::unrecognized_system_skills(&global_skills_dir),
+            "unrecognized_system_skills": codewhale_runtime::config::owned_skills_dir().map(|dir| codewhale_skills::unrecognized_system_skills(&dir, &config.skills_config().bundled)).unwrap_or_default(),
             "global": {
                 "path": global_skills_dir.display().to_string(),
                 "present": global_skills_dir.exists(),
@@ -9744,7 +9771,7 @@ fn install_extension_host_boot_config(config: &Config) {
         .features()
         .enabled(codewhale_runtime::features::Feature::ExtensionHost);
     codewhale_plugins::activation::install_extension_host_policy(enabled);
-    crate::extension_host::composition_review::install();
+    crate::extension_host::install_ports();
     // Builtin MCP uses the configured runtime without enabling Native plugins.
     // Configuration is lazy: it does not start an unused host.
     crate::extension_host::configure_with_handle(
@@ -13808,7 +13835,8 @@ async fn run_interactive_prepared(
     // Errors are non-fatal: log a warning and continue.
     let skills_dir = config.skills_dir();
     if let Some(install_dir) = config.bundled_skills_install_dir()
-        && let Err(e) = crate::skills::install_system_skills(&install_dir)
+        && let Err(e) =
+            codewhale_skills::install_system_skills(&install_dir, &config.skills_config().bundled)
     {
         logging::warn(format!("Failed to install system skills: {e}"));
     }
@@ -14806,7 +14834,7 @@ async fn build_direct_workflow_tool(
     .with_features(config.features())
     .with_skills_config(
         config.skills_dir(),
-        crate::skills::SkillDiscoveryMode::from_config(&config.skills_config()),
+        std::sync::Arc::new(config.skills_config()),
     )
     .with_plugin_registry(std::sync::Arc::clone(&plugin_registry))
     .with_shell_policy(shell_policy)

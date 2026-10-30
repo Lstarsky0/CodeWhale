@@ -18,7 +18,7 @@ fn marker_file(tmp: &TempDir) -> std::path::PathBuf {
 #[test]
 fn fresh_install_creates_bundled_skills_and_marker() {
     let tmp = TempDir::new().unwrap();
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
     for skill in BUNDLED_SKILLS {
         assert!(
@@ -31,6 +31,76 @@ fn fresh_install_creates_bundled_skills_and_marker() {
 
     let ver = fs::read_to_string(marker_file(&tmp)).unwrap();
     assert_eq!(ver.trim(), BUNDLED_SKILL_VERSION);
+    let untouched = tmp.path().join("none");
+    let none = BundledSkillsConfig {
+        install: Some(BundledSkillsInstall::None),
+        ..Default::default()
+    };
+    install_system_skills(&untouched, &none).unwrap();
+    assert!(!untouched.exists());
+    let before = fs::read(marker_file(&tmp)).unwrap();
+    fs::write(skill_file(&tmp, "debug"), "manual").unwrap();
+    install_system_skills(tmp.path(), &none).unwrap();
+    assert_eq!(fs::read(marker_file(&tmp)).unwrap(), before);
+    assert_eq!(
+        fs::read_to_string(skill_file(&tmp, "debug")).unwrap(),
+        "manual"
+    );
+    let selected = tmp.path().join("selected");
+    let policy = BundledSkillsConfig {
+        install: Some(BundledSkillsInstall::All),
+        selected: Some(vec!["documents".into(), "debug".into()]),
+        disabled: Some(vec!["debug".into()]),
+        ..Default::default()
+    };
+    install_system_skills(&selected, &policy).unwrap();
+    assert!(selected.join("docx/SKILL.md").is_file());
+    assert!(selected.join("documents/SKILL.md").is_file());
+    assert!(!selected.join("debug").exists());
+    assert!(!selected.join("pdf").exists());
+    assert_eq!(fs::read_dir(&selected).unwrap().count(), 3);
+    fs::remove_dir_all(selected.join("docx")).unwrap();
+    install_system_skills(&selected, &policy).unwrap();
+    assert!(selected.join("docx/SKILL.md").is_file());
+    fs::write(selected.join("docx/SKILL.md"), "user-edited").unwrap();
+    fs::write(selected.join("documents/.installed-from"), "managed").unwrap();
+    fs::write(selected.join("documents/SKILL.md"), "managed-body").unwrap();
+    install_system_skills(&selected, &policy).unwrap();
+    assert_eq!(
+        fs::read_to_string(selected.join("docx/SKILL.md")).unwrap(),
+        "user-edited"
+    );
+    assert_eq!(
+        fs::read_to_string(selected.join("documents/SKILL.md")).unwrap(),
+        "managed-body"
+    );
+    #[cfg(unix)]
+    {
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("SKILL.md"), "outside untouched").unwrap();
+        let linked = tmp.path().join("linked");
+        fs::create_dir_all(&linked).unwrap();
+        std::os::unix::fs::symlink(&outside, linked.join("docx")).unwrap();
+        assert!(install_system_skills(&linked, &policy).is_err());
+        assert_eq!(
+            fs::read_to_string(outside.join("SKILL.md")).unwrap(),
+            "outside untouched"
+        );
+        let marker_link = tmp.path().join("marker-link");
+        fs::create_dir_all(&marker_link).unwrap();
+        std::os::unix::fs::symlink(
+            outside.join("SKILL.md"),
+            marker_link.join(".system-installed-version"),
+        )
+        .unwrap();
+        assert!(install_system_skills(&marker_link, &policy).is_err());
+        assert_eq!(fs::read_dir(marker_link).unwrap().count(), 1);
+        assert_eq!(
+            fs::read_to_string(outside.join("SKILL.md")).unwrap(),
+            "outside untouched"
+        );
+    }
 }
 
 #[test]
@@ -109,7 +179,7 @@ fn upgrade_to_generation_12_leaves_contributor_onboarding_in_place() {
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("SKILL.md"), contributor_onboarding_body()).unwrap();
 
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
     assert_eq!(
         fs::read_to_string(skill_file(&tmp, "contributor-onboarding")).unwrap(),
@@ -122,7 +192,7 @@ fn upgrade_to_generation_12_leaves_contributor_onboarding_in_place() {
     );
 
     let fresh = TempDir::new().unwrap();
-    install_system_skills(fresh.path()).unwrap();
+    install_system_skills(fresh.path(), &Default::default()).unwrap();
     assert!(
         !skill_file(&fresh, "contributor-onboarding").exists(),
         "fresh installs must not receive the repo-local skill"
@@ -147,7 +217,7 @@ fn generation_13_trims_pack_and_feedback_goes_repo_local() {
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("SKILL.md"), feedback_body()).unwrap();
 
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
     assert_eq!(
         fs::read_to_string(skill_file(&tmp, "feedback")).unwrap(),
@@ -156,7 +226,7 @@ fn generation_13_trims_pack_and_feedback_goes_repo_local() {
     );
 
     let fresh = TempDir::new().unwrap();
-    install_system_skills(fresh.path()).unwrap();
+    install_system_skills(fresh.path(), &Default::default()).unwrap();
     for name in ["social-media", "health", "feedback"] {
         assert!(
             !skill_file(&fresh, name).exists(),
@@ -168,9 +238,9 @@ fn generation_13_trims_pack_and_feedback_goes_repo_local() {
 #[test]
 fn fresh_install_skills_parse_for_discovery() {
     let tmp = TempDir::new().unwrap();
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
-    let registry = crate::skills::SkillRegistry::discover(tmp.path());
+    let registry = crate::SkillRegistry::discover(tmp.path());
     assert!(
         registry.warnings().is_empty(),
         "bundled skills should parse cleanly: {:?}",
@@ -192,14 +262,14 @@ fn fresh_install_skills_parse_for_discovery() {
 #[test]
 fn corrupt_marker_is_repaired_without_overwriting_user_skill_body() {
     let tmp = TempDir::new().unwrap();
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
     let user_body = "user-edited body";
     fs::write(skill_file(&tmp, "delegate"), user_body).unwrap();
     fs::remove_dir_all(skill_dir(&tmp, "skill-creator")).unwrap();
     fs::write(marker_file(&tmp), "not-a-version").unwrap();
 
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
     assert_eq!(
         fs::read_to_string(skill_file(&tmp, "delegate")).unwrap(),
@@ -213,9 +283,9 @@ fn corrupt_marker_is_repaired_without_overwriting_user_skill_body() {
 }
 
 #[test]
-fn directory_marker_is_replaced_and_user_skills_are_preserved() {
+fn directory_marker_is_refused_and_user_skills_are_preserved() {
     let tmp = TempDir::new().unwrap();
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
     let user_body = "user-edited body";
     fs::write(skill_file(&tmp, "delegate"), user_body).unwrap();
@@ -224,27 +294,26 @@ fn directory_marker_is_replaced_and_user_skills_are_preserved() {
     fs::create_dir(marker_file(&tmp)).unwrap();
     fs::write(marker_file(&tmp).join("stale-entry"), "stale").unwrap();
 
-    install_system_skills(tmp.path()).unwrap();
+    assert!(install_system_skills(tmp.path(), &Default::default()).is_err());
 
     assert_eq!(
         fs::read_to_string(skill_file(&tmp, "delegate")).unwrap(),
         user_body
     );
-    assert!(skill_file(&tmp, "skill-creator").exists());
-    assert!(marker_file(&tmp).is_file());
+    assert!(!skill_file(&tmp, "skill-creator").exists());
     assert_eq!(
-        fs::read_to_string(marker_file(&tmp)).unwrap().trim(),
-        BUNDLED_SKILL_VERSION
+        fs::read_to_string(marker_file(&tmp).join("stale-entry")).unwrap(),
+        "stale"
     );
 }
 
 #[test]
 fn invalid_marker_is_repaired_even_when_no_skill_body_changes() {
     let tmp = TempDir::new().unwrap();
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
     fs::write(marker_file(&tmp), "").unwrap();
 
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
     assert_eq!(
         fs::read_to_string(marker_file(&tmp)).unwrap().trim(),
@@ -281,7 +350,7 @@ fn bundled_catalog_has_two_complete_truthful_tiers() {
 #[test]
 fn calling_twice_is_idempotent() {
     let tmp = TempDir::new().unwrap();
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
     for skill in BUNDLED_SKILLS {
         fs::write(
@@ -291,7 +360,7 @@ fn calling_twice_is_idempotent() {
         .unwrap();
     }
 
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
     for skill in BUNDLED_SKILLS {
         let body = fs::read_to_string(skill_file(&tmp, skill.name)).unwrap();
@@ -309,13 +378,13 @@ fn calling_twice_is_idempotent() {
 #[test]
 fn user_deleted_dir_is_not_recreated() {
     let tmp = TempDir::new().unwrap();
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
     // Simulate user deliberately removing one skill directory.
     fs::remove_dir_all(skill_dir(&tmp, "delegate")).unwrap();
 
     // Re-launch must NOT recreate the deleted directory.
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
     assert!(
         !skill_file(&tmp, "delegate").exists(),
@@ -330,13 +399,13 @@ fn user_deleted_dir_is_not_recreated() {
 #[test]
 fn user_deleted_all_dirs_are_not_recreated() {
     let tmp = TempDir::new().unwrap();
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
     for skill in BUNDLED_SKILLS {
         fs::remove_dir_all(skill_dir(&tmp, skill.name)).unwrap();
     }
 
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
     for skill in BUNDLED_SKILLS {
         assert!(
@@ -361,7 +430,7 @@ fn outdated_marker_triggers_reinstall_of_existing_skills() {
     }
     fs::write(marker_file(&tmp), "0").unwrap();
 
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
     for skill in BUNDLED_SKILLS {
         assert!(
@@ -399,7 +468,7 @@ fn outdated_marker_triggers_reinstall_of_existing_skills() {
         };
         fs::write(skill_file(&tmp, "delegate"), &body).unwrap();
         fs::write(marker_file(&tmp), "18").unwrap();
-        install_system_skills(tmp.path()).unwrap();
+        install_system_skills(tmp.path(), &Default::default()).unwrap();
         assert_eq!(
             fs::read_to_string(skill_file(&tmp, "delegate")).unwrap(),
             if customized {
@@ -432,7 +501,7 @@ fn version_bump_adds_skills_introduced_after_marker() {
     }
     fs::write(marker_file(&tmp), "4").unwrap();
 
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
     for skill in BUNDLED_SKILLS.iter().filter(|s| s.introduced_in == 5) {
         assert!(
@@ -455,7 +524,7 @@ fn version_bump_from_v8_adds_handoff_without_recreating_deleted_skills() {
     let tmp = TempDir::new().unwrap();
     fs::write(marker_file(&tmp), "8").unwrap();
 
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
     assert!(skill_file(&tmp, "handoff").is_file());
     assert!(
@@ -473,7 +542,7 @@ fn version_bump_from_v5_adds_best_of_n_without_recreating_deleted_skills() {
     let tmp = TempDir::new().unwrap();
     fs::write(marker_file(&tmp), "5").unwrap();
 
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
     assert!(skill_file(&tmp, "best-of-n").is_file());
     assert!(
@@ -494,7 +563,7 @@ fn version_bump_respects_deleted_existing_skill_while_adding_new_skill() {
     // before later versions introduced more system skills.
     fs::write(marker_file(&tmp), "2").unwrap();
 
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
     assert!(
         !skill_file(&tmp, "skill-creator").exists(),
@@ -521,7 +590,7 @@ fn version_bump_respects_deleted_existing_skill_while_adding_new_skill() {
 // ── upgrade ───────────────────────────────────────────────────────────────
 
 #[test]
-fn upgrade_from_v4_installs_pack_and_retires_unchanged_v4_best_practices() {
+fn upgrade_from_v4_installs_pack_and_preserves_unchanged_v4_best_practices() {
     let tmp = TempDir::new().unwrap();
     // Simulate a v4 install: marker + legacy skill bodies.
     fs::create_dir_all(skill_dir(&tmp, "v4-best-practices")).unwrap();
@@ -532,11 +601,11 @@ fn upgrade_from_v4_installs_pack_and_retires_unchanged_v4_best_practices() {
     .unwrap();
     fs::write(marker_file(&tmp), "4").unwrap();
 
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
     assert!(
-        !skill_dir(&tmp, "v4-best-practices").exists(),
-        "unchanged v4-best-practices must be retired"
+        skill_dir(&tmp, "v4-best-practices").exists(),
+        "bundle upgrades must not delete skill files"
     );
     assert!(skill_file(&tmp, "debug").exists());
     assert!(skill_file(&tmp, "docx").exists());
@@ -561,7 +630,7 @@ fn upgrade_preserves_modified_v4_best_practices() {
     .unwrap();
     fs::write(marker_file(&tmp), "4").unwrap();
 
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
     assert!(skill_dir(&tmp, "v4-best-practices").exists());
     let body = fs::read_to_string(skill_file(&tmp, "v4-best-practices")).unwrap();
@@ -574,7 +643,7 @@ fn upgrade_preserves_modified_v4_best_practices() {
 #[test]
 fn upgrade_preserves_user_modified_bundled_skill_body() {
     let tmp = TempDir::new().unwrap();
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
     let path = skill_file(&tmp, "debug");
     fs::write(
         &path,
@@ -583,13 +652,16 @@ fn upgrade_preserves_user_modified_bundled_skill_body() {
     .unwrap();
     // Force version bump attempt
     fs::write(marker_file(&tmp), "4").unwrap();
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
     let body = fs::read_to_string(path).unwrap();
     assert!(
         body.contains("customized"),
         "user edit must not be overwritten by name alone"
     );
-    assert_eq!(unrecognized_system_skills(tmp.path()), vec!["debug"]);
+    assert_eq!(
+        unrecognized_system_skills(tmp.path(), &Default::default()),
+        vec!["debug"]
+    );
 }
 
 /// A generation-10 install carries the Registry-first `mcp-discovery` body.
@@ -605,7 +677,7 @@ fn upgrade_from_generation_10_refreshes_untouched_mcp_discovery() {
     fs::write(&path, old).unwrap();
     fs::write(marker_file(&tmp), "10").unwrap();
 
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
     assert_eq!(
         fs::read_to_string(&path).unwrap(),
@@ -627,7 +699,7 @@ fn upgrade_from_generation_10_preserves_user_edited_mcp_discovery() {
     fs::write(&path, &edited).unwrap();
     fs::write(marker_file(&tmp), "10").unwrap();
 
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
     assert_eq!(
         fs::read_to_string(&path).unwrap(),
@@ -643,7 +715,7 @@ fn upgrade_preserves_an_intentionally_empty_mcp_discovery() {
     fs::create_dir_all(skill_dir(&tmp, "mcp-discovery")).unwrap();
     fs::write(&path, "").unwrap();
     fs::write(marker_file(&tmp), "10").unwrap();
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
     assert_eq!(fs::read_to_string(path).unwrap(), "");
 }
 
@@ -652,7 +724,7 @@ fn mcp_discovery_deleted_at_generation_10_stays_deleted() {
     let tmp = TempDir::new().unwrap();
     fs::write(marker_file(&tmp), "10").unwrap();
 
-    install_system_skills(tmp.path()).unwrap();
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
 
     assert!(
         !skill_file(&tmp, "mcp-discovery").exists(),
@@ -682,8 +754,8 @@ fn retained_generation_10_body_is_the_superseded_one() {
 #[test]
 fn end_user_pack_skills_parse_for_discovery() {
     let tmp = TempDir::new().unwrap();
-    install_system_skills(tmp.path()).unwrap();
-    let registry = crate::skills::SkillRegistry::discover(tmp.path());
+    install_system_skills(tmp.path(), &Default::default()).unwrap();
+    let registry = crate::SkillRegistry::discover(tmp.path());
     assert!(
         registry.warnings().is_empty(),
         "bundled skills should parse cleanly: {:?}",
@@ -740,7 +812,7 @@ fn generation_14_refreshes_known_bodies_and_preserves_customizations_and_deletio
             };
             fs::write(&file, &body).unwrap();
             fs::write(marker_file(&tmp), "13").unwrap();
-            install_system_skills(tmp.path()).unwrap();
+            install_system_skills(tmp.path(), &Default::default()).unwrap();
             assert_eq!(
                 fs::read_to_string(file).unwrap(),
                 if customized {
@@ -753,7 +825,7 @@ fn generation_14_refreshes_known_bodies_and_preserves_customizations_and_deletio
         }
         let tmp = TempDir::new().unwrap();
         fs::write(marker_file(&tmp), "13").unwrap();
-        install_system_skills(tmp.path()).unwrap();
+        install_system_skills(tmp.path(), &Default::default()).unwrap();
         assert!(!skill_file(&tmp, name).exists(), "{name} must stay deleted");
     }
 }
@@ -778,7 +850,7 @@ fn generation_15_refreshes_help_and_pdf_from_generation_14() {
         fs::create_dir_all(skill_dir(&tmp, name)).unwrap();
         fs::write(skill_file(&tmp, name), old).unwrap();
         fs::write(marker_file(&tmp), "14").unwrap();
-        install_system_skills(tmp.path()).unwrap();
+        install_system_skills(tmp.path(), &Default::default()).unwrap();
         assert_eq!(
             fs::read_to_string(skill_file(&tmp, name)).unwrap(),
             skill.body,
@@ -798,11 +870,11 @@ fn generation_17_refreshes_previous_plugin_creator_bodies() {
     for (generation, old) in [
         (
             "15",
-            include_str!("../../../assets/skills/plugin-creator/SKILL.generation-15.md"),
+            include_str!("../../assets/skills/plugin-creator/SKILL.generation-15.md"),
         ),
         (
             "16",
-            include_str!("../../../assets/skills/plugin-creator/SKILL.generation-16.md"),
+            include_str!("../../assets/skills/plugin-creator/SKILL.generation-16.md"),
         ),
     ] {
         assert!(is_superseded_shipped_body("plugin-creator", old));
@@ -817,7 +889,7 @@ fn generation_17_refreshes_previous_plugin_creator_bodies() {
             };
             fs::write(skill_file(&tmp, "plugin-creator"), &body).unwrap();
             fs::write(marker_file(&tmp), generation).unwrap();
-            install_system_skills(tmp.path()).unwrap();
+            install_system_skills(tmp.path(), &Default::default()).unwrap();
             assert_eq!(
                 fs::read_to_string(skill_file(&tmp, "plugin-creator")).unwrap(),
                 if customized {

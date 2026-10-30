@@ -332,6 +332,12 @@ impl Engine {
                         progress.context_recovery_attempts.saturating_add(1);
                     return PhaseResult::Retry;
                 }
+                if self.cancel_token.is_cancelled() {
+                    return PhaseResult::Return((TurnOutcomeStatus::Interrupted, None));
+                }
+                if let Some(message) = self.report_context_recovery_failure(turn).await {
+                    return PhaseResult::Return((TurnOutcomeStatus::Failed, Some(message)));
+                }
                 if !body_size_rejection
                     && self.rlm_host.is_none()
                     && is_image_input_rejection_message(&message)

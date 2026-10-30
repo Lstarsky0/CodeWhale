@@ -191,19 +191,21 @@ impl SkillRootCatalog {
             "project-codex",
         );
 
-        if let Some(home) = home_dir {
+        if let Some(global_owned) = owned_global_skills_dir(home_dir) {
             push_descriptor(
                 &mut roots,
                 &mut precedence,
                 SkillRootKind::CodeWhaleGlobal,
                 SkillRootAccess::WritableOwned,
                 SkillScope::Global,
-                home.join(".codewhale/skills"),
+                global_owned,
                 true,
                 true,
                 "global-codewhale",
                 true,
             );
+        }
+        if let Some(home) = home_dir {
             for (harness, directory, id) in [
                 (CompatibleHarness::Agents, ".agents", "global-agents"),
                 (CompatibleHarness::Claude, ".claude", "global-claude"),
@@ -446,7 +448,7 @@ pub fn codewhale_workspace_skills_dir(workspace: &Path) -> Option<PathBuf> {
 
 /// Filter candidate paths to existing directories, preserving order and
 /// de-duplicating by canonical path.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[must_use]
 pub fn existing_skill_dirs(candidates: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -478,15 +480,14 @@ pub fn classify_configured_skills_dir(
             SkillScope::Project,
         );
     }
-    if let Some(home) = home_dir {
-        let global_owned = home.join(".codewhale").join("skills");
-        if paths_refer_to_same_dir(&global_owned, skills_dir) {
-            return (
-                SkillRootKind::CodeWhaleGlobal,
-                SkillRootAccess::WritableOwned,
-                SkillScope::Global,
-            );
-        }
+    if let Some(global_owned) = owned_global_skills_dir(home_dir)
+        && paths_refer_to_same_dir(&global_owned, skills_dir)
+    {
+        return (
+            SkillRootKind::CodeWhaleGlobal,
+            SkillRootAccess::WritableOwned,
+            SkillScope::Global,
+        );
     }
 
     if let Some(harness) = match_compatible_project(workspace, skills_dir) {
@@ -742,10 +743,18 @@ fn insert_configured_root(
     *precedence = roots.len();
 }
 
+fn owned_global_skills_dir(home: Option<&Path>) -> Option<PathBuf> {
+    if home == codewhale_paths::user_home().as_deref() {
+        codewhale_runtime::config::owned_skills_dir()
+    } else {
+        home.map(|home| home.join(".codewhale/skills"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skills::SkillDiscoveryMode;
+    use crate::SkillDiscoveryMode;
     use tempfile::TempDir;
 
     fn write_dir(path: &Path) {
@@ -773,7 +782,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let workspace = tmp.path().join("ws");
         let home = tmp.path().join("home");
-        crate::test_support::trust_workspace(&workspace);
+        codewhale_runtime::test_support::trust_workspace(&workspace);
         write_dir(&workspace.join(".agents").join("skills"));
         write_dir(&workspace.join("skills"));
         write_dir(&workspace.join(".claude").join("skills"));
@@ -832,7 +841,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let workspace = tmp.path().join("ws");
         let home = tmp.path().join("home");
-        crate::test_support::trust_workspace(&workspace);
+        codewhale_runtime::test_support::trust_workspace(&workspace);
         write_dir(&workspace.join(".agents").join("skills"));
         write_dir(&workspace.join(".codewhale").join("skills"));
         write_dir(&home.join(".codewhale").join("skills"));
@@ -891,7 +900,7 @@ mod tests {
     fn flat_workspace_root_remains_audit_only_until_opted_in() {
         let tmp = TempDir::new().unwrap();
         let workspace = tmp.path().join("ws");
-        crate::test_support::trust_workspace(&workspace);
+        codewhale_runtime::test_support::trust_workspace(&workspace);
         let flat = workspace.join("skills");
         write_dir(&flat);
         let catalog = SkillRootCatalog::build(&workspace, None, None);

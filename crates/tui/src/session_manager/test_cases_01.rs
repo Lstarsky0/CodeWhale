@@ -859,6 +859,8 @@
                 .as_bytes(),
         )
         .expect("legacy checkpoint before deletion");
+        let legacy = manager.checkpoints_dir().join(LEGACY_CHECKPOINT_FILE);
+        let legacy_before = fs::read(&legacy).expect("legacy bytes");
         let (ledger, _) = manager
             .ensure_late_usage_paths("interrupted-delete")
             .expect("paths");
@@ -891,7 +893,8 @@
             .delete_session("interrupted-delete")
             .expect("finish deletion");
         assert!(manager.list_sessions().expect("list").is_empty());
-        assert!(manager.list_checkpoints().expect("checkpoints").is_empty());
+        assert_eq!(fs::read(&legacy).expect("legacy preserved"), legacy_before);
+        assert!(manager.load_legacy_checkpoint().expect("legacy read").is_none());
     }
 
     #[test]

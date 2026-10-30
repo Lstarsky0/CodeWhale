@@ -398,10 +398,18 @@ pub(crate) fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> b
         // model received against the full payload.
         let spillover_section = spillover_pager_section(app, cell_index);
         let mutation_section = match app.cell_at_virtual_index(cell_index) {
-            Some(HistoryCell::Tool(ToolCell::PatchSummary(cell))) => cell
-                .receipt
-                .as_ref()
-                .map(|receipt| format!("── Exact File change ──\n{}", receipt.inspect_text())),
+            Some(HistoryCell::Tool(ToolCell::PatchSummary(cell))) => {
+                cell.receipt.as_ref().map(|receipt| {
+                    format!(
+                        "── {} ──\n{}",
+                        codewhale_localization::tr(
+                            app.ui_locale,
+                            codewhale_localization::MessageId::FileMutationExactHeading
+                        ),
+                        receipt.inspect_text(app.ui_locale)
+                    )
+                })
+            }
             _ => None,
         };
 
@@ -1173,12 +1181,14 @@ fn turn_timeline_lines(app: &App, start: usize, end: usize) -> Vec<String> {
                 let (kind, summary) = timeline_tool_summary(app, idx, tool);
                 let duration = tool_duration_for_activity(tool)
                     .map(codewhale_command_contract::elapsed::format_elapsed_ms);
-                let status = tool.status().map(tool_status_label);
+                let status = tool
+                    .status()
+                    .map(|status| tool_status_label(status, app.ui_locale));
                 let actions = timeline_cell_actions(app, idx, cell);
                 rows.push(timeline_row(
                     kind,
                     &summary,
-                    status,
+                    status.as_deref(),
                     duration.as_deref(),
                     &actions,
                 ));
@@ -1427,7 +1437,7 @@ fn turn_files_changed(app: &App, start: usize, end: usize) -> Vec<String> {
                 lines.push(format!(
                     "• {} — {}",
                     truncate_line_to_width(&patch.path, 60),
-                    tool_status_label(patch.status)
+                    tool_status_label(patch.status, app.ui_locale)
                 ));
             }
             _ => {}
@@ -1496,7 +1506,7 @@ fn turn_verifier_lines(app: &App, start: usize, end: usize) -> Vec<String> {
                 lines.push(format!(
                     "• {} — {}",
                     truncate_line_to_width(&exec.command, 56),
-                    tool_status_label(exec.status)
+                    tool_status_label(exec.status, app.ui_locale)
                 ));
             }
             ToolCell::Review(review) => {
@@ -1506,7 +1516,10 @@ fn turn_verifier_lines(app: &App, start: usize, end: usize) -> Vec<String> {
                 } else {
                     format!("review {target}")
                 };
-                lines.push(format!("• {target} — {}", tool_status_label(review.status)));
+                lines.push(format!(
+                    "• {target} — {}",
+                    tool_status_label(review.status, app.ui_locale)
+                ));
             }
             _ => {}
         }

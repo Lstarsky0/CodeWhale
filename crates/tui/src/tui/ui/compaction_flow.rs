@@ -435,13 +435,9 @@ pub(crate) fn maybe_warn_context_pressure_for_config(
         app.context_pressure_warning_dismissed = None;
         return;
     }
-    let max = config.effective_context_window.unwrap_or_else(|| {
-        crate::route_budget::route_context_window_tokens(
-            app.api_provider,
-            app.effective_model_for_budget(),
-            app.active_route_limits,
-        )
-    });
+    let max = config
+        .effective_context_window
+        .unwrap_or_else(|| app.effective_context_window());
     let Some((used, max, percent)) = context_usage_snapshot_for_window(app, max) else {
         return;
     };
@@ -477,7 +473,7 @@ pub(crate) fn maybe_warn_context_pressure_for_config(
 
     // #5239: the meter drives real budgets off this window, so an unverified
     // one must say so next to the numbers that depend on it.
-    let window_note = if app.active_context_window_source.is_verified() {
+    let window_note = if app.effective_context_window_source().is_verified() {
         ""
     } else {
         ", unverified window"

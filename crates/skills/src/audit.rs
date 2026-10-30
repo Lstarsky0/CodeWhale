@@ -110,7 +110,7 @@ pub enum TrustState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadinessState {
     // Constructed only in tests until the #4407 readiness cache is wired.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     Ready,
     Unknown,
 }
@@ -188,7 +188,7 @@ pub trait SkillReadinessProvider {
 }
 
 /// Scan skill roots into a full, unmerged inventory.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[must_use]
 pub fn scan(
     workspace: &Path,
@@ -650,7 +650,7 @@ struct PackageAnalysis {
 
 /// Test-only digest helper. Prod paths (audit, mutation) call
 /// `package_digest::compute_package_digest` directly.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn compute_package_digest(package_dir: &Path) -> Result<String, DigestUnknownReason> {
     package_digest::compute_package_digest(package_dir).map_err(digest_error_to_unknown)
 }
@@ -1406,7 +1406,7 @@ mod tests {
         fs::create_dir_all(root.join("pdf")).unwrap();
         fs::write(
             root.join("pdf").join("SKILL.md"),
-            include_str!("../../assets/skills/pdf/SKILL.md"),
+            include_str!("../assets/skills/pdf/SKILL.md"),
         )
         .unwrap();
 

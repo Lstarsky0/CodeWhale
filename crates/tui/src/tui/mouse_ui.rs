@@ -1795,7 +1795,7 @@ pub(crate) fn apply_context_menu_action(
                 build_command_palette_entries(
                     app.ui_locale,
                     &app.skills_dir,
-                    app.skills_discovery_mode,
+                    &app.skills_config,
                     &app.workspace,
                     &app.mcp_config_path,
                     app.mcp_snapshot.as_ref(),

@@ -303,6 +303,7 @@ impl ChatWidget {
             && app.tool_run_cache.threshold == app.tool_collapse_threshold
             && app.tool_run_cache.mode == app.tool_collapse_mode
             && app.tool_run_cache.calm_mode == app.calm_mode
+            && app.tool_run_cache.locale == app.ui_locale
             && app.tool_run_cache.expanded_runs == app.expanded_tool_runs;
         if !cache_key_matches {
             let superseded_todos = superseded_todo_write_indices(&app.history, active_entries);
@@ -334,7 +335,7 @@ impl ChatWidget {
                 cache.summaries.insert(
                     run.start,
                     (
-                        tool_run_summary_cell(run),
+                        tool_run_summary_cell(run, app.ui_locale),
                         tool_run_summary_revision(
                             run,
                             &app.history_revisions,
@@ -355,6 +356,7 @@ impl ChatWidget {
             cache.threshold = app.tool_collapse_threshold;
             cache.mode = app.tool_collapse_mode;
             cache.calm_mode = app.calm_mode;
+            cache.locale = app.ui_locale;
             cache.expanded_runs.clone_from(&app.expanded_tool_runs);
         }
         // v0.9.1: do not collapse concurrent sub-agent cards into an Enter-
@@ -679,11 +681,11 @@ fn receipt_is_settling(receipt_order: usize, elapsed_ms: u128) -> bool {
     elapsed_ms < delay + 140
 }
 
-fn tool_run_summary_cell(run: &ToolRun) -> HistoryCell {
+fn tool_run_summary_cell(run: &ToolRun, locale: codewhale_localization::Locale) -> HistoryCell {
     HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
         name: "activity_group".to_string(),
         status: ToolStatus::Success,
-        input_summary: Some(crate::tui::history::tool_run_summary(run)),
+        input_summary: Some(crate::tui::history::tool_run_summary(run, locale)),
         output: None,
         prompts: None,
         spillover_path: None,

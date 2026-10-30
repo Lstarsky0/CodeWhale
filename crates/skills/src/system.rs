@@ -2,9 +2,10 @@
 //! on first launch.
 
 use std::fs;
-use std::io::Write;
 use std::path::Path;
 
+use codewhale_runtime::config::{BundledSkillsConfig, BundledSkillsInstall, SkillsConfig};
+use codewhale_skill_install::skill_parse::{self, normalize_skill_name_for_lookup};
 use sha2::{Digest, Sha256};
 
 /// Bundled catalog generation for the default CodeWhale skill pack (#4691).
@@ -44,76 +45,76 @@ use sha2::{Digest, Sha256};
 const BUNDLED_SKILL_VERSION: &str = "19";
 
 // ── system & extension (meta) ───────────────────────────────────────────────
-const SKILL_CREATOR_BODY: &str = include_str!("../../assets/skills/skill-creator/SKILL.md");
-const DELEGATE_BODY: &str = include_str!("../../assets/skills/delegate/SKILL.md");
-const PLUGIN_CREATOR_BODY: &str = include_str!("../../assets/skills/plugin-creator/SKILL.md");
-const SKILL_INSTALLER_BODY: &str = include_str!("../../assets/skills/skill-installer/SKILL.md");
-const MCP_BUILDER_BODY: &str = include_str!("../../assets/skills/mcp-builder/SKILL.md");
-const FLEET_MANAGER_BODY: &str = include_str!("../../assets/skills/fleet-manager/SKILL.md");
-const HELP_BODY: &str = include_str!("../../assets/skills/help/SKILL.md");
+const SKILL_CREATOR_BODY: &str = include_str!("../assets/skills/skill-creator/SKILL.md");
+const DELEGATE_BODY: &str = include_str!("../assets/skills/delegate/SKILL.md");
+const PLUGIN_CREATOR_BODY: &str = include_str!("../assets/skills/plugin-creator/SKILL.md");
+const SKILL_INSTALLER_BODY: &str = include_str!("../assets/skills/skill-installer/SKILL.md");
+const MCP_BUILDER_BODY: &str = include_str!("../assets/skills/mcp-builder/SKILL.md");
+const FLEET_MANAGER_BODY: &str = include_str!("../assets/skills/fleet-manager/SKILL.md");
+const HELP_BODY: &str = include_str!("../assets/skills/help/SKILL.md");
 
 // ── end-user workflows ──────────────────────────────────────────────────────
-const HANDOFF_BODY: &str = include_str!("../../assets/skills/handoff/SKILL.md");
-const BEST_OF_N_BODY: &str = include_str!("../../assets/skills/best-of-n/SKILL.md");
-const INTERVIEW_BODY: &str = include_str!("../../assets/skills/interview/SKILL.md");
-const PLAN_BODY: &str = include_str!("../../assets/skills/plan/SKILL.md");
-const IMPLEMENT_BODY: &str = include_str!("../../assets/skills/implement/SKILL.md");
-const DEBUG_BODY: &str = include_str!("../../assets/skills/debug/SKILL.md");
-const TEST_BODY: &str = include_str!("../../assets/skills/test/SKILL.md");
-const REVIEW_BODY: &str = include_str!("../../assets/skills/review/SKILL.md");
-const SECURITY_REVIEW_BODY: &str = include_str!("../../assets/skills/security-review/SKILL.md");
-const SIMPLIFY_BODY: &str = include_str!("../../assets/skills/simplify/SKILL.md");
-const VERIFY_BODY: &str = include_str!("../../assets/skills/verify/SKILL.md");
-const RESEARCH_BODY: &str = include_str!("../../assets/skills/research/SKILL.md");
-const FRONTEND_DESIGN_BODY: &str = include_str!("../../assets/skills/frontend-design/SKILL.md");
-const WEBAPP_TESTING_BODY: &str = include_str!("../../assets/skills/webapp-testing/SKILL.md");
-const DOCUMENT_BODY: &str = include_str!("../../assets/skills/document/SKILL.md");
-const DATAVIZ_BODY: &str = include_str!("../../assets/skills/dataviz/SKILL.md");
-const DOCX_BODY: &str = include_str!("../../assets/skills/docx/SKILL.md");
-const PDF_BODY: &str = include_str!("../../assets/skills/pdf/SKILL.md");
-const PPTX_BODY: &str = include_str!("../../assets/skills/pptx/SKILL.md");
-const XLSX_BODY: &str = include_str!("../../assets/skills/xlsx/SKILL.md");
-const DOCUMENTS_ALIAS_BODY: &str = include_str!("../../assets/skills/documents/SKILL.md");
-const PRESENTATIONS_ALIAS_BODY: &str = include_str!("../../assets/skills/presentations/SKILL.md");
-const SPREADSHEETS_ALIAS_BODY: &str = include_str!("../../assets/skills/spreadsheets/SKILL.md");
+const HANDOFF_BODY: &str = include_str!("../assets/skills/handoff/SKILL.md");
+const BEST_OF_N_BODY: &str = include_str!("../assets/skills/best-of-n/SKILL.md");
+const INTERVIEW_BODY: &str = include_str!("../assets/skills/interview/SKILL.md");
+const PLAN_BODY: &str = include_str!("../assets/skills/plan/SKILL.md");
+const IMPLEMENT_BODY: &str = include_str!("../assets/skills/implement/SKILL.md");
+const DEBUG_BODY: &str = include_str!("../assets/skills/debug/SKILL.md");
+const TEST_BODY: &str = include_str!("../assets/skills/test/SKILL.md");
+const REVIEW_BODY: &str = include_str!("../assets/skills/review/SKILL.md");
+const SECURITY_REVIEW_BODY: &str = include_str!("../assets/skills/security-review/SKILL.md");
+const SIMPLIFY_BODY: &str = include_str!("../assets/skills/simplify/SKILL.md");
+const VERIFY_BODY: &str = include_str!("../assets/skills/verify/SKILL.md");
+const RESEARCH_BODY: &str = include_str!("../assets/skills/research/SKILL.md");
+const FRONTEND_DESIGN_BODY: &str = include_str!("../assets/skills/frontend-design/SKILL.md");
+const WEBAPP_TESTING_BODY: &str = include_str!("../assets/skills/webapp-testing/SKILL.md");
+const DOCUMENT_BODY: &str = include_str!("../assets/skills/document/SKILL.md");
+const DATAVIZ_BODY: &str = include_str!("../assets/skills/dataviz/SKILL.md");
+const DOCX_BODY: &str = include_str!("../assets/skills/docx/SKILL.md");
+const PDF_BODY: &str = include_str!("../assets/skills/pdf/SKILL.md");
+const PPTX_BODY: &str = include_str!("../assets/skills/pptx/SKILL.md");
+const XLSX_BODY: &str = include_str!("../assets/skills/xlsx/SKILL.md");
+const DOCUMENTS_ALIAS_BODY: &str = include_str!("../assets/skills/documents/SKILL.md");
+const PRESENTATIONS_ALIAS_BODY: &str = include_str!("../assets/skills/presentations/SKILL.md");
+const SPREADSHEETS_ALIAS_BODY: &str = include_str!("../assets/skills/spreadsheets/SKILL.md");
 
 // ── everyday ────────────────────────────────────────────────────────────────
-const GITHUB_BODY: &str = include_str!("../../assets/skills/github/SKILL.md");
-const GMAIL_BODY: &str = include_str!("../../assets/skills/gmail/SKILL.md");
-const GOOGLE_CALENDAR_BODY: &str = include_str!("../../assets/skills/google-calendar/SKILL.md");
-const MONEY_BODY: &str = include_str!("../../assets/skills/money/SKILL.md");
-const SPOTIFY_BODY: &str = include_str!("../../assets/skills/spotify/SKILL.md");
-const TTS_BODY: &str = include_str!("../../assets/skills/tts/SKILL.md");
-const PODCAST_BODY: &str = include_str!("../../assets/skills/podcast/SKILL.md");
-const SHOPPING_BODY: &str = include_str!("../../assets/skills/shopping/SKILL.md");
-const FLIGHTS_BODY: &str = include_str!("../../assets/skills/flights/SKILL.md");
-const PHOTOS_BODY: &str = include_str!("../../assets/skills/photos/SKILL.md");
-const IMAGE_SEARCH_BODY: &str = include_str!("../../assets/skills/image-search/SKILL.md");
-const GOALS_BODY: &str = include_str!("../../assets/skills/goals/SKILL.md");
-const FORGET_BODY: &str = include_str!("../../assets/skills/forget/SKILL.md");
-const FEEDBACK_BODY: &str = include_str!("../../assets/skills/feedback/SKILL.md");
+const GITHUB_BODY: &str = include_str!("../assets/skills/github/SKILL.md");
+const GMAIL_BODY: &str = include_str!("../assets/skills/gmail/SKILL.md");
+const GOOGLE_CALENDAR_BODY: &str = include_str!("../assets/skills/google-calendar/SKILL.md");
+const MONEY_BODY: &str = include_str!("../assets/skills/money/SKILL.md");
+const SPOTIFY_BODY: &str = include_str!("../assets/skills/spotify/SKILL.md");
+const TTS_BODY: &str = include_str!("../assets/skills/tts/SKILL.md");
+const PODCAST_BODY: &str = include_str!("../assets/skills/podcast/SKILL.md");
+const SHOPPING_BODY: &str = include_str!("../assets/skills/shopping/SKILL.md");
+const FLIGHTS_BODY: &str = include_str!("../assets/skills/flights/SKILL.md");
+const PHOTOS_BODY: &str = include_str!("../assets/skills/photos/SKILL.md");
+const IMAGE_SEARCH_BODY: &str = include_str!("../assets/skills/image-search/SKILL.md");
+const GOALS_BODY: &str = include_str!("../assets/skills/goals/SKILL.md");
+const FORGET_BODY: &str = include_str!("../assets/skills/forget/SKILL.md");
+const FEEDBACK_BODY: &str = include_str!("../assets/skills/feedback/SKILL.md");
 
 // ── power / explicit-only ───────────────────────────────────────────────────
-const BATCH_BODY: &str = include_str!("../../assets/skills/batch/SKILL.md");
-const DEPENDENCY_UPDATE_BODY: &str = include_str!("../../assets/skills/dependency-update/SKILL.md");
-const RELEASE_BODY: &str = include_str!("../../assets/skills/release/SKILL.md");
+const BATCH_BODY: &str = include_str!("../assets/skills/batch/SKILL.md");
+const DEPENDENCY_UPDATE_BODY: &str = include_str!("../assets/skills/dependency-update/SKILL.md");
+const RELEASE_BODY: &str = include_str!("../assets/skills/release/SKILL.md");
 const CONTRIBUTOR_ONBOARDING_BODY: &str =
-    include_str!("../../assets/skills/contributor-onboarding/SKILL.md");
+    include_str!("../assets/skills/contributor-onboarding/SKILL.md");
 
 // Optional integration (not auto-installed for every user): Feishu body kept for
 // digest/migration helpers only.
-const FEISHU_BODY: &str = include_str!("../../assets/skills/feishu/SKILL.md");
-const MCP_DISCOVERY_BODY: &str = include_str!("../../assets/skills/mcp-discovery/SKILL.md");
+const FEISHU_BODY: &str = include_str!("../assets/skills/feishu/SKILL.md");
+const MCP_DISCOVERY_BODY: &str = include_str!("../assets/skills/mcp-discovery/SKILL.md");
 
-// Legacy v4 body retained solely for digest-based safe retirement (#4691).
-const V4_BEST_PRACTICES_BODY: &str = include_str!("../../assets/skills/v4-best-practices/SKILL.md");
+// Legacy v4 body retained for migration fixtures; installed copies stay on disk.
+#[cfg(test)]
+const V4_BEST_PRACTICES_BODY: &str = include_str!("../assets/skills/v4-best-practices/SKILL.md");
 
 // Generation-10 `mcp-discovery` body, retained solely so an unmodified copy of
-// it can be recognized and refreshed on upgrade. Same digest discipline as the
-// v4 retirement above: an exact byte match proves CodeWhale still owns the
-// file, so replacing it loses no user work.
+// it can be recognized and refreshed on upgrade. Only exact known bodies
+// without a managed marker can be replaced; user edits remain in place.
 const MCP_DISCOVERY_GENERATION_10_BODY: &str =
-    include_str!("../../assets/skills/mcp-discovery/SKILL.generation-10.md");
+    include_str!("../assets/skills/mcp-discovery/SKILL.generation-10.md");
 
 /// Exact bodies a bundled skill shipped in an earlier generation.
 ///
@@ -126,43 +127,43 @@ const SUPERSEDED_BODIES: &[(&str, &str)] = &[
     ("mcp-discovery", MCP_DISCOVERY_GENERATION_10_BODY),
     (
         "gmail",
-        include_str!("../../assets/skills/gmail/SKILL.generation-13.md"),
+        include_str!("../assets/skills/gmail/SKILL.generation-13.md"),
     ),
     (
         "google-calendar",
-        include_str!("../../assets/skills/google-calendar/SKILL.generation-13.md"),
+        include_str!("../assets/skills/google-calendar/SKILL.generation-13.md"),
     ),
     (
         "photos",
-        include_str!("../../assets/skills/photos/SKILL.generation-13.md"),
+        include_str!("../assets/skills/photos/SKILL.generation-13.md"),
     ),
     (
         "forget",
-        include_str!("../../assets/skills/forget/SKILL.generation-13.md"),
+        include_str!("../assets/skills/forget/SKILL.generation-13.md"),
     ),
     (
         "spotify",
-        include_str!("../../assets/skills/spotify/SKILL.generation-13.md"),
+        include_str!("../assets/skills/spotify/SKILL.generation-13.md"),
     ),
     (
         "plugin-creator",
-        include_str!("../../assets/skills/plugin-creator/SKILL.generation-13.md"),
+        include_str!("../assets/skills/plugin-creator/SKILL.generation-13.md"),
     ),
     (
         "plugin-creator",
-        include_str!("../../assets/skills/plugin-creator/SKILL.generation-15.md"),
+        include_str!("../assets/skills/plugin-creator/SKILL.generation-15.md"),
     ),
     (
         "plugin-creator",
-        include_str!("../../assets/skills/plugin-creator/SKILL.generation-16.md"),
+        include_str!("../assets/skills/plugin-creator/SKILL.generation-16.md"),
     ),
     (
         "help",
-        include_str!("../../assets/skills/help/SKILL.generation-14.md"),
+        include_str!("../assets/skills/help/SKILL.generation-14.md"),
     ),
     (
         "pdf",
-        include_str!("../../assets/skills/pdf/SKILL.generation-14.md"),
+        include_str!("../assets/skills/pdf/SKILL.generation-14.md"),
     ),
 ];
 
@@ -198,11 +199,22 @@ fn is_superseded_shipped_body(name: &str, existing: &str) -> bool {
 /// shipped one: customized by the user or from a generation this build cannot
 /// identify. The installer never refreshes these.
 #[must_use]
-pub fn unrecognized_system_skills(skills_dir: &Path) -> Vec<&'static str> {
+pub fn unrecognized_system_skills(
+    skills_dir: &Path,
+    policy: &BundledSkillsConfig,
+) -> Vec<&'static str> {
     BUNDLED_SKILLS
         .iter()
+        .filter(|skill| bundled_enabled(policy, skill.name))
         .filter(|skill| {
-            fs::read_to_string(skills_dir.join(skill.name).join("SKILL.md")).is_ok_and(|existing| {
+            fs::symlink_metadata(skills_dir.join(skill.name).join(".installed-from")).is_err()
+        })
+        .filter(|skill| {
+            codewhale_util::fs_confined::read_to_string(
+                skills_dir,
+                &skills_dir.join(skill.name).join("SKILL.md"),
+            )
+            .is_ok_and(|existing| {
                 existing != skill.body && !is_superseded_shipped_body(skill.name, &existing)
             })
         })
@@ -517,11 +529,6 @@ pub fn bundled_skill_generation() -> &'static str {
     BUNDLED_SKILL_VERSION
 }
 
-/// Legacy v4-best-practices body digest helper (not in BUNDLED_SKILLS).
-fn v4_best_practices_body() -> &'static str {
-    V4_BEST_PRACTICES_BODY
-}
-
 fn feishu_body() -> &'static str {
     FEISHU_BODY
 }
@@ -572,39 +579,54 @@ fn install_one(
     skills_dir: &Path,
     skill: &BundledSkill,
     installed_version: Option<&str>,
+    policy: &BundledSkillsConfig,
 ) -> std::io::Result<bool> {
+    if !bundled_enabled(policy, skill.name) {
+        return Ok(false);
+    }
     let target_dir = skills_dir.join(skill.name);
     let target_file = target_dir.join("SKILL.md");
     let dir_exists = target_dir.exists();
     let installed_number = installed_version.and_then(|value| value.parse::<u32>().ok());
 
-    let should_install = match (installed_version, installed_number, dir_exists) {
-        // Fresh install: neither marker nor directory.
-        (None, _, false) => true,
-        // Newly bundled skill: add it for older system-skill installs.
-        (Some(_), Some(version), _) if version < skill.introduced_in => true,
-        // Version bump for an existing skill: refresh only if the user has not
-        // intentionally deleted that skill directory.
-        (Some(version), _, true) if version != BUNDLED_SKILL_VERSION => true,
-        // Every other case: current install, user-deleted dir, or pre-existing
-        // user-owned skill without our marker.
-        _ => false,
-    };
+    let should_install = policy.install == Some(BundledSkillsInstall::All)
+        || match (installed_version, installed_number, dir_exists) {
+            // Fresh install: neither marker nor directory.
+            (None, _, false) => true,
+            // Newly bundled skill: add it for older system-skill installs.
+            (Some(_), Some(version), _) if version < skill.introduced_in => true,
+            // Version bump for an existing skill: refresh only if the user has not
+            // intentionally deleted that skill directory.
+            (Some(version), _, true) if version != BUNDLED_SKILL_VERSION => true,
+            // Every other case: current install, user-deleted dir, or pre-existing
+            // user-owned skill without our marker.
+            _ => false,
+        };
 
     if should_install {
-        // Never overwrite a user-modified copy that no longer matches a known
-        // shipped body (#4691 non-destructive upgrade table). A body we shipped
-        // in an earlier generation is still a known shipped body, so it may be
-        // refreshed; anything else is the user's.
-        if target_file.exists() {
-            let existing = fs::read_to_string(&target_file)?;
-            if existing != skill.body && !is_superseded_shipped_body(skill.name, &existing) {
-                // Preserve user/compatible-root content; skip replace-by-name.
+        if fs::symlink_metadata(target_dir.join(".installed-from")).is_ok() {
+            return Ok(false);
+        }
+        match codewhale_util::fs_confined::read_to_string(skills_dir, &target_file) {
+            Ok(existing)
+                if existing != skill.body && !is_superseded_shipped_body(skill.name, &existing) =>
+            {
                 return Ok(false);
             }
+            Ok(existing) if existing == skill.body => {
+                return Ok(installed_version != Some(BUNDLED_SKILL_VERSION));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
         }
-        fs::create_dir_all(&target_dir)?;
-        fs::write(&target_file, skill.body)?;
+        fs::create_dir_all(skills_dir)?;
+        codewhale_util::files::WorkspaceFile::open(
+            skills_dir,
+            &Path::new(skill.name).join("SKILL.md"),
+            true,
+        )?
+        .replace(skill.body.as_bytes())?;
     }
     Ok(should_install)
 }
@@ -624,30 +646,29 @@ fn install_one(
 ///
 /// Errors are I/O errors from the filesystem; the caller should log them but not
 /// abort startup.
-pub fn install_system_skills(skills_dir: &Path) -> std::io::Result<()> {
+pub fn install_system_skills(
+    skills_dir: &Path,
+    policy: &BundledSkillsConfig,
+) -> std::io::Result<()> {
+    if policy.install == Some(BundledSkillsInstall::None) {
+        return Ok(());
+    }
     let marker = skills_dir.join(".system-installed-version");
 
-    // A marker can be left behind as an invalid file (or even as a directory
-    // after an interrupted/manual install). Treat it as an untrusted marker,
-    // but still repair it after reconciling the bundled skills. This keeps
-    // user-edited skill bodies intact while allowing missing skills to be
-    // restored and future upgrades to be versioned again.
-    let (installed_version, repair_marker) = match fs::read_to_string(&marker) {
-        Ok(contents) => match contents.trim().parse::<u32>() {
-            Ok(_) => (Some(contents.trim().to_string()), false),
-            Err(_) => (None, true),
-        },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (None, false),
-        Err(_) => (None, true),
-    };
+    let (installed_version, repair_marker) =
+        match codewhale_util::fs_confined::read_to_string(skills_dir, &marker) {
+            Ok(contents) => match contents.trim().parse::<u32>() {
+                Ok(_) => (Some(contents.trim().to_string()), false),
+                Err(_) => (None, true),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (None, false),
+            Err(error) => return Err(error),
+        };
 
     let mut changed = false;
     for skill in BUNDLED_SKILLS {
-        changed |= install_one(skills_dir, skill, installed_version.as_deref())?;
+        changed |= install_one(skills_dir, skill, installed_version.as_deref(), policy)?;
     }
-
-    // Safe retirement: remove only an unchanged CodeWhale-owned v4-best-practices.
-    changed |= retire_unchanged_v4_best_practices(skills_dir)?;
 
     // Feishu is optional: do not install for every user. If an older bundle
     // installed an exact shipped copy, leave it; never delete by name alone.
@@ -663,49 +684,228 @@ pub fn install_system_skills(skills_dir: &Path) -> std::io::Result<()> {
 
     if changed || repair_marker {
         fs::create_dir_all(skills_dir)?;
-        if marker.exists() && !marker.is_file() {
-            if marker.is_dir() {
-                fs::remove_dir_all(&marker)?;
-            } else {
-                fs::remove_file(&marker)?;
-            }
-        }
-        write_marker_atomically(&marker, BUNDLED_SKILL_VERSION)?;
+        codewhale_util::files::WorkspaceFile::open(
+            skills_dir,
+            Path::new(".system-installed-version"),
+            true,
+        )?
+        .replace(BUNDLED_SKILL_VERSION.as_bytes())?;
     }
     Ok(())
 }
 
-/// Delete `v4-best-practices` only when the installed SKILL.md exactly matches
-/// the last shipped bundled body (byte-for-byte). Modified or user-owned copies
-/// are preserved.
-fn retire_unchanged_v4_best_practices(skills_dir: &Path) -> std::io::Result<bool> {
-    let dir = skills_dir.join("v4-best-practices");
-    let file = dir.join("SKILL.md");
-    if !file.exists() {
-        return Ok(false);
-    }
-    let existing = fs::read_to_string(&file)?;
-    if existing != v4_best_practices_body() {
-        return Ok(false);
-    }
-    fs::remove_dir_all(&dir)?;
-    Ok(true)
+pub fn canonical_bundled_skill_name(name: &str) -> Option<&'static str> {
+    static CANONICAL: std::sync::LazyLock<std::collections::HashMap<&'static str, &'static str>> =
+        std::sync::LazyLock::new(|| {
+            BUNDLED_SKILLS
+                .iter()
+                .map(|skill| {
+                    let canonical =
+                        skill_parse::parse_verified_content(Path::new("SKILL.md"), skill.body)
+                            .ok()
+                            .and_then(|(parsed, _)| {
+                                parsed.aliases.into_iter().find_map(|alias| {
+                                    BUNDLED_SKILLS
+                                        .iter()
+                                        .find(|entry| entry.name == alias)
+                                        .map(|entry| entry.name)
+                                })
+                            })
+                            .unwrap_or(skill.name);
+                    (skill.name, canonical)
+                })
+                .collect()
+        });
+    CANONICAL
+        .get(normalize_skill_name_for_lookup(name).as_str())
+        .copied()
 }
 
-fn write_marker_atomically(marker: &Path, version: &str) -> std::io::Result<()> {
-    let parent = marker
-        .parent()
-        .expect("skill version marker should have a parent directory");
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-    temporary.write_all(version.as_bytes())?;
-    temporary.as_file().sync_all()?;
-    // `rename` atomically replaces a file on Unix. Windows refuses to replace
-    // an existing destination, so remove only this reserved marker first.
-    #[cfg(windows)]
-    if marker.exists() {
-        fs::remove_file(marker)?;
+fn listed(names: &Option<Vec<String>>, name: &str) -> bool {
+    let canonical = canonical_bundled_skill_name(name);
+    canonical.is_some()
+        && names
+            .iter()
+            .flatten()
+            .any(|entry| canonical_bundled_skill_name(entry) == canonical)
+}
+
+pub(super) fn bundled_enabled(policy: &BundledSkillsConfig, name: &str) -> bool {
+    !listed(&policy.disabled, name)
+        && (policy.selected.as_ref().is_none_or(Vec::is_empty) || listed(&policy.selected, name))
+}
+
+pub(super) fn bundled_explicit_only(policy: &BundledSkillsConfig, name: &str) -> bool {
+    bundled_enabled(policy, name) && listed(&policy.explicit_only, name)
+}
+
+pub fn is_bundled_copy(path: &Path, name: &str, owned: &Path) -> bool {
+    let expected = owned.join(name).join("SKILL.md");
+    if !is_bundled_skill_name(name)
+        || !super::roots::paths_refer_to_same_dir(path, &expected)
+        || fs::symlink_metadata(owned.join(name).join(".installed-from")).is_ok()
+    {
+        return false;
     }
-    fs::rename(temporary.path(), marker)
+    codewhale_util::fs_confined::read_to_string(owned, &expected).is_ok_and(|body| {
+        is_exact_bundled_skill(name, &body) || is_superseded_shipped_body(name, &body)
+    })
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct BundledSkillStatus {
+    pub name: &'static str,
+    pub path: std::path::PathBuf,
+    pub reason: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct BundledSkillsStatus {
+    pub install: BundledSkillsInstall,
+    pub marker_generation: Option<String>,
+    pub installed: usize,
+    pub selected_missing: Vec<&'static str>,
+    pub disabled: Vec<&'static str>,
+    pub explicit_only: Vec<&'static str>,
+    pub shadowed: Vec<&'static str>,
+    pub unknown: Vec<String>,
+    pub ignored: Vec<String>,
+    pub skills: Vec<BundledSkillStatus>,
+}
+
+impl BundledSkillsStatus {
+    pub fn summary(&self) -> String {
+        format!(
+            "Bundled skills: install={}, generation={}, installed={}, selected missing={}, disabled={}, explicit-only={}, shadowed={}",
+            match self.install {
+                BundledSkillsInstall::Auto => "auto",
+                BundledSkillsInstall::All => "all",
+                BundledSkillsInstall::None => "none",
+            },
+            self.marker_generation
+                .as_deref()
+                .unwrap_or("missing or invalid"),
+            self.installed,
+            self.selected_missing.len(),
+            self.disabled.len(),
+            self.explicit_only.len(),
+            self.shadowed.len()
+        )
+    }
+
+    pub fn inspection(&self) -> Vec<String> {
+        let mut lines = vec![self.summary()];
+        if !self.unknown.is_empty() {
+            lines.push(format!(
+                "Unknown bundled names: {}",
+                self.unknown.join(", ")
+            ));
+        }
+        if !self.ignored.is_empty() {
+            lines.push(format!(
+                "Ignored explicit_only entries: {}",
+                self.ignored.join(", ")
+            ));
+        }
+        lines.extend(
+            self.skills
+                .iter()
+                .map(|row| format!("{}: {} ({})", row.name, row.reason, row.path.display())),
+        );
+        lines
+    }
+}
+
+pub fn bundled_skills_status(
+    config: &SkillsConfig,
+    registry: &super::SkillRegistry,
+) -> Option<BundledSkillsStatus> {
+    let owned = codewhale_runtime::config::owned_skills_dir()?;
+    let policy = &config.bundled;
+    let marker_generation = codewhale_util::fs_confined::read_to_string(
+        &owned,
+        &owned.join(".system-installed-version"),
+    )
+    .ok()
+    .and_then(|value| {
+        value
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .map(|generation| generation.to_string())
+    });
+    let mut status = BundledSkillsStatus {
+        install: policy.install.unwrap_or_default(),
+        marker_generation,
+        installed: 0,
+        selected_missing: vec![],
+        disabled: vec![],
+        explicit_only: vec![],
+        shadowed: vec![],
+        unknown: vec![],
+        ignored: vec![],
+        skills: vec![],
+    };
+    for (field, names) in [
+        ("selected", &policy.selected),
+        ("disabled", &policy.disabled),
+        ("explicit_only", &policy.explicit_only),
+    ] {
+        for name in names.iter().flatten() {
+            if canonical_bundled_skill_name(name).is_none() {
+                status
+                    .unknown
+                    .push(format!("{field}={}", name.escape_debug()));
+            } else if field == "explicit_only" && !bundled_enabled(policy, name) {
+                status.ignored.push(name.escape_debug().to_string());
+            }
+        }
+    }
+    for skill in BUNDLED_SKILLS {
+        let path = owned.join(skill.name).join("SKILL.md");
+        let installed = codewhale_util::fs_confined::read_to_string(&owned, &path).is_ok();
+        status.installed += usize::from(installed);
+        let selected = registry
+            .skills
+            .iter()
+            .find(|entry| entry.name == skill.name);
+        let shadowed =
+            selected.filter(|entry| !super::roots::paths_refer_to_same_dir(&entry.path, &path));
+        let reason = if !bundled_enabled(policy, skill.name) {
+            status.disabled.push(skill.name);
+            let reason = if listed(&policy.disabled, skill.name) {
+                "disabled by config"
+            } else {
+                "not selected by config"
+            };
+            if installed && !is_bundled_copy(&path, skill.name, &owned) {
+                format!("manual or managed copy unaffected; bundled name {reason}")
+            } else if let Some(selected) = shadowed {
+                format!("{reason}; active copy at {}", selected.path.display())
+            } else {
+                reason.to_string()
+            }
+        } else if let Some(selected) = shadowed {
+            status.shadowed.push(skill.name);
+            format!("shadowed by {}", selected.path.display())
+        } else if !installed {
+            status.selected_missing.push(skill.name);
+            "selected but not installed".to_string()
+        } else if !is_bundled_copy(&path, skill.name, &owned) {
+            "manual or managed copy preserved".to_string()
+        } else if bundled_explicit_only(policy, skill.name) {
+            status.explicit_only.push(skill.name);
+            "explicit-only by config".to_string()
+        } else {
+            "installed".to_string()
+        };
+        status.skills.push(BundledSkillStatus {
+            name: skill.name,
+            path,
+            reason,
+        });
+    }
+    Some(status)
 }
 
 #[cfg(test)]

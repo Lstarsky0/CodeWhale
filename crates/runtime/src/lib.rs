@@ -38,6 +38,7 @@ pub mod prompt_zones;
 pub mod regex_cache;
 pub mod resource_telemetry;
 pub mod retry_status;
+pub mod runtime_log;
 pub mod runtime_policy;
 pub mod safe_label;
 pub mod session_tree;
@@ -49,6 +50,7 @@ pub mod startup_trace;
 pub mod test_support;
 pub mod tool_history_repair;
 pub mod turn_budget;
+pub mod working_set;
 pub mod workspace_discovery;
 
 pub const CODEWHALE_MAIN_STACK_BYTES: usize = 32 * 1024 * 1024;

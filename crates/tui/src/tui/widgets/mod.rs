@@ -365,6 +365,7 @@ impl ChatWidget {
             && app.tool_run_cache.threshold == app.tool_collapse_threshold
             && app.tool_run_cache.mode == app.tool_collapse_mode
             && app.tool_run_cache.calm_mode == app.calm_mode
+            && app.tool_run_cache.locale == app.ui_locale
             && app.tool_run_cache.expanded_runs == app.expanded_tool_runs;
         if !cache_key_matches {
             let superseded_todos = superseded_todo_write_indices(&app.history, active_entries);
@@ -396,7 +397,7 @@ impl ChatWidget {
                 cache.summaries.insert(
                     run.start,
                     (
-                        tool_run_summary_cell(run),
+                        tool_run_summary_cell(run, app.ui_locale),
                         tool_run_summary_revision(
                             run,
                             &app.history_revisions,
@@ -417,6 +418,7 @@ impl ChatWidget {
             cache.threshold = app.tool_collapse_threshold;
             cache.mode = app.tool_collapse_mode;
             cache.calm_mode = app.calm_mode;
+            cache.locale = app.ui_locale;
             cache.expanded_runs.clone_from(&app.expanded_tool_runs);
         }
         // v0.9.1: do not collapse concurrent sub-agent cards into an Enter-
@@ -788,11 +790,11 @@ fn receipt_is_settling(receipt_order: usize, elapsed_ms: u128) -> bool {
     elapsed_ms < delay + 140
 }
 
-fn tool_run_summary_cell(run: &ToolRun) -> HistoryCell {
+fn tool_run_summary_cell(run: &ToolRun, locale: codewhale_localization::Locale) -> HistoryCell {
     HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
         name: "activity_group".to_string(),
         status: ToolStatus::Success,
-        input_summary: Some(crate::tui::history::tool_run_summary(run)),
+        input_summary: Some(crate::tui::history::tool_run_summary(run, locale)),
         output: None,
         prompts: None,
         spillover_path: None,
@@ -4173,6 +4175,28 @@ mod tests {
         app.scroll_up(3);
         let _ = ChatWidget::new(&mut app, area);
         assert_eq!(app.tool_run_cache.projection_builds, 1);
+        app.ui_locale = codewhale_localization::Locale::ZhHans;
+        let mut localized = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut localized);
+        assert_eq!(app.tool_run_cache.projection_builds, 2);
+        let cell = &app.tool_run_cache.summaries.get(&0).unwrap().0;
+        let HistoryCell::Tool(ToolCell::Generic(cell)) = cell else {
+            panic!("activity cell");
+        };
+        assert!(
+            cell.input_summary
+                .as_deref()
+                .unwrap()
+                .contains("浏览了2个文件")
+        );
+        assert!(!buffer_text(&localized, area).contains("Explored"));
+        let _ = ChatWidget::new(&mut app, area);
+        assert_eq!(app.tool_run_cache.projection_builds, 2);
+        app.ui_locale = codewhale_localization::Locale::En;
+        let mut english = Buffer::empty(area);
+        ChatWidget::new(&mut app, area).render(area, &mut english);
+        assert_eq!(app.tool_run_cache.projection_builds, 3);
+        assert!(buffer_text(&english, area).contains("Explored 2 files"));
         app.expanded_tool_runs.insert(0);
         let _ = ChatWidget::new(&mut app, area);
         assert_eq!(app.collapsed_cell_map, vec![0, 1, 2]);

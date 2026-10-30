@@ -606,17 +606,20 @@ impl ToolSurfacePolicy {
 
     /// A configured-server handshake may only serve this captured turn's
     /// MCP namespace. Do not replace the command-scoped ceiling with config.
-    pub(super) fn permits_mcp_discovery(&self, server: &str) -> bool {
-        !crate::mcp::McpPool::server_denied_by(
-            self.disallowed_tools.as_deref().unwrap_or_default(),
-            server,
-        ) && self.allowed_tools.as_ref().is_none_or(|rules| {
-            let normalized = rules
+    pub(super) fn mcp_discovery_filter(&self) -> impl Fn(&str) -> bool + Send + 'static + use<> {
+        let denied = self.disallowed_tools.clone().unwrap_or_default();
+        let allowed = self.allowed_tools.as_ref().map(|rules| {
+            rules
                 .iter()
                 .map(|rule| rule.to_ascii_lowercase())
-                .collect::<Vec<_>>();
-            crate::mcp::tool_selection_covers_server(&normalized, server)
-        })
+                .collect::<Vec<_>>()
+        });
+        move |server| {
+            !crate::mcp::McpPool::server_denied_by(&denied, server)
+                && allowed
+                    .as_ref()
+                    .is_none_or(|rules| crate::mcp::tool_selection_covers_server(rules, server))
+        }
     }
 
     pub(super) fn denies_tool(&self, name: &str) -> bool {

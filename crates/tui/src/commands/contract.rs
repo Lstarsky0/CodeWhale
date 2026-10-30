@@ -2804,7 +2804,7 @@ impl CommandProjectContext for ProjectAdapter<'_> {
 
 /// The single new skills-specific host adapter.
 ///
-/// Owns every concrete skills touch: `App` skill state, `crate::skills`
+/// Owns every concrete skills touch: `App` skill state, `codewhale_skills`
 /// discovery/mutation/install/recommend services, `codewhale_plugins` authority
 /// verification, `SnapshotRepo`, config/network policy, and the async bridge
 /// (`tokio::task::block_in_place`). Portable handlers never name these
@@ -2971,21 +2971,21 @@ fn format_registry_error(prefix: &str, err: &anyhow::Error) -> String {
 }
 
 /// Discover the enabled visible skills for the current App state.
-fn discover_visible(app: &App) -> crate::skills::SkillRegistry {
-    crate::skills::discover_for_workspace_and_dir_with_mode_and_plugins(
+fn discover_visible(app: &App) -> codewhale_skills::SkillRegistry {
+    codewhale_skills::discover_for_workspace(
         &app.workspace,
-        &app.skills_dir,
-        app.skills_discovery_mode,
+        Some(&app.skills_dir),
+        &app.skills_config,
         Some(app.extension_plugin_view().as_ref()),
     )
     .into_enabled()
 }
 
 /// Map a TUI skill to its portable projection entry.
-fn portable_skill_entry(skill: &crate::skills::Skill) -> SkillEntry {
+fn portable_skill_entry(skill: &codewhale_skills::Skill, app: &App) -> SkillEntry {
     let source = match &skill.source {
-        crate::skills::SkillSource::Native => SkillSourceKind::Native,
-        crate::skills::SkillSource::Plugin {
+        codewhale_skills::SkillSource::Native => SkillSourceKind::Native,
+        codewhale_skills::SkillSource::Plugin {
             plugin_id,
             plugin_name,
             ..
@@ -2995,16 +2995,29 @@ fn portable_skill_entry(skill: &crate::skills::Skill) -> SkillEntry {
         },
     };
     let path = match &skill.source {
-        crate::skills::SkillSource::Native => Some(skill.path.display().to_string()),
-        crate::skills::SkillSource::Plugin { .. } => None,
+        codewhale_skills::SkillSource::Native => Some(skill.path.display().to_string()),
+        codewhale_skills::SkillSource::Plugin { .. } => None,
     };
-    let bundled_tier = crate::skills::bundled_skill_tier(&skill.name).map(|tier| match tier {
-        crate::skills::BundledSkillTier::CoreAgentic => SkillBundledTier::CoreAgentic,
-        crate::skills::BundledSkillTier::FormatTooling => SkillBundledTier::FormatTooling,
+    let bundled_tier = codewhale_skills::bundled_skill_tier(&skill.name).map(|tier| match tier {
+        codewhale_skills::BundledSkillTier::CoreAgentic => SkillBundledTier::CoreAgentic,
+        codewhale_skills::BundledSkillTier::FormatTooling => SkillBundledTier::FormatTooling,
     });
     SkillEntry {
         name: skill.name.clone(),
-        description: skill.description.clone(),
+        description: skill
+            .description_for_locale(app.ui_locale.tag())
+            .to_string(),
+        index_note: codewhale_skills::description_index_cap_if_shortened(
+            skill.description_for_locale(app.ui_locale.tag()),
+            &app.skills_config,
+        )
+        .map(|cap| {
+            codewhale_localization::tr(
+                app.ui_locale,
+                codewhale_localization::MessageId::SkillsIndexDescriptionLimit,
+            )
+            .replace("{limit}", &cap.to_string())
+        }),
         source,
         path,
         bundled_tier,
@@ -3013,9 +3026,9 @@ fn portable_skill_entry(skill: &crate::skills::Skill) -> SkillEntry {
 
 /// Map a TUI mutation receipt to its portable receipt.
 fn portable_mutation_receipt(
-    receipt: &crate::skills::mutation::SkillMutationReceipt,
+    receipt: &codewhale_skills::mutation::SkillMutationReceipt,
 ) -> SkillMutationReceipt {
-    use crate::skills::mutation::SkillMutationOutcome as TuiOutcome;
+    use codewhale_skills::mutation::SkillMutationOutcome as TuiOutcome;
     let outcome = match &receipt.outcome {
         TuiOutcome::Installed => SkillMutationOutcome::Installed,
         TuiOutcome::Updated => SkillMutationOutcome::Updated,
@@ -3037,8 +3050,8 @@ fn portable_mutation_receipt(
 /// Map a portable target scope to the TUI scope.
 fn portable_scope(
     scope: Option<SkillTargetScope>,
-) -> Option<crate::skills::mutation::SkillTargetScope> {
-    use crate::skills::mutation::SkillTargetScope as TuiScope;
+) -> Option<codewhale_skills::mutation::SkillTargetScope> {
+    use codewhale_skills::mutation::SkillTargetScope as TuiScope;
     scope.map(|s| match s {
         SkillTargetScope::Project => TuiScope::Project,
         SkillTargetScope::Global => TuiScope::Global,
@@ -3081,26 +3094,33 @@ fn network_denied_message(host: &str) -> String {
 impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
     fn skill_registry_projection(&self) -> SkillRegistryProjection {
         let app = self.host.app.borrow();
-        let mode = app.skills_discovery_mode;
-        let dirs = crate::skills::skill_directories_for_workspace_and_dir(
+        let mode = codewhale_skills::SkillDiscoveryMode::from_config(&app.skills_config);
+        let dirs = codewhale_skills::skill_directories_for_workspace_and_dir(
             &app.workspace,
             &app.skills_dir,
             mode,
         );
         let registry = discover_visible(&app);
         let mode_label = match mode {
-            crate::skills::SkillDiscoveryMode::Compatible => "compatible",
-            crate::skills::SkillDiscoveryMode::CompatibleWithFlatWorkspace => {
+            codewhale_skills::SkillDiscoveryMode::Compatible => "compatible",
+            codewhale_skills::SkillDiscoveryMode::CompatibleWithFlatWorkspace => {
                 "compatible (flat workspace enabled)"
             }
-            crate::skills::SkillDiscoveryMode::CodeWhaleOnly => "codewhale-only",
+            codewhale_skills::SkillDiscoveryMode::CodeWhaleOnly => "codewhale-only",
         };
         SkillRegistryProjection {
             workspace: app.workspace.display().to_string(),
             skills_dir: app.skills_dir.display().to_string(),
             mode_label: mode_label.to_string(),
+            bundled_status: codewhale_skills::bundled_skills_status(&app.skills_config, &registry)
+                .map(|status| status.inspection())
+                .unwrap_or_default(),
             dirs: dirs.iter().map(|dir| dir.display().to_string()).collect(),
-            entries: registry.list().iter().map(portable_skill_entry).collect(),
+            entries: registry
+                .list()
+                .iter()
+                .map(|skill| portable_skill_entry(skill, &app))
+                .collect(),
             warnings: registry.warnings().to_vec(),
             total: registry.len(),
         }
@@ -3163,13 +3183,13 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
         scope: Option<SkillTargetScope>,
         spec: &str,
     ) -> Result<SkillMutationReceipt, String> {
-        use crate::skills::mutation::{MutationContext, SkillMutationRequest};
+        use codewhale_skills::mutation::{MutationContext, SkillMutationRequest};
         let source = match codewhale_skill_install::install::InstallSource::parse(spec) {
             Ok(source) => source,
             Err(err) => return Err(format!("Invalid install source: {err}")),
         };
         let target =
-            portable_scope(scope).unwrap_or(crate::skills::mutation::SkillTargetScope::Global);
+            portable_scope(scope).unwrap_or(codewhale_skills::mutation::SkillTargetScope::Global);
         let workspace = self.host.app.borrow().workspace.clone();
         let home = codewhale_paths::user_home();
         let (network, max_size, registry_url) = installer_settings();
@@ -3182,7 +3202,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
                 max_size,
                 registry_url: &registry_url,
             };
-            crate::skills::mutation::execute(
+            codewhale_skills::mutation::execute(
                 SkillMutationRequest::InstallRemote { source, target },
                 &ctx,
             )
@@ -3199,7 +3219,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
         scope: Option<SkillTargetScope>,
         name: &str,
     ) -> Result<SkillMutationReceipt, String> {
-        use crate::skills::mutation::{MutationContext, SkillMutationRequest};
+        use codewhale_skills::mutation::{MutationContext, SkillMutationRequest};
         let workspace = self.host.app.borrow().workspace.clone();
         let home = codewhale_paths::user_home();
         let (network, max_size, registry_url) = installer_settings();
@@ -3214,7 +3234,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
                 max_size,
                 registry_url: &registry_url,
             };
-            crate::skills::mutation::execute(
+            codewhale_skills::mutation::execute(
                 SkillMutationRequest::UpdateByName {
                     name: owned_name,
                     scope,
@@ -3235,7 +3255,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
         scope: Option<SkillTargetScope>,
         name: &str,
     ) -> Result<SkillMutationReceipt, String> {
-        use crate::skills::mutation::{MutationContext, SkillMutationRequest};
+        use codewhale_skills::mutation::{MutationContext, SkillMutationRequest};
         let workspace = self.host.app.borrow().workspace.clone();
         let home = codewhale_paths::user_home();
         let (network, max_size, registry_url) = installer_settings();
@@ -3247,7 +3267,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
             max_size,
             registry_url: &registry_url,
         };
-        match crate::skills::mutation::execute_sync(
+        match codewhale_skills::mutation::execute_sync(
             SkillMutationRequest::RemoveByName {
                 name: name.to_string(),
                 scope: portable_scope(scope),
@@ -3265,7 +3285,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
         scope: Option<SkillTargetScope>,
         name: &str,
     ) -> Result<SkillMutationReceipt, String> {
-        use crate::skills::mutation::{MutationContext, SkillMutationRequest};
+        use codewhale_skills::mutation::{MutationContext, SkillMutationRequest};
         let workspace = self.host.app.borrow().workspace.clone();
         let home = codewhale_paths::user_home();
         let (network, max_size, registry_url) = installer_settings();
@@ -3277,7 +3297,7 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
             max_size,
             registry_url: &registry_url,
         };
-        match crate::skills::mutation::execute_sync(
+        match codewhale_skills::mutation::execute_sync(
             SkillMutationRequest::TrustByName {
                 name: name.to_string(),
                 scope: portable_scope(scope),
@@ -3345,13 +3365,13 @@ impl CommandSkillGroupContext for SkillGroupAdapter<'_> {
 
     fn run_review(&mut self) -> Result<ReviewOutcome, String> {
         let skills_dir = self.host.app.borrow().skills_dir.clone();
-        let registry = crate::skills::SkillRegistry::discover(&skills_dir).into_enabled();
+        let registry = codewhale_skills::SkillRegistry::discover(&skills_dir).into_enabled();
         let mut warnings: Vec<String> = registry.warnings().to_vec();
         let mut skill = registry.get("review").cloned();
 
-        let global_dir = crate::skills::default_skills_dir();
+        let global_dir = codewhale_skills::default_skills_dir();
         if skill.is_none() && global_dir != skills_dir {
-            let registry = crate::skills::SkillRegistry::discover(&global_dir).into_enabled();
+            let registry = codewhale_skills::SkillRegistry::discover(&global_dir).into_enabled();
             if warnings.is_empty() {
                 warnings = registry.warnings().to_vec();
             } else if !registry.warnings().is_empty() {
@@ -6572,7 +6592,7 @@ mod tests {
                     assert_eq!(found_dir, skills_dir.display().to_string());
                     assert_eq!(
                         global_dir,
-                        crate::skills::default_skills_dir().display().to_string()
+                        codewhale_skills::default_skills_dir().display().to_string()
                     );
                     assert!(warnings.is_empty());
                 }
@@ -6662,7 +6682,7 @@ mod tests {
 
     #[test]
     fn portable_scope_maps_both_scopes_and_none() {
-        use crate::skills::mutation::SkillTargetScope as TuiScope;
+        use codewhale_skills::mutation::SkillTargetScope as TuiScope;
         assert_eq!(
             portable_scope(Some(SkillTargetScope::Project)),
             Some(TuiScope::Project)
@@ -6676,11 +6696,11 @@ mod tests {
 
     #[test]
     fn portable_mutation_receipt_maps_distinct_outcomes() {
-        use crate::skills::audit::SkillActionKind;
-        use crate::skills::mutation::{
+        use codewhale_skills::audit::SkillActionKind;
+        use codewhale_skills::mutation::{
             SkillMutationOutcome as TuiOutcome, SkillMutationReceipt as TuiReceipt,
         };
-        use crate::skills::roots::SkillScope;
+        use codewhale_skills::roots::SkillScope;
         let make = |outcome: TuiOutcome| TuiReceipt {
             action: SkillActionKind::Install,
             name: "demo".to_string(),

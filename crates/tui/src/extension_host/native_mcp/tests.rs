@@ -148,10 +148,10 @@ async fn mixed_native_graphs_use_one_core_catalog_and_selected_child_pool_on_bot
         crate::tools::ToolContext::new(fixture.workspace()).with_plugin_registry(a.plugin_view()),
     );
     assert_eq!(a.install_tools(&mut tools), vec!["mixed_echo"]);
-    let catalog = crate::skills::discover_for_workspace_and_dir_with_mode_and_plugins(
+    let catalog = codewhale_skills::discover_for_workspace_and_dir_with_mode_and_plugins(
         fixture.workspace(),
         &fixture.workspace().join("empty-skills"),
-        crate::skills::SkillDiscoveryMode::CodeWhaleOnly,
+        codewhale_skills::SkillDiscoveryMode::CodeWhaleOnly,
         Some(&a.plugin_view()),
     );
     assert!(catalog.get("raw-dsh-mcp:mixed-check").is_some());

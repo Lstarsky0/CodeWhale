@@ -2720,7 +2720,7 @@ fn runtime_compaction_uses_provider_route_context() {
         &Config::default(),
         ProviderKind::OpenaiCodex,
         "gpt-5.5",
-        Some(limits),
+        (Some(limits), None),
         false,
         false,
         80.0,

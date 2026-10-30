@@ -30,6 +30,7 @@ members = [
     "crates/sandbox",
     "crates/secrets",
     "crates/skill-install",
+    "crates/skills",
     "crates/sanitize",
     "crates/state",
     "crates/telemetry",

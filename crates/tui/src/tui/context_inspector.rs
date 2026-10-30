@@ -267,11 +267,7 @@ pub fn build_context_inspector_text(app: &App, locale: Locale) -> String {
 }
 
 fn context_usage(app: &App) -> (usize, u32, f64) {
-    let max = crate::route_budget::route_context_window_tokens(
-        app.api_provider,
-        app.effective_model_for_budget(),
-        app.active_route_limits,
-    );
+    let max = app.effective_context_window();
     // The meter must show the SAME pressure signal the auto-compaction trigger
     // decides on (compaction::estimate_input_tokens_for_pressure, the
     // non-inflated estimate with framing overhead). The old conservative
@@ -764,6 +760,7 @@ pub(crate) struct ContextInspectorView {
     percent: f64,
     model: String,
     workspace: String,
+    auto_compact: bool,
     threshold: f64,
     rows: Vec<ContextBucket>,
     selected: usize,
@@ -780,6 +777,7 @@ impl ContextInspectorView {
             percent: 0.0,
             model: String::new(),
             workspace: String::new(),
+            auto_compact: app.auto_compact,
             threshold: 0.0,
             rows: Vec::new(),
             selected: 0,
@@ -803,7 +801,12 @@ impl ContextInspectorView {
         self.percent = percent;
         self.model = app.model_display_label();
         self.workspace = codewhale_util::utils::display_path(&app.workspace);
-        self.threshold = app.auto_compact_threshold_percent;
+        self.auto_compact = app.auto_compact;
+        self.threshold = if app.auto_compact && max > 0 {
+            (app.compact_threshold as f64 * 100.0 / f64::from(max)).clamp(0.0, 100.0)
+        } else {
+            app.auto_compact_threshold_percent
+        };
         self.locale = app.ui_locale;
         let max_f = f64::from(max.max(1));
         let (compaction_detail, compaction_tokens) = compaction_detail_for_app(app, self.locale);
@@ -825,9 +828,19 @@ impl ContextInspectorView {
                 label: tr(self.locale, MessageId::CtxInspRowFree).into_owned(),
                 tokens: free_tokens,
                 percent: (free_tokens as f64 / max_f) * 100.0,
-                detail: tr(self.locale, MessageId::CtxInspFreeTokensDetail)
-                    .replace("{free}", &free_tokens.to_string())
-                    .replace("{threshold}", &format!("{:.0}", self.threshold)),
+                detail: if self.auto_compact {
+                    tr(self.locale, MessageId::CtxInspFreeTokensDetail)
+                        .replace("{free}", &free_tokens.to_string())
+                        .replace("{threshold}", &format!("{:.0}", self.threshold))
+                } else {
+                    format!(
+                        "{}: {free_tokens} {} · {}: {}",
+                        tr(self.locale, MessageId::CtxInspRowFree),
+                        tr(self.locale, MessageId::CtxInspTokens),
+                        tr(self.locale, MessageId::ConfigLabelAutoCompact),
+                        tr(self.locale, MessageId::SubagentsValueOff),
+                    )
+                },
             },
             ContextBucket {
                 label: tr(self.locale, MessageId::CtxInspRowCompaction).into_owned(),
@@ -984,8 +997,16 @@ impl ModalView for ContextInspectorView {
                 ),
             ]));
             lines.push(Line::from(Span::styled(
-                tr(self.locale, MessageId::CtxInspAutoCompactAt)
-                    .replace("{threshold}", &format!("{:.0}", self.threshold)),
+                if self.auto_compact {
+                    tr(self.locale, MessageId::CtxInspAutoCompactAt)
+                        .replace("{threshold}", &format!("{:.0}", self.threshold))
+                } else {
+                    format!(
+                        "{}: {}",
+                        tr(self.locale, MessageId::ConfigLabelAutoCompact),
+                        tr(self.locale, MessageId::SubagentsValueOff),
+                    )
+                },
                 Style::default().fg(palette::TEXT_HINT),
             )));
             lines.push(Line::from(""));
@@ -1495,5 +1516,30 @@ mod tests {
         let view = ContextInspectorView::new(&app);
         assert!(view.row_labels().iter().any(|label| label == "making room"));
         assert!(view.row_labels().iter().any(|label| label == "anchors"));
+        let (_, max, _) = context_usage(&app);
+        app.auto_compact = true;
+        app.auto_compact_threshold_percent = 80.0;
+        app.compact_threshold = (max / 2) as usize;
+        let mut view = ContextInspectorView::new(&app);
+        assert!((view.threshold - 50.0).abs() < 0.01);
+        assert!(view.rows[2].detail.contains("Makes room at 50%"));
+        let area = Rect::new(0, 0, 100, 24);
+        let mut buffer = Buffer::empty(area);
+        view.render(area, &mut buffer);
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(rendered.contains("makes room at 50%"), "{rendered}");
+        app.compact_threshold = 0;
+        view.refresh_from_app(&app);
+        assert_eq!(view.threshold, 0.0);
+        assert!(view.rows[2].detail.contains("Makes room at 0%"));
+        app.auto_compact = false;
+        view.refresh_from_app(&app);
+        assert!(view.rows[2].detail.contains("Auto compact: off"));
+        assert!(!view.rows[2].detail.contains("Makes room at"));
+        let mut buffer = Buffer::empty(area);
+        view.render(area, &mut buffer);
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(rendered.contains("Auto compact: off"), "{rendered}");
+        assert!(!rendered.contains("makes room at"), "{rendered}");
     }
 }

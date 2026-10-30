@@ -1373,6 +1373,7 @@ dependencies = [
  "dirs 7.0.0",
  "fd-lock",
  "futures-util",
+ "ignore",
  "jsonwebtoken",
  "libc",
  "lru",
@@ -1392,6 +1393,7 @@ dependencies = [
  "toml 1.1.4+spec-1.1.0",
  "toml_edit 0.25.15+spec-1.1.0",
  "tracing",
+ "tracing-subscriber",
  "uuid",
  "wait-timeout",
  "windows",
@@ -1473,6 +1475,28 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "yaml-rust2",
+]
+
+[[package]]
+name = "codewhale-skills"
+version = "0.10.2"
+dependencies = [
+ "anyhow",
+ "codewhale-config",
+ "codewhale-localization",
+ "codewhale-net",
+ "codewhale-paths",
+ "codewhale-plugins",
+ "codewhale-runtime",
+ "codewhale-skill-install",
+ "codewhale-util",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "tokio",
+ "toml 1.1.4+spec-1.1.0",
+ "uuid",
 ]
 
 [[package]]
@@ -1590,6 +1614,7 @@ dependencies = [
  "codewhale-sanitize",
  "codewhale-secrets",
  "codewhale-skill-install",
+ "codewhale-skills",
  "codewhale-snapshot",
  "codewhale-telemetry",
  "codewhale-tools",

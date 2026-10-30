@@ -38,10 +38,29 @@ pub(crate) fn effective_max_output_tokens_for_turn(
     allowance: Option<std::num::NonZeroU32>,
     reasoning_effort: Option<&str>,
 ) -> u32 {
+    effective_max_output_tokens_for_turn_with_window(
+        provider,
+        model,
+        route_limits,
+        None,
+        allowance,
+        reasoning_effort,
+    )
+}
+
+pub(crate) fn effective_max_output_tokens_for_turn_with_window(
+    provider: ProviderKind,
+    model: &str,
+    route_limits: Option<RouteLimits>,
+    effective_window: Option<u32>,
+    allowance: Option<std::num::NonZeroU32>,
+    reasoning_effort: Option<&str>,
+) -> u32 {
     let ceiling = effective_max_output_tokens_for_route_with_cap(
         provider,
         model,
         route_limits,
+        effective_window,
         automatic_max_output_tokens(provider, reasoning_effort),
     );
     allowance.map_or(ceiling, |allowance| ceiling.min(allowance.get()))
@@ -122,6 +141,7 @@ fn route_inline_char_budget_with_raise(window_tokens: Option<u32>, raise: Option
 }
 
 /// [`route_inline_char_budget`] for a resolved provider/model route.
+#[cfg(test)]
 #[must_use]
 pub(crate) fn route_inline_char_budget_for_route(
     provider: ProviderKind,
@@ -347,6 +367,7 @@ pub(crate) fn effective_max_output_tokens_for_route(
         provider,
         model,
         route_limits,
+        None,
         API_MAX_OUTPUT_TOKENS,
     )
 }
@@ -355,9 +376,12 @@ fn effective_max_output_tokens_for_route_with_cap(
     provider: ProviderKind,
     model: &str,
     route_limits: Option<RouteLimits>,
+    effective_window: Option<u32>,
     automatic_cap: u32,
 ) -> u32 {
-    let window = route_context_window_tokens(provider, model, route_limits);
+    let window = effective_window
+        .filter(|tokens| *tokens > 0)
+        .unwrap_or_else(|| route_context_window_tokens(provider, model, route_limits));
     let compatibility_source = output_ceiling_source(provider, model);
     let compatibility_cap = compatibility_source.clamp_tokens();
     let route_cap = route_output_limit_tokens(route_limits);
@@ -482,11 +506,21 @@ pub(crate) fn review_visible_text_reserve_tokens(model: &str, allowance: u32) ->
 }
 
 /// Output reservation used by the internal input budget for a route.
+#[cfg(test)]
 #[must_use]
 pub(crate) fn route_output_reservation(
     provider: ProviderKind,
     model: &str,
     route_limits: Option<RouteLimits>,
+) -> u32 {
+    route_output_reservation_with_window(provider, model, route_limits, None)
+}
+
+pub(crate) fn route_output_reservation_with_window(
+    provider: ProviderKind,
+    model: &str,
+    route_limits: Option<RouteLimits>,
+    effective_window: Option<u32>,
 ) -> u32 {
     // Use exactly the value that can reach the wire on every window size,
     // except on a route whose published output limit is more than half its
@@ -498,39 +532,43 @@ pub(crate) fn route_output_reservation(
     // disagree with the actual request. Reasoning effort is a request control,
     // not separately metered non-wire output, so it does not justify a second
     // hidden context reservation.
-    let ceiling = effective_max_output_tokens_for_route(provider, model, route_limits);
-    if shares_context_window(provider, model, route_limits) {
-        ceiling.min(
-            (route_context_window_tokens(provider, model, route_limits) / 4)
-                .clamp(1, UNCATALOGUED_COMPAT_MAX_OUTPUT_TOKENS),
-        )
+    let window = effective_window
+        .filter(|tokens| *tokens > 0)
+        .unwrap_or_else(|| route_context_window_tokens(provider, model, route_limits));
+    let ceiling = effective_max_output_tokens_for_route_with_cap(
+        provider,
+        model,
+        route_limits,
+        Some(window),
+        API_MAX_OUTPUT_TOKENS,
+    );
+    if shares_context_window(route_limits, window) {
+        ceiling.min((window / 4).clamp(1, UNCATALOGUED_COMPAT_MAX_OUTPUT_TOKENS))
     } else {
         ceiling
     }
 }
 
-fn shares_context_window(
-    provider: ProviderKind,
-    model: &str,
-    route_limits: Option<RouteLimits>,
-) -> bool {
+fn shares_context_window(route_limits: Option<RouteLimits>, window: u32) -> bool {
     route_limits
         .and_then(|limits| limits.context_tokens)
         .is_some_and(|tokens| (1..=u64::from(u32::MAX)).contains(&tokens))
         && explicit_max_output_tokens_override().is_none()
-        && route_output_limit_tokens(route_limits)
-            .is_some_and(|cap| cap > route_context_window_tokens(provider, model, route_limits) / 2)
+        && route_output_limit_tokens(route_limits).is_some_and(|cap| cap > window / 2)
 }
 
-#[must_use]
-pub(crate) fn route_admission_input_ceiling(
+pub(crate) fn route_admission_input_ceiling_with_window(
     provider: ProviderKind,
     model: &str,
     route_limits: Option<RouteLimits>,
+    effective_window: Option<u32>,
 ) -> Option<u64> {
-    shares_context_window(provider, model, route_limits).then(|| {
+    let window = effective_window
+        .filter(|tokens| *tokens > 0)
+        .unwrap_or_else(|| route_context_window_tokens(provider, model, route_limits));
+    shares_context_window(route_limits, window).then(|| {
         ContextBudget::new_with_input_limit(
-            u64::from(route_context_window_tokens(provider, model, route_limits)),
+            u64::from(window),
             0,
             MIN_REQUEST_OUTPUT_TOKENS,
             route_input_limit_tokens(route_limits).map(u64::from),
@@ -547,10 +585,31 @@ pub(crate) fn request_output_cap_for_input(
     ceiling: u32,
     estimated_input_tokens: u64,
 ) -> Option<u32> {
-    if !shares_context_window(provider, model, route_limits) {
+    request_output_cap_for_input_with_window(
+        provider,
+        model,
+        route_limits,
+        None,
+        ceiling,
+        estimated_input_tokens,
+    )
+}
+
+pub(crate) fn request_output_cap_for_input_with_window(
+    provider: ProviderKind,
+    model: &str,
+    route_limits: Option<RouteLimits>,
+    effective_window: Option<u32>,
+    ceiling: u32,
+    estimated_input_tokens: u64,
+) -> Option<u32> {
+    let window = effective_window
+        .filter(|tokens| *tokens > 0)
+        .unwrap_or_else(|| route_context_window_tokens(provider, model, route_limits));
+    if !shares_context_window(route_limits, window) {
         return Some(ceiling);
     }
-    let remaining = u64::from(route_context_window_tokens(provider, model, route_limits))
+    let remaining = u64::from(window)
         .saturating_sub(estimated_input_tokens)
         .saturating_sub(codewhale_runtime::context_budget::CONTEXT_HEADROOM_TOKENS);
     u32::try_from(remaining.min(u64::from(ceiling)))
@@ -565,8 +624,21 @@ pub(crate) fn route_context_budget(
     route_limits: Option<RouteLimits>,
     input_tokens: usize,
 ) -> Option<ContextBudget> {
-    let window = route_context_window_tokens(provider, model, route_limits);
-    let output_cap = route_output_reservation(provider, model, route_limits);
+    route_context_budget_with_window(provider, model, route_limits, None, input_tokens)
+}
+
+pub(crate) fn route_context_budget_with_window(
+    provider: ProviderKind,
+    model: &str,
+    route_limits: Option<RouteLimits>,
+    effective_window: Option<u32>,
+    input_tokens: usize,
+) -> Option<ContextBudget> {
+    let window = effective_window
+        .filter(|tokens| *tokens > 0)
+        .unwrap_or_else(|| route_context_window_tokens(provider, model, route_limits));
+    let output_cap =
+        route_output_reservation_with_window(provider, model, route_limits, Some(window));
     Some(ContextBudget::new_with_input_limit(
         u64::from(window),
         u64::try_from(input_tokens).ok()?,
@@ -575,6 +647,7 @@ pub(crate) fn route_context_budget(
     ))
 }
 
+#[cfg(test)]
 #[must_use]
 pub(crate) fn compaction_threshold_for_route_at_percent(
     provider: ProviderKind,
@@ -582,7 +655,23 @@ pub(crate) fn compaction_threshold_for_route_at_percent(
     route_limits: Option<RouteLimits>,
     percent: f64,
 ) -> usize {
-    route_context_budget(provider, model, route_limits, 0)
+    compaction_threshold_for_route_at_percent_with_window(
+        provider,
+        model,
+        route_limits,
+        None,
+        percent,
+    )
+}
+
+pub(crate) fn compaction_threshold_for_route_at_percent_with_window(
+    provider: ProviderKind,
+    model: &str,
+    route_limits: Option<RouteLimits>,
+    effective_window: Option<u32>,
+    percent: f64,
+) -> usize {
+    route_context_budget_with_window(provider, model, route_limits, effective_window, 0)
         .and_then(|budget| {
             usize::try_from(budget.compaction_trigger_for_percent(percent.clamp(10.0, 100.0))).ok()
         })

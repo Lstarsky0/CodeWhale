@@ -21,11 +21,11 @@ use tempfile::TempDir;
 
 use super::system::{bundled_skill_generation, bundled_skill_names, install_system_skills};
 use super::{
-    BundledSkillTier, MAX_AVAILABLE_SKILLS_CHARS, MAX_SKILL_DESCRIPTION_CHARS, Skill,
+    BundledSkillTier, DEFAULT_SKILL_DESCRIPTION_CHARS, MAX_AVAILABLE_SKILLS_CHARS, Skill,
     SkillInvocation, SkillRegistry, bundled_skill_tier, render_skills_block,
 };
 
-const MATRIX_JSON: &str = include_str!("../../assets/skills-catalog-matrix.json");
+const MATRIX_JSON: &str = include_str!("../assets/skills-catalog-matrix.json");
 
 #[derive(Debug, serde::Deserialize)]
 struct MatrixFixture {
@@ -53,7 +53,7 @@ fn fixture() -> MatrixFixture {
 /// fresh user install would. No network, no provider, no ambient home.
 fn installed_registry() -> (TempDir, SkillRegistry) {
     let tmp = TempDir::new().expect("temp dir");
-    install_system_skills(tmp.path()).expect("bundled install");
+    install_system_skills(tmp.path(), &Default::default()).expect("bundled install");
     let registry = SkillRegistry::discover(tmp.path());
     assert!(
         registry.warnings().is_empty(),
@@ -371,7 +371,7 @@ fn catalogue_has_unique_entries_and_the_complete_block_fits_the_prompt_budget() 
     // prompt prefix — that is how a catalogue line would poison context.
     for line in block.lines() {
         assert!(
-            line.chars().count() <= MAX_SKILL_DESCRIPTION_CHARS + 200,
+            line.chars().count() <= DEFAULT_SKILL_DESCRIPTION_CHARS + 200,
             "catalogue line is too long for a routing hint: {line}"
         );
     }
