@@ -1,15 +1,10 @@
 //! Opt-in fleet alert routing and adapter payloads.
 
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use codewhale_protocol::fleet::{
-    FleetAlertEventClass, FleetReceipt, FleetRunId, FleetTaskFailureKind, FleetWorkerEvent,
-    FleetWorkerEventPayload,
-};
+use codewhale_protocol::fleet::{FleetAlertEventClass, FleetRunId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -151,52 +146,6 @@ where
 }
 
 impl FleetAlertEvent {
-    pub fn stale_from_worker_event(event: &FleetWorkerEvent) -> Option<Self> {
-        let FleetWorkerEventPayload::Stale { last_heartbeat_at } = &event.payload else {
-            return None;
-        };
-        Some(Self {
-            class: FleetAlertEventClass::Stale,
-            run_id: event.run_id.clone(),
-            worker_id: Some(event.worker_id.clone()),
-            task_id: Some(event.task_id.clone()),
-            status: "stale".to_string(),
-            reason: last_heartbeat_at
-                .as_ref()
-                .map(|ts| format!("worker heartbeat stale since {ts}"))
-                .unwrap_or_else(|| "worker heartbeat is stale".to_string()),
-        })
-    }
-
-    pub fn verifier_failed(receipt: &FleetReceipt) -> Option<Self> {
-        if receipt.failure_kind != Some(FleetTaskFailureKind::Verifier) {
-            return None;
-        }
-        Some(Self {
-            class: FleetAlertEventClass::VerifierFailed,
-            run_id: receipt.run_id.clone(),
-            worker_id: Some(receipt.worker_id.clone()),
-            task_id: Some(receipt.task_id.clone()),
-            status: "verifier_failed".to_string(),
-            reason: receipt
-                .score
-                .as_ref()
-                .and_then(|score| score.notes.clone())
-                .unwrap_or_else(|| "verifier failed".to_string()),
-        })
-    }
-
-    pub fn run_completed(run_id: FleetRunId, reason: impl Into<String>) -> Self {
-        Self {
-            class: FleetAlertEventClass::RunCompleted,
-            run_id,
-            worker_id: None,
-            task_id: None,
-            status: "completed".to_string(),
-            reason: reason.into(),
-        }
-    }
-
     pub fn inspection_commands(&self) -> Vec<String> {
         let mut commands = vec!["codewhale fleet status".to_string()];
         if let Some(worker_id) = &self.worker_id {
@@ -477,7 +426,47 @@ fn default_pagerduty_severity() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codewhale_protocol::fleet::{FleetScore, FleetTaskResult};
+    use codewhale_protocol::fleet::{
+        FleetReceipt, FleetScore, FleetTaskFailureKind, FleetTaskResult, FleetWorkerEvent,
+        FleetWorkerEventPayload,
+    };
+
+    impl FleetAlertEvent {
+        fn stale_from_worker_event(event: &FleetWorkerEvent) -> Option<Self> {
+            let FleetWorkerEventPayload::Stale { last_heartbeat_at } = &event.payload else {
+                return None;
+            };
+            Some(Self {
+                class: FleetAlertEventClass::Stale,
+                run_id: event.run_id.clone(),
+                worker_id: Some(event.worker_id.clone()),
+                task_id: Some(event.task_id.clone()),
+                status: "stale".to_string(),
+                reason: last_heartbeat_at
+                    .as_ref()
+                    .map(|ts| format!("worker heartbeat stale since {ts}"))
+                    .unwrap_or_else(|| "worker heartbeat is stale".to_string()),
+            })
+        }
+
+        fn verifier_failed(receipt: &FleetReceipt) -> Option<Self> {
+            if receipt.failure_kind != Some(FleetTaskFailureKind::Verifier) {
+                return None;
+            }
+            Some(Self {
+                class: FleetAlertEventClass::VerifierFailed,
+                run_id: receipt.run_id.clone(),
+                worker_id: Some(receipt.worker_id.clone()),
+                task_id: Some(receipt.task_id.clone()),
+                status: "verifier_failed".to_string(),
+                reason: receipt
+                    .score
+                    .as_ref()
+                    .and_then(|score| score.notes.clone())
+                    .unwrap_or_else(|| "verifier failed".to_string()),
+            })
+        }
+    }
 
     #[derive(Default)]
     struct MapResolver {
