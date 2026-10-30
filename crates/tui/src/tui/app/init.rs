@@ -133,23 +133,7 @@ impl App {
         }
         let selected = startup_config.apply_saved_selection(&settings);
         let config = &startup_config;
-        // First launch writes `default_text_model = DEFAULT_TEXT_MODEL` into
-        // the generated config.toml; that line is the template, not a choice,
-        // so it must not turn off local discovery on a later launch.
-        let generated_default_model = config.provider.is_none()
-            && config.default_text_model.as_deref() == Some(DEFAULT_TEXT_MODEL);
-        let startup_route_configured = config.provider.is_some()
-            || (config.default_text_model.is_some() && !generated_default_model)
-            || config.legacy_model.is_some()
-            || codewhale_runtime::config::explicit_launch_provider_override().is_some()
-            || codewhale_runtime::config::explicit_launch_model_override().is_some()
-            || config
-                .active_provider_identity()
-                .ok()
-                .as_ref()
-                .and_then(|identity| config.provider_config_for(identity))
-                .is_some_and(|entry| entry.model.is_some())
-            || config.active_route_endpoint_configured();
+        let startup_route_configured = crate::local_ollama::startup_route_configured(config);
         // Provider and model come from the same resolved config, even on the
         // first run. An options default must not replace a configured model.
         let model = if selected || startup_route_configured {
@@ -388,44 +372,51 @@ impl App {
             .as_ref()
             .and_then(|identity| config.model_context_windows_for(identity).cloned());
         let configured_route_base_url = effective_auth_config.active_route_base_url();
-        let (active_route_limits, active_route_base_url, active_context_window_source) =
-            if auto_model {
-                (
-                    active_context_window_override.map(|window| RouteLimits {
-                        context_tokens: Some(u64::from(window)),
-                        ..RouteLimits::default()
-                    }),
+        let (
+            active_route_limits,
+            active_route_base_url,
+            active_context_window_source,
+            active_context_window,
+        ) = if auto_model {
+            (
+                active_context_window_override.map(|window| RouteLimits {
+                    context_tokens: Some(u64::from(window)),
+                    ..RouteLimits::default()
+                }),
+                configured_route_base_url,
+                if active_context_window_override.is_some() {
+                    crate::route_runtime::ContextWindowSource::Configured
+                } else {
+                    crate::route_runtime::ContextWindowSource::Fallback
+                },
+                None,
+            )
+        } else {
+            provider_identity
+                .as_ref()
+                .ok_or_else(|| "provider identity unavailable".to_string())
+                .and_then(|identity| {
+                    crate::route_runtime::resolve_runtime_route_for_identity(
+                        &effective_auth_config,
+                        identity,
+                        Some(&model),
+                    )
+                })
+                .map(|resolution| {
+                    (
+                        crate::route_budget::known_route_limits(resolution.candidate.limits()),
+                        resolution.candidate.endpoint().base_url.clone(),
+                        resolution.context_window.source,
+                        Some(resolution.context_window),
+                    )
+                })
+                .unwrap_or((
+                    None,
                     configured_route_base_url,
-                    if active_context_window_override.is_some() {
-                        crate::route_runtime::ContextWindowSource::Configured
-                    } else {
-                        crate::route_runtime::ContextWindowSource::Fallback
-                    },
-                )
-            } else {
-                provider_identity
-                    .as_ref()
-                    .ok_or_else(|| "provider identity unavailable".to_string())
-                    .and_then(|identity| {
-                        crate::route_runtime::resolve_runtime_route_for_identity(
-                            &effective_auth_config,
-                            identity,
-                            Some(&model),
-                        )
-                    })
-                    .map(|resolution| {
-                        (
-                            crate::route_budget::known_route_limits(resolution.candidate.limits()),
-                            resolution.candidate.endpoint().base_url.clone(),
-                            resolution.context_window.source,
-                        )
-                    })
-                    .unwrap_or((
-                        None,
-                        configured_route_base_url,
-                        crate::route_runtime::ContextWindowSource::Fallback,
-                    ))
-            };
+                    crate::route_runtime::ContextWindowSource::Fallback,
+                    None,
+                ))
+        };
         let reasoning_effort_explicit = config.fleet_operator_reasoning_applied
             || settings.reasoning_effort.is_some()
             || config.reasoning_effort_is_explicit();
@@ -445,12 +436,14 @@ impl App {
         } else {
             model.as_str()
         };
-        let compact_threshold = crate::route_budget::compaction_threshold_for_route_at_percent(
-            provider,
-            threshold_model,
-            active_route_limits,
-            auto_compact_threshold_percent,
-        );
+        let compact_threshold =
+            crate::route_budget::compaction_threshold_for_route_at_percent_with_window(
+                provider,
+                threshold_model,
+                active_route_limits,
+                active_context_window.map(|window| window.tokens),
+                auto_compact_threshold_percent,
+            );
         let auto_compact = if auto_compact_user_configured {
             settings_auto_compact
         } else {
@@ -661,13 +654,12 @@ impl App {
         let work_runtime =
             crate::work_graph::new_shared_work_runtime(todos.clone(), plan_state.clone());
 
-        let skills_discovery_mode =
-            crate::skills::SkillDiscoveryMode::from_config(&config.skills_config());
+        let skills_config = std::sync::Arc::new(config.skills_config());
         let skills_dir = resolve_skills_dir(&workspace, &global_skills_dir, config);
         let cached_skills = Self::discover_cached_skills(
             &workspace,
             &skills_dir,
-            skills_discovery_mode,
+            &skills_config,
             plugin_registry.as_ref(),
         );
 
@@ -861,6 +853,7 @@ impl App {
             pinned_models: settings.pinned_models.clone(),
             auto_model,
             last_effective_model: None,
+            last_effective_budget: None,
             last_effective_provider: None,
             last_effective_provider_identity: None,
             last_auto_route_receipt: None,
@@ -877,6 +870,7 @@ impl App {
             active_route_limits,
             active_route_base_url,
             active_context_window_source,
+            active_context_window,
             active_context_window_override,
             active_model_context_windows,
             pending_provider_switch: None,
@@ -906,7 +900,7 @@ impl App {
                 .map(PathBuf::from),
             mcp_config_path: mcp_config_path.clone(),
             skills_dir,
-            skills_discovery_mode,
+            skills_config,
             project_context_pack_enabled: config.project_context_pack_enabled(),
             memory_path,
             use_memory,

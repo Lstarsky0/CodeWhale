@@ -5,7 +5,7 @@ use crate::tui::app::App;
 use crate::tui::history::summarize_tool_output;
 use crate::tui::output_rows_cache::hash_str;
 use crate::tui::subagent_routing::{active_fanout_counts, running_agent_count};
-use crate::tui::ui_text::truncate_line_to_width;
+use codewhale_tui_kit::ui_text::truncate_line_to_width;
 
 /// Seconds the current turn has gone without observable stream activity.
 pub(crate) fn provider_wait_idle_secs(app: &App) -> u64 {
@@ -120,7 +120,7 @@ pub(crate) fn friendly_subagent_progress(
 
 pub(crate) fn one_line_summary(text: &str, max_width: usize) -> String {
     let mut cleaned = String::with_capacity(text.len());
-    crate::tui::osc8::strip_ansi_into(text, &mut cleaned);
+    codewhale_tui_kit::osc8::strip_ansi_into(text, &mut cleaned);
     truncate_line_to_width(
         &cleaned.split_whitespace().collect::<Vec<_>>().join(" "),
         max_width,

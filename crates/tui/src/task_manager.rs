@@ -23,9 +23,10 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::runtime_threads::{
-    CreateThreadRequest, RUNTIME_STORE_FAILURE_EVENT, RuntimeEventRecord, RuntimeProcessOwnerLock,
-    RuntimeThreadManager, RuntimeThreadManagerConfig, RuntimeTurnStatus,
-    SharedRuntimeThreadManager, StartTurnRequest,
+    RUNTIME_STORE_FAILURE_EVENT, RuntimeEventRecord, RuntimeProcessOwnerLock, RuntimeTurnStatus,
+    manager::CreateThreadRequest, manager::RuntimeThreadManager,
+    manager::RuntimeThreadManagerConfig, manager::SharedRuntimeThreadManager,
+    manager::StartTurnRequest,
 };
 use codewhale_runtime::config::Config;
 use codewhale_util::utils::spawn_supervised;

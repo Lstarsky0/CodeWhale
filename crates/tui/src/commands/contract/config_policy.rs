@@ -87,17 +87,13 @@ fn project_status(app: &App) -> ConfigStatusView {
     let metrics = crate::tui::session_metrics::snapshot_from_app(app);
     let outputs =
         crate::tool_output_receipts::tool_output_status(&app.api_messages, &app.session_artifacts);
-    let context_window = crate::route_budget::route_context_window_tokens(
-        app.api_provider,
-        app.effective_model_for_budget(),
-        app.active_route_limits,
-    );
+    let context_window = app.effective_context_window();
     let context_used = crate::compaction::estimate_input_tokens_conservative(
         &app.api_messages,
         app.system_prompt.as_ref(),
     )
     .max(codewhale_util::utils::estimate_message_chars(&app.api_messages) / 4);
-    let context_source = match app.active_context_window_source {
+    let context_source = match app.effective_context_window_source() {
         crate::route_runtime::ContextWindowSource::Configured => StatusContextSource::Configured,
         crate::route_runtime::ContextWindowSource::UserDeclared => {
             StatusContextSource::UserDeclared

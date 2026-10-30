@@ -30,7 +30,7 @@ impl<'a> ApprovalWidget<'a> {
     /// the preview above the controls, so a short band cuts the request
     /// detail, never the preview. A frame too small (or too narrow) for even
     /// the one-line preview fails closed: the card drops the preview and the
-    /// save offers together (`[p]`, `s`), keeping only one-off decisions.
+    /// save offer together (`[2 / p]`), keeping only one-off decisions.
     fn build_inline_content(&self, area: Rect) -> InlineContent {
         let (compact, save_start, controls) = self.build_inline_parts(area, true, true);
         let save_reserve = measure_wrapped_rows(&compact[save_start..], area.width);
@@ -307,15 +307,6 @@ impl<'a> ApprovalWidget<'a> {
         // Preview the validated persistent-rule candidates. Informational, so
         // they live in the scrollable body rather than the action rows.
         let essential_len = body.len();
-        if let Some(preview) = self.request.ask_rule_save_preview().filter(|_| offer_save) {
-            push_permission_rule_save_preview(
-                &mut body,
-                &preview,
-                palette_colors.shortcut,
-                area.width,
-                compact_save_preview,
-            );
-        }
         if let Some(preview) = self
             .request
             .allow_rule_save_preview()
@@ -742,11 +733,6 @@ fn build_approval_controls(
             },
             Style::default().fg(palette::TEXT_MUTED),
         ),
-        if offer_save && request.can_save_ask_rule() {
-            Span::styled(save_ask_rule_hint(locale), Style::default().fg(shortcut))
-        } else {
-            Span::raw("")
-        },
     ]));
     controls
 }
@@ -1239,10 +1225,6 @@ fn approval_owner_header(owner: &crate::tui::approval::ApprovalOwner, locale: Lo
     }
 }
 
-fn save_ask_rule_hint(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalSaveAskRuleHint)
-}
-
 #[derive(Clone)]
 struct ApprovalOptionRow {
     label: Cow<'static, str>,
@@ -1252,7 +1234,7 @@ struct ApprovalOptionRow {
     persistent: bool,
 }
 
-fn approval_options_for(risk: RiskLevel, locale: Locale) -> [ApprovalOptionRow; 4] {
+fn approval_options_for(risk: RiskLevel, locale: Locale) -> [ApprovalOptionRow; 3] {
     let dangerous = matches!(risk, RiskLevel::Destructive);
     [
         ApprovalOptionRow {
@@ -1270,12 +1252,6 @@ fn approval_options_for(risk: RiskLevel, locale: Locale) -> [ApprovalOptionRow; 
         ApprovalOptionRow {
             label: option_deny(locale),
             key_hint: "3 / d / n",
-            dangerous: false,
-            persistent: false,
-        },
-        ApprovalOptionRow {
-            label: option_abort(locale),
-            key_hint: "Esc",
             dangerous: false,
             persistent: false,
         },
@@ -1316,21 +1292,13 @@ fn approval_options_for_request(
         workflow_approval_options(risk, locale).to_vec()
     } else {
         let mut options = approval_options_for(risk, locale).to_vec();
-        if request.owner.is_some() {
-            // Must match `ApprovalOption::CHILD_ORDER`: no "Stop this turn".
-            options.pop();
-            return options;
-        }
-        if request.can_save_allow_rule() {
-            options.insert(
-                2,
-                ApprovalOptionRow {
-                    label: tr(locale, MessageId::ApprovalOptionAllowExactRepo),
-                    key_hint: "p",
-                    dangerous: false,
-                    persistent: true,
-                },
-            );
+        if request.owner.is_none() && request.can_save_allow_rule() {
+            options[1] = ApprovalOptionRow {
+                label: tr(locale, MessageId::ApprovalOptionAllowExactRepo),
+                key_hint: "2 / p",
+                dangerous: false,
+                persistent: true,
+            };
         }
         options
     }
@@ -1367,10 +1335,6 @@ fn option_approve_always(locale: Locale) -> Cow<'static, str> {
 
 fn option_deny(locale: Locale) -> Cow<'static, str> {
     tr(locale, MessageId::ApprovalOptionDeny)
-}
-
-fn option_abort(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalOptionAbortTurn)
 }
 
 // End exact frozen source counterpart; never included in production.

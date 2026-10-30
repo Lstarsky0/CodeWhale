@@ -16,17 +16,17 @@ use ratatui::{
 };
 
 use crate::commands;
-use crate::skills;
 use crate::tools::spec::ApprovalRequirement;
 use crate::tools::spec::ToolCapability;
 use crate::tools::{ToolContext, ToolRegistryBuilder};
-use crate::tui::menu_style;
 use crate::tui::views::{
     ActionHint, CommandPaletteAction, ModalKind, ModalView, ViewAction, ViewEvent,
     centered_modal_area, render_modal_footer, render_modal_surface,
 };
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
+use codewhale_skills as skills;
+use codewhale_tui_kit::menu_style;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PaletteSection {
@@ -73,7 +73,7 @@ pub struct CommandPaletteView {
 pub fn build_entries(
     locale: Locale,
     skills_dir: &Path,
-    skills_discovery_mode: crate::skills::SkillDiscoveryMode,
+    skills_config: &codewhale_runtime::config::SkillsConfig,
     workspace: &Path,
     mcp_config_path: &Path,
     mcp_snapshot: Option<&crate::mcp::McpManagerSnapshot>,
@@ -81,7 +81,7 @@ pub fn build_entries(
     build_entries_with_plugins(
         locale,
         skills_dir,
-        skills_discovery_mode,
+        skills_config,
         workspace,
         mcp_config_path,
         mcp_snapshot,
@@ -92,7 +92,7 @@ pub fn build_entries(
 pub fn build_entries_with_plugins(
     locale: Locale,
     skills_dir: &Path,
-    skills_discovery_mode: crate::skills::SkillDiscoveryMode,
+    skills_config: &codewhale_runtime::config::SkillsConfig,
     workspace: &Path,
     mcp_config_path: &Path,
     mcp_snapshot: Option<&crate::mcp::McpManagerSnapshot>,
@@ -166,13 +166,9 @@ pub fn build_entries_with_plugins(
         }
     });
 
-    let skills = skills::discover_for_workspace_and_dir_with_mode_and_plugins(
-        workspace,
-        skills_dir,
-        skills_discovery_mode,
-        Some(plugins),
-    )
-    .into_enabled();
+    let skills =
+        skills::discover_for_workspace(workspace, Some(skills_dir), skills_config, Some(plugins))
+            .into_enabled();
     for skill in skills
         .list()
         .iter()
@@ -770,7 +766,8 @@ impl CommandPaletteView {
     }
 
     fn move_selection(&mut self, delta: isize) {
-        self.selected = crate::tui::list_nav::wrap_index(self.selected, self.filtered.len(), delta);
+        self.selected =
+            codewhale_tui_kit::list_nav::wrap_index(self.selected, self.filtered.len(), delta);
         self.hovered.set(None);
     }
 
@@ -1000,20 +997,23 @@ impl ModalView for CommandPaletteView {
                     Style::default().fg(palette::TEXT_PRIMARY)
                 };
 
-                let pointer = crate::tui::glyphs::selection_marker(is_selected);
+                let pointer = codewhale_tui_kit::glyphs::selection_marker(is_selected);
                 // `{:<width$}` pads but never truncates, so a long label — every
                 // `mcp:server:tool` row — ran past the column and pushed the
                 // description off the card entirely. Truncate first, then pad, so
                 // the description column stays on one axis.
-                let label = crate::tui::ui_text::truncate_line_to_width(&entry.label, label_width);
+                let label =
+                    codewhale_tui_kit::ui_text::truncate_line_to_width(&entry.label, label_width);
                 let mut line = format!("{pointer} {label:<label_width$}");
                 // The rows are drawn into `content`, which is the popup less its
                 // borders and padding — measuring against `popup_width` overstated
                 // the room by four columns.
                 let content_width = (popup_width as usize).saturating_sub(4);
                 let desc_capacity = content_width.saturating_sub(label_width + 4);
-                let desc =
-                    crate::tui::ui_text::truncate_line_to_width(&entry.description, desc_capacity);
+                let desc = codewhale_tui_kit::ui_text::truncate_line_to_width(
+                    &entry.description,
+                    desc_capacity,
+                );
                 line.push_str("  ");
                 line.push_str(&desc);
                 entry_line_indices.push((lines.len(), absolute));
@@ -1353,7 +1353,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             configured_dir.as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             workspace.as_path(),
             Path::new("mcp.json"),
             None,
@@ -1397,7 +1397,10 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             workspace.join(".codewhale").join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::CodeWhaleOnly,
+            &codewhale_runtime::config::SkillsConfig {
+                scan_codewhale_only: Some(true),
+                ..Default::default()
+            },
             workspace.as_path(),
             Path::new("mcp.json"),
             None,
@@ -1442,7 +1445,7 @@ mod tests {
         let entries_before = build_entries_with_plugins(
             Locale::En,
             tmp.path().join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             &workspace,
             Path::new("mcp.json"),
             None,
@@ -1459,7 +1462,7 @@ mod tests {
         let entries_after = build_entries_with_plugins(
             Locale::En,
             tmp.path().join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             &workspace,
             Path::new("mcp.json"),
             None,
@@ -1480,7 +1483,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             Path::new("."),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             Path::new("."),
             Path::new("mcp.json"),
             None,
@@ -1514,7 +1517,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             tmp.path().join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             workspace.as_path(),
             tmp.path().join("mcp.json").as_path(),
             None,
@@ -1548,7 +1551,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             tmp.path().join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             workspace.as_path(),
             tmp.path().join("mcp.json").as_path(),
             None,
@@ -1583,7 +1586,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             tmp.path().join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             workspace.as_path(),
             tmp.path().join("mcp.json").as_path(),
             None,
@@ -1612,7 +1615,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             tmp.path().join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             workspace.as_path(),
             tmp.path().join("mcp.json").as_path(),
             None,
@@ -1640,7 +1643,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             tmp.path().join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             workspace.as_path(),
             tmp.path().join("mcp.json").as_path(),
             None,
@@ -1685,7 +1688,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             tmp.path().join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             workspace.as_path(),
             tmp.path().join("mcp.json").as_path(),
             None,
@@ -1731,7 +1734,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             tmp.path().join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             workspace.as_path(),
             tmp.path().join("mcp.json").as_path(),
             None,
@@ -1770,7 +1773,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             tmp.path().join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             workspace.as_path(),
             tmp.path().join("mcp.json").as_path(),
             None,
@@ -1803,7 +1806,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             tmp.path().join("skills").as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             workspace.as_path(),
             tmp.path().join("mcp.json").as_path(),
             None,
@@ -1835,7 +1838,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             skills_dir.as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             tmp.path(),
             mcp_config_path.as_path(),
             None,
@@ -1906,7 +1909,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             Path::new("."),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             Path::new("."),
             Path::new("mcp.json"),
             None,
@@ -1944,7 +1947,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             Path::new("."),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             Path::new("."),
             Path::new("mcp.json"),
             None,
@@ -1966,7 +1969,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             Path::new("."),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             Path::new("."),
             Path::new("mcp.json"),
             None,
@@ -2004,7 +2007,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             skills_dir.as_path(),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             tmp.path(),
             mcp_config_path.as_path(),
             None,
@@ -2129,7 +2132,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             Path::new("."),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             Path::new("."),
             Path::new("mcp.json"),
             Some(&snapshot),
@@ -2186,7 +2189,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             Path::new("."),
-            crate::skills::SkillDiscoveryMode::Compatible,
+            &Default::default(),
             Path::new("."),
             Path::new("mcp.json"),
             Some(&snapshot),
@@ -2351,7 +2354,7 @@ mod tests {
 
             // The selected row carries the charter pointer glyph.
             assert!(
-                text.contains(crate::tui::glyphs::SELECTION),
+                text.contains(codewhale_tui_kit::glyphs::SELECTION),
                 "{w}x{h}: selected row missing charter pointer"
             );
 

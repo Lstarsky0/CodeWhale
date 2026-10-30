@@ -569,6 +569,7 @@ pub(crate) async fn run_exec_agent(
         );
     let active_route_limits =
         crate::route_budget::known_route_limits(validated_route.candidate.limits());
+    let effective_context_window = validated_route.context_window;
     let max_subagents = if max_subagents
         == config.max_subagents_for_provider(
             &config
@@ -609,15 +610,12 @@ pub(crate) async fn run_exec_agent(
     let compaction = CompactionConfig {
         enabled: auto_compact_enabled,
         model: effective_model.clone(),
-        effective_context_window: Some(crate::route_budget::route_context_window_tokens(
+        effective_context_window: Some(validated_route.context_window.tokens),
+        token_threshold: crate::route_budget::compaction_threshold_for_route_at_percent_with_window(
             effective_provider,
             &effective_model,
             active_route_limits,
-        )),
-        token_threshold: crate::route_budget::compaction_threshold_for_route_at_percent(
-            effective_provider,
-            &effective_model,
-            active_route_limits,
+            Some(validated_route.context_window.tokens),
             settings.auto_compact_threshold_percent,
         ),
         summary_instructions: execution_config.compaction_summary_instructions(),
@@ -710,9 +708,7 @@ pub(crate) async fn run_exec_agent(
         mcp_oauth_callback_port: None,
         mcp_oauth_callback_url: None,
         skills_dir: execution_config.skills_dir(),
-        skills_discovery_mode: crate::skills::SkillDiscoveryMode::from_config(
-            &execution_config.skills_config(),
-        ),
+        skills_config: std::sync::Arc::new(execution_config.skills_config()),
         instructions: {
             let mut instrs: Vec<crate::prompts::InstructionSource> = execution_config
                 .instructions_paths()
@@ -989,7 +985,7 @@ pub(crate) async fn run_exec_agent(
     let mut latest_session_id = loaded_session_id;
     let mut latest_messages: Arc<Vec<Message>> = Arc::new(Vec::new());
     let mut latest_system_prompt: Option<SystemPrompt> = None;
-    let mut latest_model = effective_model;
+    let mut latest_model = effective_model.clone();
     let mut latest_workspace = workspace.clone();
     let mut tool_starts: HashMap<String, (Instant, String)> = HashMap::new();
     let mut turn_usage_seq: u32 = 0;
@@ -1453,7 +1449,7 @@ pub(crate) async fn run_exec_agent(
                     last_error_category = summary
                         .error
                         .as_deref()
-                        .map(crate::error_taxonomy::classify_error_message);
+                        .map(codewhale_error_taxonomy::classify_error_message);
                     summary.error_category =
                         last_error_category.map(|category| category.to_string());
                 }
@@ -1502,7 +1498,8 @@ pub(crate) async fn run_exec_agent(
                                 Some(previous) => format!("{previous}; {error}"),
                                 None => error.clone(),
                             });
-                            last_error_category = Some(crate::error_taxonomy::ErrorCategory::State);
+                            last_error_category =
+                                Some(codewhale_error_taxonomy::ErrorCategory::State);
                             summary.error_category =
                                 last_error_category.map(|category| category.to_string());
                             if output_format == ExecOutputFormat::StreamJson {
@@ -1571,10 +1568,14 @@ pub(crate) async fn run_exec_agent(
                     // wrong ceiling is visible in the receipt rather than
                     // requiring packet capture.
                     let codewhale_max_output_tokens =
-                        crate::route_budget::effective_max_output_tokens_for_route(
+                        crate::route_budget::effective_max_output_tokens_for_turn_with_window(
                             effective_provider,
                             &latest_model,
                             active_route_limits,
+                            (latest_model == effective_model)
+                                .then_some(effective_context_window.tokens),
+                            None,
+                            None,
                         );
                     let codewhale_max_output_tokens_source =
                         crate::route_budget::output_ceiling_source(
@@ -1757,7 +1758,7 @@ pub(crate) async fn run_exec_agent(
             "Engine event channel closed before a terminal turn receipt".to_string()
         });
         let category = last_error_category
-            .unwrap_or_else(|| crate::error_taxonomy::classify_error_message(&error));
+            .unwrap_or_else(|| codewhale_error_taxonomy::classify_error_message(&error));
         let termination_reason = crate::core::termination::classify_turn_termination(
             crate::core::events::TurnOutcomeStatus::Failed,
             Some(category),
@@ -2269,9 +2270,9 @@ mod tests {
         engine.tx_event.send(completed_parent(5)).await.unwrap();
         engine
             .tx_event
-            .send(Event::error(crate::error_taxonomy::ErrorEnvelope::fatal(
-                "fan-in route unavailable",
-            )))
+            .send(Event::error(
+                codewhale_error_taxonomy::ErrorEnvelope::fatal("fan-in route unavailable"),
+            ))
             .await
             .unwrap();
         assert!(matches!(events.next().await, Some(Event::Error { .. })));

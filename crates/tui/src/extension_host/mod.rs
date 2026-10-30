@@ -126,6 +126,7 @@ pub(crate) mod execution;
 pub(crate) use execution::StockOperation;
 pub(crate) mod avatars;
 mod hooks;
+mod host_port;
 pub(crate) mod mcp;
 pub(crate) mod native_mcp;
 pub(crate) mod plugin_config;
@@ -2539,7 +2540,6 @@ impl ExtensionHostManager {
         // scope: a failing entry withdraws its own handles and cleanup, while
         // already-active sibling entries remain usable.
         let mut tools = BTreeSet::new();
-        let mut commands = BTreeSet::new();
         for (path, sha256) in &want.entries {
             let scope = (want.tier == HostTier::Plugin).then(|| EntryRef {
                 path: path.to_string_lossy().into_owned(),
@@ -2579,9 +2579,8 @@ impl ExtensionHostManager {
                     ActivateResult::Failed { diagnostic } => Err(diagnostic),
                 });
             match outcome {
-                Ok((names, slash)) => {
+                Ok((names, _slash)) => {
                     tools.extend(names);
-                    commands.extend(slash);
                     if let Some(scope) = &scope {
                         shared
                             .registry
@@ -2640,11 +2639,23 @@ impl ExtensionHostManager {
         }
         match failure {
             None => {
-                let active = shared
-                    .registry
-                    .lock()
-                    .expect("registry lock")
-                    .mark_active(&owner);
+                let (active, commands) = {
+                    let mut registry = shared.registry.lock().expect("registry lock");
+                    let active = registry.mark_active(&owner);
+                    let mut commands = if active {
+                        registry
+                            .live_commands()
+                            .into_iter()
+                            .filter(|command| command.owner == owner)
+                            .map(|command| command.name)
+                            .collect::<Vec<_>>()
+                    } else {
+                        Vec::new()
+                    };
+                    commands.sort();
+                    commands.dedup();
+                    (active, commands)
+                };
                 if active {
                     shared.plugin_diagnostic(
                         plugin_id,
@@ -3655,6 +3666,7 @@ pub(crate) fn configure_with_handle(
     options: ExtensionHostOptions,
     handle: Option<tokio::runtime::Handle>,
 ) {
+    install_ports();
     let manager = Arc::new(ExtensionHostManager::new(options));
     if let Some(handle) = handle {
         manager.bind_engine_handle(handle);
@@ -3662,17 +3674,22 @@ pub(crate) fn configure_with_handle(
     let _ = GLOBAL.set(manager);
 }
 
+pub(crate) fn install_ports() {
+    codewhale_plugins::composition_review::install_composition_reviewer(composition_review::review);
+    host_port::install();
+}
+
 /// The manager for this engine process (one host per process and tier).
 #[must_use]
 pub fn manager() -> Arc<ExtensionHostManager> {
+    install_ports();
     #[cfg(test)]
     if let Some(manager) = TEST_MANAGER.with(|cell| cell.borrow().clone()) {
         return manager;
     }
-    Arc::clone(GLOBAL.get_or_init(|| {
-        composition_review::install();
-        Arc::new(ExtensionHostManager::new(ExtensionHostOptions::default()))
-    }))
+    Arc::clone(
+        GLOBAL.get_or_init(|| Arc::new(ExtensionHostManager::new(ExtensionHostOptions::default()))),
+    )
 }
 
 /// Test-only: route [`manager`] on this thread to `manager`.
@@ -3682,7 +3699,7 @@ pub(crate) struct TestManagerGuard(Option<Arc<ExtensionHostManager>>);
 #[cfg(test)]
 impl TestManagerGuard {
     pub(crate) fn install(manager: Arc<ExtensionHostManager>) -> Self {
-        composition_review::install();
+        install_ports();
         Self(TEST_MANAGER.with(|cell| cell.replace(Some(manager))))
     }
 }

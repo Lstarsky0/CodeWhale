@@ -63,14 +63,6 @@ fn sandbox_visible_fixture_root() -> &'static Path {
     })
 }
 
-/// Mark `workspace` trusted in the test's config, creating it first so the
-/// trust key is the canonical path. Repository-supplied commands and skills
-/// load only in a trusted workspace.
-pub(crate) fn trust_workspace(workspace: &Path) {
-    std::fs::create_dir_all(workspace).expect("create test workspace");
-    codewhale_runtime::config::save_workspace_trust(workspace).expect("trust test workspace");
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

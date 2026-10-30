@@ -2,7 +2,7 @@ use super::*;
 use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
 use crate::core::ops::{Op, TurnSpec};
 use crate::runtime_threads::RuntimeEventRecord;
-use crate::runtime_threads::install_mock_engine;
+use crate::runtime_threads::manager::install_mock_engine;
 use crate::test_support::{EnvVarGuard, lock_test_env};
 use anyhow::{Context, bail};
 use codewhale_models::Role;
@@ -622,11 +622,8 @@ fn messages_from_thread_detail_batches_tool_results() {
             .push(item.clone());
     }
     let messages =
-        crate::runtime_threads::RuntimeThreadManager::reconstruct_messages_from_turns_with(
-            &detail.turns,
-            &items_by_turn,
-        )
-        .expect("rebuild thread history");
+        crate::runtime_threads::reconstruct_messages_from_turns_with(&detail.turns, &items_by_turn)
+            .expect("rebuild thread history");
     let roles = messages
         .iter()
         .map(|message| message.role.as_str())
@@ -3172,7 +3169,7 @@ async fn agent_runs_runtime_api_exposes_persisted_worker_receipts() -> Result<()
             .is_none()
     );
     let thread = runtime_threads
-        .create_thread(crate::runtime_threads::CreateThreadRequest::default())
+        .create_thread(crate::runtime_threads::manager::CreateThreadRequest::default())
         .await?;
     let engine = runtime_threads.get_engine(&thread.id).await?;
     let actual = engine.subagent_manager();
@@ -6989,7 +6986,7 @@ async fn session_export_retry_after_a_crash_binds_the_document_it_wrote() -> Res
     };
     let client = codewhale_release::tls::reqwest_client();
     let thread = runtime_threads
-        .create_thread(crate::runtime_threads::CreateThreadRequest {
+        .create_thread(crate::runtime_threads::manager::CreateThreadRequest {
             workspace: Some(root.join("workspace")),
             ..Default::default()
         })
@@ -7054,7 +7051,7 @@ async fn session_export_retry_after_a_crash_binds_the_document_it_wrote() -> Res
 
     // Another thread may not rebind itself onto this thread's document.
     let other = runtime_threads
-        .create_thread(crate::runtime_threads::CreateThreadRequest {
+        .create_thread(crate::runtime_threads::manager::CreateThreadRequest {
             workspace: Some(root.join("workspace")),
             ..Default::default()
         })
@@ -7648,8 +7645,8 @@ fn dropped_turn(
     turn_id: &str,
     may_change_files: bool,
     snapshots: Vec<codewhale_snapshot::WorkspaceSnapshotRef>,
-) -> crate::runtime_threads::DroppedTurnSnapshots {
-    crate::runtime_threads::DroppedTurnSnapshots {
+) -> crate::runtime_threads::manager::DroppedTurnSnapshots {
+    crate::runtime_threads::manager::DroppedTurnSnapshots {
         turn_id: turn_id.to_string(),
         may_change_files,
         snapshots,
@@ -11979,10 +11976,8 @@ async fn unicode_skill_activation_matches_api_load_and_owned_lifecycle() -> Resu
     .await?
     .context("isolated skill API fixture requires loopback")?;
     let client = codewhale_release::tls::reqwest_client();
-    let context = ToolContext::new(&workspace).with_skills_config(
-        workspace.join(".codewhale/skills"),
-        crate::skills::SkillDiscoveryMode::Compatible,
-    );
+    let context = ToolContext::new(&workspace)
+        .with_skills_config(workspace.join(".codewhale/skills"), Default::default());
     let tool = crate::tools::skill::LoadSkillTool;
 
     let before: serde_json::Value = client
@@ -12297,7 +12292,7 @@ fn skills_search_directories_includes_custom_skills_dir() {
     let directories = skills_search_directories(
         &workspace,
         &custom_skills,
-        crate::skills::SkillDiscoveryMode::Compatible,
+        codewhale_skills::SkillDiscoveryMode::Compatible,
     );
 
     assert!(
@@ -12335,7 +12330,7 @@ fn skill_entry_is_bundled_requires_configured_bundle_path() {
     )
     .expect("write override skill");
 
-    let bundled_skill = crate::skills::Skill {
+    let bundled_skill = codewhale_skills::Skill {
         legacy_activation_name: None,
         name: "delegate".to_string(),
         description: String::new(),
@@ -12345,9 +12340,9 @@ fn skill_entry_is_bundled_requires_configured_bundle_path() {
         argument_hint: None,
         body: String::new(),
         path: bundled_skill_path,
-        source: crate::skills::SkillSource::Native,
+        source: codewhale_skills::SkillSource::Native,
     };
-    let override_skill = crate::skills::Skill {
+    let override_skill = codewhale_skills::Skill {
         legacy_activation_name: None,
         name: "delegate".to_string(),
         description: String::new(),
@@ -12357,7 +12352,7 @@ fn skill_entry_is_bundled_requires_configured_bundle_path() {
         argument_hint: None,
         body: String::new(),
         path: override_skill_path,
-        source: crate::skills::SkillSource::Native,
+        source: codewhale_skills::SkillSource::Native,
     };
 
     assert!(skill_entry_is_bundled(&bundled_skill, &bundled_skills_dir));
@@ -13914,6 +13909,12 @@ fn provider_catalog_keeps_official_deepseek_facts_but_not_custom_proxy_claims() 
             &config,
             &(config).test_identity_for_kind(ProviderKind::Deepseek),
         );
+        let entry = provider_model_entry_for_api(
+            &config,
+            &config.test_identity_for_kind(ProviderKind::Deepseek),
+            "deepseek-v4-pro".to_string(),
+        );
+        assert_eq!(entry.reasoning_effort_levels, ["off", "low", "high", "max"]);
         assert!(
             models
                 .iter()
@@ -13971,6 +13972,12 @@ fn provider_catalog_keeps_official_deepseek_facts_but_not_custom_proxy_claims() 
         codewhale_config::route::CapabilityState::Unknown,
         "same-name custom proxy must not surface first-party vision capability as verified"
     );
+    let proxy = provider_model_entry_for_api(
+        &custom,
+        &custom.test_identity_for_kind(ProviderKind::Deepseek),
+        "deepseek-v4-pro".to_string(),
+    );
+    assert!(proxy.reasoning_effort_levels.is_empty());
 }
 
 #[test]
@@ -15342,7 +15349,7 @@ api_key = "local-test-key"
         return Ok(());
     };
     let thread = runtime_threads
-        .create_thread(crate::runtime_threads::CreateThreadRequest {
+        .create_thread(crate::runtime_threads::manager::CreateThreadRequest {
             model: Some("local-model".to_string()),
             model_provider: Some("lm-studio".to_string()),
             ..Default::default()
@@ -17578,7 +17585,8 @@ fn create_managed_skill(root_dir: &std::path::Path, name: &str) -> Result<(PathB
     )?;
     // Write an `.installed-from` marker so the mutation module considers it
     // managed (and therefore eligible for update/remove/trust).
-    let digest = crate::skills::audit::compute_package_digest(&skill_dir).expect("package digest");
+    let digest =
+        codewhale_skills::audit::compute_package_digest(&skill_dir).expect("package digest");
     codewhale_skill_install::install::write_installed_from_v2(
         &skill_dir,
         &format!("github:test/{name}"),
@@ -19548,7 +19556,7 @@ async fn native_notification_preparation_authenticates_current_events_and_reuses
     };
     assert_eq!(reload().send().await?.status(), StatusCode::OK);
     let mut thread = manager
-        .create_thread(crate::runtime_threads::CreateThreadRequest::default())
+        .create_thread(crate::runtime_threads::manager::CreateThreadRequest::default())
         .await?;
     thread.latest_turn_id = Some("test-turn".into());
     manager.test_store().save_thread(&thread)?;
@@ -19639,7 +19647,7 @@ async fn native_notification_preparation_authenticates_current_events_and_reuses
         assert_eq!(result["status"], expected, "{key}={value}");
     }
     let other = manager
-        .create_thread(crate::runtime_threads::CreateThreadRequest::default())
+        .create_thread(crate::runtime_threads::manager::CreateThreadRequest::default())
         .await?;
     let other_event = manager
         .emit_event_for_test(&other.id, None, "turn.completed", json!({}))
@@ -20081,7 +20089,7 @@ async fn runtime_image_stream_rejection_does_not_leave_empty_threads() -> Result
         assert!(
             manager
                 .list_threads(
-                    crate::runtime_threads::ThreadListFilter::IncludeArchived,
+                    crate::runtime_threads::manager::ThreadListFilter::IncludeArchived,
                     None
                 )
                 .await?
@@ -20284,7 +20292,7 @@ async fn runtime_image_saved_session_import_validates_before_creating_a_thread()
             assert!(
                 manager
                     .list_threads(
-                        crate::runtime_threads::ThreadListFilter::IncludeArchived,
+                        crate::runtime_threads::manager::ThreadListFilter::IncludeArchived,
                         None
                     )
                     .await?

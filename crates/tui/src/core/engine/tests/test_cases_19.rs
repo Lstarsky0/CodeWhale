@@ -1201,11 +1201,11 @@ async fn turn_wall_clock_budget_stops_the_turn_before_another_model_request() {
     assert_eq!(cards.len(), 1, "one error card: {cards:?}");
     assert_eq!(
         cards[0].category,
-        crate::error_taxonomy::ErrorCategory::Budget
+        codewhale_error_taxonomy::ErrorCategory::Budget
     );
     assert_eq!(
         cards[0].severity,
-        crate::error_taxonomy::ErrorSeverity::Error
+        codewhale_error_taxonomy::ErrorSeverity::Error
     );
     assert!(cards[0].recoverable, "a spent budget must not flip offline");
     assert!(cards[0].message.contains("wall-clock budget exhausted"));

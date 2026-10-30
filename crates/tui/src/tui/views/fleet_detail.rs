@@ -28,7 +28,6 @@ use crate::fleet::store::{
     save_fleet, set_selected,
 };
 use crate::tui::app::App;
-use crate::tui::menu_style;
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
 };
@@ -36,6 +35,7 @@ use codewhale_agent_contract::role::public_role_label;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 use codewhale_runtime::config::Config;
+use codewhale_tui_kit::menu_style;
 
 /// The built-in role vocabulary offered when adding a member, in a useful
 /// order. A Fleet member is a role; the user can name anything, these are the
@@ -796,9 +796,9 @@ impl ModalView for FleetDetailView {
                 }
                 // Typing-safe set only: this step feeds `Char(c)` into
                 // `pick_query`, so a letter alias would eat the query (#6290).
-                _ if crate::tui::list_nav::motion_while_typing(&key)
+                _ if codewhale_tui_kit::list_nav::motion_while_typing(&key)
                     .and_then(|m| {
-                        crate::tui::list_nav::apply(
+                        codewhale_tui_kit::list_nav::apply(
                             self.pick_row,
                             self.filtered_routes().len(),
                             ROUTE_PICK_PAGE,
@@ -861,9 +861,9 @@ impl ModalView for FleetDetailView {
                 }
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => ViewAction::Close,
-                    _ if crate::tui::list_nav::motion(&key)
+                    _ if codewhale_tui_kit::list_nav::motion(&key)
                         .and_then(|m| {
-                            crate::tui::list_nav::apply(
+                            codewhale_tui_kit::list_nav::apply(
                                 self.selected,
                                 self.row_count(),
                                 DETAIL_PAGE,

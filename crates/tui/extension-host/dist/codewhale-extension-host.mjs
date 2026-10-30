@@ -1618,8 +1618,8 @@ var init_lib2 = __esm({
         let inFlight;
         let removeWrapper = () => false;
         const waitForSetup = () => {
-          setupBarrier ??= new Promise((resolve5, reject) => {
-            resolveSetup = resolve5;
+          setupBarrier ??= new Promise((resolve6, reject) => {
+            resolveSetup = resolve6;
             rejectSetup = reject;
           });
           return setupBarrier;
@@ -1854,16 +1854,16 @@ var init_lib2 = __esm({
       }
     };
     (function(Inject2) {
-      function resolve5(inject, result = /* @__PURE__ */ Object.create(null)) {
+      function resolve6(inject, result = /* @__PURE__ */ Object.create(null)) {
         if (!inject) return result;
         if (Array.isArray(inject)) for (const name of inject) result[name] = null;
         else if (Reflect.has(inject, symbols.checkProto)) {
-          Object.assign(result, resolve5(Object.getPrototypeOf(inject)));
+          Object.assign(result, resolve6(Object.getPrototypeOf(inject)));
           for (const name of Object.keys(inject)) result[name] = inject[name] ?? null;
         } else for (const name of Object.keys(inject)) result[name] = inject[name] ?? null;
         return result;
       }
-      Inject2.resolve = resolve5;
+      Inject2.resolve = resolve6;
     })(Inject || (Inject = {}));
     RegistryService = class {
       ctx;
@@ -15012,7 +15012,7 @@ var init_rpc = __esm({
         const id = this.nextId++;
         const message = { jsonrpc: "2.0", id, method, params };
         validateMessage(message, "host_to_core", this.tier);
-        return new Promise((resolve5, reject) => {
+        return new Promise((resolve6, reject) => {
           const onAbort = () => {
             if (!this.pending.delete(id)) return;
             this.notify("$/cancel", { id });
@@ -15021,7 +15021,7 @@ var init_rpc = __esm({
           this.pending.set(id, {
             resolve: (value) => {
               signal?.removeEventListener("abort", onAbort);
-              resolve5(value);
+              resolve6(value);
             },
             reject: (error) => {
               signal?.removeEventListener("abort", onAbort);
@@ -15154,6 +15154,149 @@ var init_core = __esm({
       code;
     };
     MAX_NAME_LENGTH = 128;
+  }
+});
+
+// src/shims/git.ts
+import childProcess from "node:child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { syncBuiltinESMExports as syncBuiltinESMExports2 } from "node:module";
+import { resolve as resolve4 } from "node:path";
+import { PassThrough } from "node:stream";
+import { promisify } from "node:util";
+function queryFor(args) {
+  if (!Array.isArray(args) || args.length > 8 || args.some((x) => typeof x !== "string" || x.length > 1024 || /[\x00-\x1f\x7f]/.test(x))) {
+    throw new Error("Git review scopes require bounded metadata arguments");
+  }
+  const argv = args[0] === "--no-optional-locks" ? args.slice(1) : args;
+  const exact = (...values) => argv.length === values.length && argv.every((value, index) => value === values[index]);
+  if (exact("for-each-ref", "--format=%(refname:short)", "refs/heads")) return { query: "branches" };
+  if (exact("log", "-n", "100", "--format=%H%x09%s")) return { query: "commits" };
+  if (exact("rev-parse", "--show-toplevel")) return { query: "root" };
+  if (argv.length === 4 && argv[0] === "rev-parse" && argv[1] === "--verify" && argv[2] === "--end-of-options") return { query: "resolve", rev: argv[3] };
+  if (argv.length === 4 && argv[0] === "rev-list" && argv[1] === "--left-right" && argv[2] === "--count") {
+    const refs = argv[3].split("...");
+    if (refs.length === 2) return { query: "ahead_behind", ours: refs[0], theirs: refs[1] };
+  }
+  if (argv.length === 3 && argv[0] === "merge-base") return { query: "merge_base", ours: argv[1], theirs: argv[2] };
+  throw new Error("Only read-only Git review metadata is available through the Engine");
+}
+function installGitAdapter(inPluginContext) {
+  if (installed2) return;
+  installed2 = true;
+  const original = childProcess.execFile;
+  const adapter = function(...raw) {
+    if (raw[0] !== "git" || !gitInvocations.getStore() && !inPluginContext()) return Reflect.apply(original, childProcess, raw);
+    const invocation = gitInvocations.getStore();
+    const callback = typeof raw.at(-1) === "function" ? raw.pop() : void 0;
+    const args = Array.isArray(raw[1]) ? raw[1] : [];
+    const options = (Array.isArray(raw[1]) ? raw[2] : raw[1]) ?? {};
+    const child = new childProcess.ChildProcess();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    child.stdout = stdout;
+    child.stderr = stderr;
+    const cancelled = new AbortController();
+    child.kill = () => {
+      cancelled.abort();
+      return true;
+    };
+    let timeout;
+    let userSignal;
+    let gitExit = false;
+    const run = async () => {
+      if (!invocation || !invocation.live() || invocation.signal.aborted) throw new Error("Git review metadata requires a live extension tool invocation");
+      if (typeof options !== "object" || options === null || Array.isArray(options)) throw new TypeError("Invalid Git metadata options");
+      const opts = options;
+      if (Object.keys(opts).some((key) => !["cwd", "signal", "encoding", "maxBuffer", "timeout", "windowsHide", "env"].includes(key))) throw new TypeError("Unsupported Git metadata option");
+      if (opts.cwd !== void 0 && (typeof opts.cwd !== "string" || resolve4(opts.cwd) !== resolve4(invocation.workspace))) throw new Error("Git review metadata is scoped to the calling workspace");
+      if (opts.env !== void 0) {
+        if (typeof opts.env !== "object" || opts.env === null || Array.isArray(opts.env)) throw new TypeError("Invalid Git metadata environment");
+        for (const [key, value2] of Object.entries(opts.env)) {
+          if (value2 === process.env[key] || key === "GIT_TERMINAL_PROMPT" && value2 === "0" || key === "GIT_OPTIONAL_LOCKS" && value2 === "0") continue;
+          throw new Error("Git review metadata uses the Engine environment");
+        }
+      }
+      const max = opts.maxBuffer ?? 1024 * 1024;
+      if (!Number.isSafeInteger(max) || max < 1 || max > 1024 * 1024) throw new TypeError("Git metadata maxBuffer must be at most 1 MiB");
+      const encoding = opts.encoding ?? "utf8";
+      if (encoding !== "buffer" && (typeof encoding !== "string" || !Buffer.isEncoding(encoding))) throw new TypeError("Invalid Git metadata encoding");
+      if (opts.signal !== void 0 && !(opts.signal instanceof AbortSignal)) throw new TypeError("Invalid Git metadata signal");
+      if (opts.timeout !== void 0 && (!Number.isSafeInteger(opts.timeout) || opts.timeout < 0)) throw new TypeError("Invalid Git metadata timeout");
+      if (typeof opts.timeout === "number" && opts.timeout > 0) timeout = setTimeout(() => cancelled.abort(), Math.min(opts.timeout, 1e4));
+      userSignal = opts.signal instanceof AbortSignal ? opts.signal : void 0;
+      const signal = AbortSignal.any([invocation.signal, cancelled.signal, ...userSignal ? [userSignal] : []]);
+      signal.throwIfAborted();
+      const result = await invocation.core.call("Git", { action: "review_scope", ...queryFor(args) }, { signal });
+      signal.throwIfAborted();
+      if (!invocation.live()) throw new Error("Git metadata invocation ended");
+      const value = result.structured;
+      if (result.isError) throw new Error(`Git review metadata unavailable: ${result.content.slice(0, 300)}`);
+      if (value === null || typeof value !== "object" || Array.isArray(value) || typeof value.stdout !== "string" || typeof value.stderr !== "string" || !Number.isInteger(value.exit_code)) {
+        throw new Error(result.content.includes("[output truncated") ? "Git review metadata exceeded the Engine nested-call result limit" : "Engine did not return complete Git review metadata");
+      }
+      if (Buffer.byteLength(value.stdout) > max || Buffer.byteLength(value.stderr) > max) throw Object.assign(new RangeError("stdout maxBuffer length exceeded"), { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" });
+      const out = Buffer.from(value.stdout);
+      const err = Buffer.from(value.stderr);
+      const data2 = { stdout: encoding === "buffer" ? out : out.toString(encoding), stderr: encoding === "buffer" ? err : err.toString(encoding), code: value.exit_code };
+      if (data2.code !== 0) {
+        gitExit = true;
+        throw Object.assign(new Error(value.stderr || "Git review metadata failed"), { code: data2.code, stdout: data2.stdout, stderr: data2.stderr });
+      }
+      return data2;
+    };
+    void run().then((data2) => {
+      stdout.end(data2.stdout);
+      stderr.end(data2.stderr);
+      Object.defineProperty(child, "exitCode", { value: 0, configurable: true });
+      callback?.(null, data2.stdout, data2.stderr);
+      child.emit("exit", 0, null);
+      child.emit("close", 0, null);
+    }, (failure) => {
+      let error = failure instanceof Error ? failure : new Error(String(failure));
+      const verdict = error.code;
+      const decided = verdict === "denied" || verdict === "refused" || verdict === "unavailable";
+      if (!gitExit && !decided && (cancelled.signal.aborted || invocation?.signal.aborted || userSignal?.aborted)) {
+        const killed = cancelled.signal.aborted && !invocation?.signal.aborted && !userSignal?.aborted;
+        error = killed ? Object.assign(new Error("Command failed: git"), { killed: true, signal: "SIGTERM", code: null, cause: failure }) : Object.assign(new Error("The operation was aborted", { cause: failure }), { name: "AbortError", code: "ABORT_ERR" });
+      }
+      const detail = error;
+      if (detail.code === void 0) detail.code = "CW_GIT_REFUSED";
+      detail.stdout ??= "";
+      detail.stderr ??= "";
+      stdout.end(detail.stdout ?? "");
+      stderr.end(detail.stderr ?? "");
+      if (callback) callback(error, detail.stdout ?? "", detail.stderr ?? "");
+      if (gitExit) {
+        Object.defineProperty(child, "exitCode", { value: detail.code, configurable: true });
+        child.emit("exit", detail.code, null);
+        child.emit("close", detail.code, null);
+      } else {
+        if (!callback && child.listenerCount("error") > 0) child.emit("error", error);
+        child.emit("close", null, null);
+      }
+    }).finally(() => {
+      if (timeout !== void 0) clearTimeout(timeout);
+    });
+    return child;
+  };
+  Object.defineProperty(adapter, promisify.custom, { value: (...raw) => {
+    let child;
+    const promise = new Promise((resolveResult, reject) => {
+      child = adapter(...raw, (error, stdout, stderr) => error ? reject(error) : resolveResult({ stdout, stderr }));
+    });
+    return Object.assign(promise, { child });
+  } });
+  childProcess.execFile = adapter;
+  syncBuiltinESMExports2();
+}
+var gitInvocations, installed2;
+var init_git = __esm({
+  "src/shims/git.ts"() {
+    "use strict";
+    init_define_BUILTIN_MODULE_DIGESTS();
+    gitInvocations = new AsyncLocalStorage();
+    installed2 = false;
   }
 });
 
@@ -15720,7 +15863,7 @@ var init_commands = __esm({
 // src/root.ts
 import { createHash as createHash4 } from "node:crypto";
 import { readFile as readFile2 } from "node:fs/promises";
-import { AsyncLocalStorage } from "node:async_hooks";
+import { AsyncLocalStorage as AsyncLocalStorage2 } from "node:async_hooks";
 import { pathToFileURL as pathToFileURL4 } from "node:url";
 function describeError2(error) {
   if (error instanceof Error) return `${error.name}: ${error.message}`;
@@ -15841,6 +15984,7 @@ var init_root = __esm({
     init_dsh_tools_compat();
     init_json();
     init_core();
+    init_git();
     init_owned();
     init_shell_hooks2();
     init_hooks();
@@ -15856,7 +16000,7 @@ var init_root = __esm({
     PROVIDED_SERVICES = new Set(compatibility_default.provided_services);
     ACTIVATE_DEADLINE_MS = 5e3;
     DISPOSE_DEADLINE_MS = 2e3;
-    ownerStorage = new AsyncLocalStorage();
+    ownerStorage = new AsyncLocalStorage2();
     HostRoot = class {
       constructor(rpc2, tier) {
         this.rpc = rpc2;
@@ -15864,6 +16008,7 @@ var init_root = __esm({
         const root = new Context();
         this.root = root;
         const host2 = this;
+        if (tier === "plugin") installGitAdapter(() => ownerStorage.getStore() !== void 0);
         this.toolRegistrations = new OwnedRegistrations(
           rpc2,
           "tool",
@@ -16320,7 +16465,7 @@ var init_root = __esm({
       rpc;
       tier;
       root;
-      toolInvocations = new AsyncLocalStorage();
+      toolInvocations = new AsyncLocalStorage2();
       owners = /* @__PURE__ */ new Map();
       toolRegistrations;
       commandRegistrations;
@@ -16590,10 +16735,16 @@ var init_root = __esm({
           active: true,
           pending: Promise.resolve()
         };
-        const run = ownerStorage.run(local.owner, () => this.toolInvocations.run(invocation, async () => {
+        const gitInvocation = workspace && ticket ? {
+          workspace,
+          core: makeCoreApi(this.rpc, local.owner.ref, ticket, invocation.signal),
+          signal: invocation.signal,
+          live: () => invocation.active && local.owner.state === "active" && !local.owner.disposing
+        } : void 0;
+        const run = ownerStorage.run(local.owner, () => this.toolInvocations.run(invocation, () => gitInvocations.run(gitInvocation, async () => {
           const value = await definition.execute(input, exec);
           return renderResult(definition, input, value);
-        }));
+        })));
         try {
           return await Promise.race([run, abortedBy(signal)]);
         } finally {
@@ -16848,7 +16999,7 @@ __export(composition_exports, {
 });
 import { createHash as createHash5 } from "node:crypto";
 import { readFile as readFile3 } from "node:fs/promises";
-import { isAbsolute as isAbsolute4, relative as relative2, resolve as resolve4, sep as sep2 } from "node:path";
+import { isAbsolute as isAbsolute4, relative as relative2, resolve as resolve5, sep as sep2 } from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 function digest(bytes) {
   return createHash5("sha256").update(bytes).digest("hex");
@@ -16980,13 +17131,13 @@ async function mountReviewedComposition(ctx, baseUrl, spec) {
     }
   }
   groups(review.entries);
-  const installed2 = loaders.get(ctx.root);
-  if (!installed2) throw new Error("composition loader was not installed by this host");
-  await installed2.fiber.await();
+  const installed3 = loaders.get(ctx.root);
+  if (!installed3) throw new Error("composition loader was not installed by this host");
+  await installed3.fiber.await();
   const loaderCtx = ctx.extend({
     baseUrl,
     [Context.isolate]: Object.assign(Object.create(ctx[Context.isolate]), {
-      loader: installed2.ctx[Context.isolate].loader
+      loader: installed3.ctx[Context.isolate].loader
     })
   });
   const config = { baseUrl, spec, review, releaseClosure: admitReviewedClosure(baseUrl, spec.files) };
@@ -17124,7 +17275,7 @@ var init_composition = __esm({
       }
       async importReviewed(module) {
         const root = fileURLToPath5(this.base);
-        const path = resolve4(root, module.path);
+        const path = resolve5(root, module.path);
         const inside = relative2(root, path);
         if (inside.startsWith(`..${sep2}`) || inside === ".." || isAbsolute4(inside)) throw new Error("module escapes reviewed bundle");
         if (this.spec.files[module.path] !== module.sha256 || digest(await readFile3(path)) !== module.sha256) throw new Error("module changed after review");
@@ -17454,8 +17605,8 @@ function validateVolatileSchema(schema3, path = [], blocked = false, seen = /* @
   if (schema3.inner && (schema3.type !== "lazy" || schema3.inner[kSchema])) validateVolatileSchema(schema3.inner, [...path, "*"], true, seen);
   if (schema3.list) for (let index = 0; index < schema3.list.length; index++) validateVolatileSchema(schema3.list[index], [...path, String(index)], true, seen);
 }
-Schema.extend = function extend(type2, resolve5) {
-  resolvers[type2] = resolve5;
+Schema.extend = function extend(type2, resolve6) {
+  resolvers[type2] = resolve6;
 };
 Schema.resolve = function resolve(data2, schema3, options = {}, strict = false) {
   if (!schema3) return [data2];
@@ -17861,7 +18012,7 @@ init_tier();
 init_define_BUILTIN_MODULE_DIGESTS();
 import fs from "node:fs";
 import net from "node:net";
-import childProcess from "node:child_process";
+import childProcess2 from "node:child_process";
 var denied = (operation) => {
   try {
     operation();
@@ -17885,7 +18036,7 @@ async function windowsSandboxProbe(env = process.env) {
   for (const path of reads) {
     if (!denied(() => fs.readFileSync(path))) throw new Error("sandbox allowed an outside credential read");
   }
-  await new Promise((resolve5, reject) => {
+  await new Promise((resolve6, reject) => {
     const socket = net.connect({ host: "127.0.0.1", port });
     const timer = setTimeout(() => {
       socket.destroy();
@@ -17899,7 +18050,7 @@ async function windowsSandboxProbe(env = process.env) {
     socket.once("error", (error) => {
       clearTimeout(timer);
       socket.destroy();
-      if (error.code === "EACCES" || error.code === "EPERM") resolve5();
+      if (error.code === "EACCES" || error.code === "EPERM") resolve6();
       else reject(new Error(`network probe failed without an access denial: ${error.code}`));
     });
   });
@@ -17910,7 +18061,7 @@ async function windowsSandboxProbe(env = process.env) {
     const outputPath = `${inside}.receipt`;
     const fd = fs.openSync(outputPath, "wx+");
     try {
-      await new Promise((resolve5, reject) => {
+      await new Promise((resolve6, reject) => {
         let child, timer, poll, closeTimer, failure, settled = false;
         const finish = (error) => {
           if (settled) return;
@@ -17919,7 +18070,7 @@ async function windowsSandboxProbe(env = process.env) {
           clearInterval(poll);
           clearTimeout(closeTimer);
           if (error) reject(error);
-          else resolve5();
+          else resolve6();
         };
         const fail2 = (error) => {
           if (settled || failure) return;
@@ -17933,7 +18084,7 @@ async function windowsSandboxProbe(env = process.env) {
           }
         };
         try {
-          child = childProcess.spawn(process.execPath, args, { stdio: [0, fd, fd], windowsHide: true, env: {
+          child = childProcess2.spawn(process.execPath, args, { stdio: [0, fd, fd], windowsHide: true, env: {
             ...env,
             CODEWHALE_WINDOWS_PROBE_DESCENDANT: "1",
             CODEWHALE_WINDOWS_PROBE_INSIDE: `${inside}.child`

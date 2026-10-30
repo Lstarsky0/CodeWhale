@@ -70,12 +70,12 @@ impl RunTerminationReason {
 #[must_use]
 pub fn classify_turn_termination(
     status: crate::core::events::TurnOutcomeStatus,
-    error_category: Option<crate::error_taxonomy::ErrorCategory>,
+    error_category: Option<codewhale_error_taxonomy::ErrorCategory>,
     tool_error_seen: bool,
     approval_required: bool,
 ) -> RunTerminationReason {
     use crate::core::events::TurnOutcomeStatus;
-    use crate::error_taxonomy::ErrorCategory;
+    use codewhale_error_taxonomy::ErrorCategory;
 
     match status {
         TurnOutcomeStatus::Completed => RunTerminationReason::Resolved,
@@ -202,7 +202,7 @@ mod tests {
     #[test]
     fn failed_turns_keep_model_tool_and_infrastructure_distinct() {
         use crate::core::events::TurnOutcomeStatus;
-        use crate::error_taxonomy::ErrorCategory;
+        use codewhale_error_taxonomy::ErrorCategory;
 
         assert_eq!(
             classify_turn_termination(

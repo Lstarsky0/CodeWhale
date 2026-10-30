@@ -6,6 +6,7 @@
 
 use crate::agent_roster::format_tokens;
 use crate::tui::app::{App, SidebarRowAction};
+use codewhale_localization::{MessageId, tr};
 
 use super::model::{RailPanel, WorkRow, WorkRowId, WorkTone};
 
@@ -57,7 +58,14 @@ pub(super) fn files_rows(app: &mut App) -> Vec<WorkRow> {
     let mut out = Vec::new();
     let edited = edited_files(&activity);
     if !edited.is_empty() {
-        out.push(heading("files:edited", format!("Edited {}", edited.len())));
+        out.push(heading(
+            "files:edited",
+            format!(
+                "{} {}",
+                tr(activity.locale, MessageId::FileActivityEditedLabel),
+                edited.len()
+            ),
+        ));
         for (path, receipt) in &edited {
             let Some(receipt) = receipt else {
                 out.push(WorkRow {
@@ -68,7 +76,8 @@ pub(super) fn files_rows(app: &mut App) -> Vec<WorkRow> {
                 continue;
             };
             let across = if receipt.files.len() > 1 {
-                format!(" across {} files", receipt.files.len())
+                tr(activity.locale, MessageId::FileMutationAcrossFiles)
+                    .replace("{count}", &receipt.files.len().to_string())
             } else {
                 String::new()
             };
@@ -80,10 +89,14 @@ pub(super) fn files_rows(app: &mut App) -> Vec<WorkRow> {
                 tone: WorkTone::Success,
                 selectable: true,
                 primary_action: Some(SidebarRowAction::InspectWork {
-                    title: format!("File · {path}"),
+                    title: format!(
+                        "{} · {path}",
+                        tr(activity.locale, MessageId::ApprovalLabelFile)
+                    ),
                     body: super::model::settled_mutation_body(
                         std::slice::from_ref(*receipt),
                         activity.inline_diff_mode,
+                        activity.locale,
                     ),
                     stop_action: None,
                 }),
@@ -94,7 +107,11 @@ pub(super) fn files_rows(app: &mut App) -> Vec<WorkRow> {
     if !activity.read.is_empty() {
         out.push(heading(
             "files:read",
-            format!("Read {}", activity.read.len()),
+            format!(
+                "{} {}",
+                tr(activity.locale, MessageId::FileActivityReadLabel),
+                activity.read.len()
+            ),
         ));
         for path in &activity.read {
             out.push(WorkRow {
@@ -154,7 +171,7 @@ fn heading(id: &str, label: String) -> WorkRow {
 
 /// The context view: the budget, not a fact list. Used/limit and the
 /// compaction threshold from the same snapshot the footer meter reads, a
-/// gauge, then the breakdown the accounting can already give per frame —
+/// gauge, the automatic threshold, then the breakdown available per frame —
 /// system prompt, tool schemas, conversation, tool output, files read — and
 /// the one action that exists as a command, `/compact`.
 pub(super) fn context_rows(app: &mut App) -> Vec<WorkRow> {
@@ -177,13 +194,13 @@ pub(super) fn context_rows(app: &mut App) -> Vec<WorkRow> {
         id: WorkRowId("context:budget".to_string()),
         mark: "◔",
         label: format!(
-            "{} of {} · {}% · compacts at {threshold}%",
+            "{} of {} · {}%",
             format_tokens(used),
             format_tokens(u64::from(max)),
             percent.round() as u8
         ),
         detail: "/context for the full source map".to_string(),
-        tone: if percent >= f64::from(threshold) {
+        tone: if app.auto_compact && used >= app.compact_threshold as u64 {
             WorkTone::Attention
         } else {
             WorkTone::Live
@@ -193,6 +210,31 @@ pub(super) fn context_rows(app: &mut App) -> Vec<WorkRow> {
         agent: None,
     }];
     out.push(fact("gauge", gauge(percent, 24), ""));
+    let mut automatic = if app.auto_compact && max > 0 {
+        let effective = (app.compact_threshold as f64 * 100.0 / f64::from(max))
+            .clamp(0.0, 100.0)
+            .round() as u8;
+        fact(
+            "automatic",
+            format!("auto ~{effective}% · target {threshold}%"),
+            "Current route; live token counts and other routes may differ",
+        )
+    } else if app.auto_compact {
+        fact(
+            "automatic",
+            format!("auto threshold unavailable · target {threshold}%"),
+            "The current route's context window is unavailable",
+        )
+    } else {
+        fact(
+            "automatic",
+            "automatic compaction off".to_string(),
+            "Use /compact to make room manually",
+        )
+    };
+    automatic.selectable = true;
+    automatic.primary_action = Some(SidebarRowAction::Command("/context".to_string()));
+    out.push(automatic);
 
     // Breakdown from what is already counted per frame: the system prompt
     // estimate the footer meter uses and the per-message token cache. No

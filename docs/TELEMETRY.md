@@ -58,6 +58,7 @@ completely; only one of them erases anything.
 ```sh
 codewhale config set telemetry false     # opt out: stops collection and erases state
 CODEWHALE_TELEMETRY=0 codewhale          # kill switch: stops collection, erases nothing
+DO_NOT_TRACK=1 codewhale                 # the same kill switch, by the common convention
 codewhale --telemetry false              # the same kill switch, for one command
 ```
 
@@ -161,14 +162,17 @@ most once per flush point and never grows a queue.
 
 ## Event schema
 
-`SCHEMA_VERSION = 3`. `notice_version = 5` identifies the disclosed default-on
-policy; it does not assert human consent or that a notice was seen. The closed
+`SCHEMA_VERSION = 4`. `notice_version = 6` identifies the disclosed default-on
+policy; it does not assert human consent or that a notice was seen. Schema 4
+adds the `model_usage` and `tool_usage` events and the `ci` session source.
+Schema-3 batches with `notice_version = 5` are still accepted without them, which
+is what the web and desktop control-plane relay sends. The closed
 v2 contract still accepts only `consent_version = 4`, retaining its original
 explicit opt-in meaning. Fields cannot be mixed between versions. The unchanged
 v1 contract remains first-party only and **never sent to PostHog**; it refuses
 new fields, surfaces, and `product_usage` events.
 
- Every field is an integer, a boolean, or a **closed enum string**, except exactly three bounded strings: `app_version`, `git_sha`, `panic_site`. Each of the three has a written rule and a test pinning the rule. **There is no free-form string type in this schema, and no open-keyed map.** That is the property that makes red line 3 enforceable rather than aspirational.
+ Every field is an integer, a boolean, or a **closed enum string**, except exactly four bounded strings: `app_version`, `git_sha`, `panic_site`, and `model_usage.model`, which is closed against the bundled model catalog. Each of the four has a written rule and a check on the drain path. **There is no free-form string type in this schema, and no open-keyed map.** That is the property that makes red line 3 enforceable rather than aspirational.
 
 ### Batch envelope — sent on every POST
 
@@ -283,7 +287,10 @@ Emitted once when `state.json`'s `last_version` differs from `app_version`.
 { "event": "session_start", "source": "interactive" }
 ```
 
-`source` is `SessionSource` (`crates/state/src/lib.rs:34-41`) stringified by `session_source_to_str` (`:1909-1917`): `interactive | resume | fork | api | unknown`.
+`source` is `SessionSource` (`crates/state/src/lib.rs:34-41`) stringified by `session_source_to_str` (`:1909-1917`): `interactive | resume | fork | api | unknown | ci`.
+`ci` replaces the others whenever `CI` or `GITHUB_ACTIONS` is set to a true
+value, including the Codewhale GitHub Action, so automated runs are never
+counted as people. Only that boolean environment fact is read.
 
 ### Event: `session_end`
 
@@ -418,6 +425,65 @@ are aggregate latency values; `probes` and `probes_failed` count health probes.
 }
 ```
 
+### Event: `model_usage`
+
+One event per provider and model a session used, sent with `session_end`.
+It is how Codewhale decides which providers and models to support first, which
+to make defaults, and whether prompt caching is working.
+
+```jsonc
+{
+  "event": "model_usage",
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "counters": {
+    "turns_ok": 12,
+    "turns_failed": 1,
+    "turns_interrupted": 0,
+    "input_tokens": 418230,
+    "output_tokens": 9120,
+    "cache_read_tokens": 380001,
+    "cache_write_tokens": 0
+  },
+  "turn_wall": { "lt_5s": 3, "5_30s": 8, "30_120s": 2, "gte_120s": 0 }
+}
+```
+
+`provider` follows the `providers` rule of `session_end`. `model` is the
+lowercased model id **only when it appears in the public model catalog bundled
+with Codewhale**; any other name (custom, local, fine-tuned or private models,
+and `[providers.<name>]` routes) is sent as `other`. Token counts are the
+provider's own usage numbers for the main conversation; `input_tokens` includes
+cache reads. Turn counts are by outcome, and `turn_wall` buckets each turn's
+wall time as `session_end` does. A session reports at most 16 provider and model
+pairs; later pairs are counted under `other`. No per-turn timeline is sent.
+
+### Event: `tool_usage`
+
+One event per tool a session called, sent with `session_end`. It is how
+Codewhale decides which built-in tools to invest in, fix or retire.
+
+```jsonc
+{ "event": "tool_usage", "tool": "read_file", "calls": 41, "errors": 2 }
+```
+
+`tool` is a first-party tool name from this closed list, `mcp` for any MCP
+server tool, or `other` for any other tool (plugins and configured tools):
+`agent`, `apply_patch`, `authenticate`, `bash`, `code_execution`, `create_goal`,
+`diagnostics`, `edit`, `edit_file`, `exec_shell`, `execute_tools`, `fetch_url`,
+`file_search`, `fim_edit`, `finance`, `get_goal`, `git_blame`, `git_commit_plan`,
+`git_diff`, `git_fetch`, `git_log`, `git_merge_tree`, `git_show`, `git_status`,
+`grep_files`, `handle_read`, `image_ocr`, `js_execution`, `list_dir`,
+`load_skill`, `lsp`, `memory_get`, `memory_search`, `note`, `notify`,
+`pandoc_convert`, `project_map`, `read`, `read_file`, `read_media`, `remember`,
+`request_plugin_install`, `request_user_input`, `retrieve_tool_result`,
+`revert_turn`, `review`, `rlm`, `run_tests`, `run_verifiers`, `session_get`,
+`session_search`, `start_mcp_server`, `task_create`, `task_shell_wait`,
+`todo_write`, `tool_search`, `update_goal`, `update_plan`, `validate_data`,
+`verify`, `wait_for_dev_server`, `web_search`, `workflow`, `write`, `write_file`.
+`errors` counts calls that returned an error, never the error text or the
+arguments.
+
 ### What the endpoint does — a shipping gate, not a footnote
 
 This section was a gate on configuring any non-loopback endpoint. The endpoint is now configured by default, so this is a description of a service that exists rather than a promise about one that might.
@@ -438,7 +504,7 @@ Batches are **IP-stripped at ingest**. No IP is stored, logged, or joined to `in
 **Retention: three months.** That is Cloudflare's fixed window for Analytics Engine and it is not configurable, so it is a ceiling rather than a policy — there is no setting that could make it longer.
 
 **Optional PostHog processor.** After first-party storage, an explicitly
-configured ingest may forward validated schema-v3 / notice-v5 batches and
+configured ingest may forward validated schema-v4 / notice-v6 and schema-v3 / notice-v5 batches and
 legacy schema-v2 / consent-v4 batches to
 PostHog's [batch capture API](https://posthog.com/docs/api/capture). The only
 permitted origins are `https://us.i.posthog.com` and `https://eu.i.posthog.com`.
@@ -446,8 +512,9 @@ Legacy v1 batches cannot reach that path. PostHog receives the same bounded
 envelope and event fields, the batch timestamp as its event timestamp, and
 `codewhale:<install_id>` as its anonymous `distinct_id`. Events are named
 `codewhale_install_or_upgrade`, `codewhale_session_start`,
-`codewhale_session_end`, `codewhale_panic`, `codewhale_product_usage`, or
-`codewhale_operations_summary`.
+`codewhale_session_end`, `codewhale_panic`, `codewhale_product_usage`,
+`codewhale_operations_summary`, `codewhale_model_usage`, or
+`codewhale_tool_usage`.
 `$process_person_profile = false`, `$geoip_disable = true`, and `$ip = null`
 are fixed transport controls. No request metadata, profile identification,
 SDK, autocapture, session replay, advertising, or work content is forwarded.
@@ -492,7 +559,7 @@ It prints the daily series, a 7-day trend over complete UTC days, the freshness 
 
 ### What is never collected — the public red-line list
 
-Prompts; completions; tool arguments; diffs; patches; file contents; filenames; absolute or relative paths; git remotes; repo names; branch names; workspace commit SHAs; memory entries; chat history; API keys, tokens, cookies, or `Authorization` headers (including any boolean asserting a key exists); model ids of any kind; custom provider table names; MCP server names, commands, or URLs; approval rule text; error message bodies; panic message text; per-event timestamps; keystrokes; clipboard; screenshots; microphone; camera; location; and any third-party ad or analytics SDK — there are none in the runtime binary and none may be added.
+Prompts; completions; tool arguments; diffs; patches; file contents; filenames; absolute or relative paths; git remotes; repo names; branch names; workspace commit SHAs; memory entries; chat history; API keys, tokens, cookies, or `Authorization` headers (including any boolean asserting a key exists); model ids that are not in Codewhale's bundled public model catalog (custom, local, fine-tuned or private model names are sent only as `other`); custom provider table names; MCP server names, commands, URLs, or tool names; plugin and configured tool names; approval rule text; error message bodies; panic message text; per-event timestamps; keystrokes; clipboard; screenshots; microphone; camera; location; and any third-party ad or analytics SDK — there are none in the runtime binary and none may be added.
 
 Two named traps for the implementer. `crates/state/src/lib.rs` persists `git_sha`, `git_branch`, `git_origin_url`, `cwd`, and `path` on the threads table (`:93, :399, :653`): a payload builder that accepts a `Thread` or `ThreadMeta` and derives `Serialize` breaches the contract in one line. **Never derive `Serialize` over an existing state type** — build every telemetry struct from scratch with explicit fields. And `crates/core/src/lib.rs:1389-1398` is the one place in the tree where the word `telemetry` sits inside a JSON object next to `prompt`, `base_url`, and `has_api_key`. It is the object someone will copy. Do not.
 

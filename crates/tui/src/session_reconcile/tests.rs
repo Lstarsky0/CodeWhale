@@ -1,7 +1,7 @@
 use super::*;
 use crate::runtime_threads::{
-    CreateThreadRequest, RuntimeProcessOwnerLock, RuntimeThreadManager, RuntimeThreadManagerConfig,
-    RuntimeThreadStore,
+    RuntimeProcessOwnerLock, RuntimeThreadStore, manager::CreateThreadRequest,
+    manager::RuntimeThreadManager, manager::RuntimeThreadManagerConfig,
 };
 use crate::session_manager::create_saved_session_with_id_and_mode;
 use crate::test_support::{EnvVarGuard, lock_test_env};

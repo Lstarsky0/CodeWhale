@@ -38,11 +38,12 @@ export interface RepoFacts {
 }
 
 export const FACTS: RepoFacts = {
-  "generatedAt": "2026-10-27T22:46:48.361Z",
+  "generatedAt": "2026-10-29T15:50:09.994Z",
   "sourceRevision": null,
   "sourceCommittedAt": null,
   "version": "0.10.2",
   "crates": [
+    "account-cli",
     "agent",
     "agent-contract",
     "app-server",
@@ -54,6 +55,7 @@ export const FACTS: RepoFacts = {
     "config",
     "core",
     "dependencies",
+    "error-taxonomy",
     "execpolicy",
     "hooks",
     "lane",
@@ -66,6 +68,7 @@ export const FACTS: RepoFacts = {
     "notify",
     "palette",
     "paths",
+    "plugins",
     "protocol",
     "release",
     "repl",
@@ -74,11 +77,13 @@ export const FACTS: RepoFacts = {
     "sanitize",
     "secrets",
     "skill-install",
+    "skills",
     "snapshot",
     "state",
     "telemetry",
     "tools",
     "tui",
+    "tui-kit",
     "util",
     "workflow",
     "workflow-js"

@@ -567,8 +567,8 @@ async fn headless_turn_fails_with_real_error_after_network_drop_budget_exhausted
         "the underlying provider error must stay attached: {error}"
     );
     assert_eq!(
-        crate::error_taxonomy::classify_error_message(error),
-        crate::error_taxonomy::ErrorCategory::Network,
+        codewhale_error_taxonomy::classify_error_message(error),
+        codewhale_error_taxonomy::ErrorCategory::Network,
         "the terminal failure must classify as retryable infra (network)"
     );
     let error_events = events
@@ -604,8 +604,8 @@ async fn headless_turn_fails_with_real_error_after_network_drop_budget_exhausted
 /// string.
 #[test]
 fn tool_failure_audit_payload_carries_category_and_severity() {
-    use crate::error_taxonomy::ErrorEnvelope;
     use crate::tools::spec::ToolError;
+    use codewhale_error_taxonomy::ErrorEnvelope;
 
     let error = ToolError::Timeout { seconds: 30 };
     let envelope: ErrorEnvelope = error.clone().into();

@@ -305,7 +305,7 @@ pub struct QueuedSessionMessage {
     #[serde(default)]
     pub skill_instruction: Option<String>,
     #[serde(default)]
-    pub skill_provenance: Option<crate::skills::SkillProvenance>,
+    pub skill_provenance: Option<codewhale_skills::SkillProvenance>,
 }
 
 /// Persisted queue state for recovery after restart/crash.
@@ -586,7 +586,7 @@ pub fn current_session_boot_id() -> &'static str {
 /// Which archive states a session listing includes.
 ///
 /// Deliberately the same three-way shape as
-/// [`crate::runtime_threads::ThreadListFilter`] so `/v1/sessions` and
+/// [`crate::runtime_threads::manager::ThreadListFilter`] so `/v1/sessions` and
 /// `/v1/threads` answer the same `include_archived` / `archived_only` query
 /// pair with the same semantics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1617,7 +1617,6 @@ pub enum CheckpointSource {
 #[derive(Debug, Clone)]
 pub struct CheckpointRef {
     pub source: CheckpointSource,
-    #[cfg_attr(not(test), expect(dead_code))]
     pub path: PathBuf,
     pub modified: std::time::SystemTime,
 }
@@ -1944,12 +1943,6 @@ impl SessionManager {
     /// must tell a malformed id apart (a 400, not a 409) validate first or
     /// reserve the lease, which reports `InvalidInput`.
     ///
-    /// Known limitation: startup's stale-checkpoint pruning
-    /// (`load_recent_checkpoints` in `lib.rs`) still clears a checkpoint
-    /// older than a day after this released probe. A session that attached
-    /// in that gap and is mid-turn refreshes its checkpoint, so only a
-    /// day-old checkpoint of a session attached in the same instant is
-    /// exposed.
     #[must_use]
     pub fn is_session_live_anywhere(&self, session_id: &str) -> bool {
         if is_live_session(session_id) {
@@ -2792,6 +2785,7 @@ impl SessionManager {
     ///
     /// Checkpoints are keyed per session (`checkpoints/<session_id>.json`) so
     /// concurrent sessions never overwrite each other's crash-recovery state.
+    #[cfg(test)]
     pub fn save_checkpoint(&self, session: &SavedSession) -> std::io::Result<PathBuf> {
         self.save_checkpoint_owned(session.clone())
     }
@@ -3158,10 +3152,14 @@ impl SessionManager {
     }
 
     fn read_checkpoint_file(&self, path: &Path) -> std::io::Result<Option<SavedSession>> {
-        if !path.exists() {
-            return Ok(None);
-        }
-        let content = fs::read_to_string(path)?;
+        use std::io::Read as _;
+        let mut file = match open_private_read_file(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let mut content = String::new();
+        file.read_to_string(&mut content)?;
         let mut session: SavedSession = serde_json::from_str(&content)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         if session.schema_version > CURRENT_SESSION_SCHEMA_VERSION {
@@ -3172,6 +3170,9 @@ impl SessionManager {
                     session.schema_version, CURRENT_SESSION_SCHEMA_VERSION
                 ),
             ));
+        }
+        if let Some(journal) = &session.journal {
+            validate_saved_journal(journal)?;
         }
         // A crash after retirement but before checkpoint removal must not
         // offer the deleted origin for recovery. Optional accounting damage
@@ -3194,7 +3195,71 @@ impl SessionManager {
         session_id: &str,
     ) -> std::io::Result<Option<SavedSession>> {
         let path = self.validated_checkpoint_path(session_id)?;
-        self.read_checkpoint_file(&path)
+        let session = self.read_checkpoint_file(&path)?;
+        if session
+            .as_ref()
+            .is_some_and(|session| session.metadata.id != session_id)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "checkpoint identity mismatch",
+            ));
+        }
+        Ok(session)
+    }
+
+    pub(crate) fn load_recovery_checkpoint(
+        &self,
+        session_id: &str,
+    ) -> std::io::Result<Option<SavedSession>> {
+        Ok(self
+            .recovery_checkpoint_with_source(session_id, true)?
+            .map(|(session, _)| session))
+    }
+
+    fn recovery_checkpoint_with_source(
+        &self,
+        session_id: &str,
+        allow_damaged_current: bool,
+    ) -> std::io::Result<Option<(SavedSession, bool)>> {
+        self.validated_checkpoint_path(session_id)?;
+        let current = self.load_session_checkpoint(session_id);
+        let legacy = match self.legacy_checkpoint_origin() {
+            Ok(Some(origin)) if origin == session_id => self
+                .load_legacy_checkpoint()
+                .unwrap_or_else(|error| {
+                    tracing::warn!(%error, "legacy checkpoint could not be read; preserving it");
+                    None
+                })
+                .filter(|session| session.metadata.id == session_id),
+            Ok(_) => None,
+            Err(error) => {
+                tracing::warn!(%error, "legacy checkpoint could not be read; preserving it");
+                None
+            }
+        };
+        let current = match current {
+            Ok(current) => current,
+            Err(_) if allow_damaged_current && legacy.is_some() => None,
+            Err(error) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!(
+                        "checkpoint {} is unreadable and has been preserved. Review the available conversation preview and preserve this recovery file before resuming: {error}",
+                        self.validated_checkpoint_path(session_id)?.display()
+                    ),
+                ));
+            }
+        };
+        Ok(match (current, legacy) {
+            (Some(current), Some(legacy))
+                if legacy.metadata.updated_at > current.metadata.updated_at =>
+            {
+                Some((legacy, true))
+            }
+            (Some(current), _) => Some((current, false)),
+            (None, legacy) => legacy.map(|session| (session, true)),
+        })
     }
 
     /// Load the legacy single-slot checkpoint (`checkpoints/latest.json`) if
@@ -3205,41 +3270,18 @@ impl SessionManager {
     }
 
     pub(crate) fn legacy_checkpoint_origin(&self) -> io::Result<Option<String>> {
-        use std::io::Read as _;
-
         let path = self.checkpoints_dir().join(LEGACY_CHECKPOINT_FILE);
-        let file = match open_private_read_file(&path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error),
-        };
-        // Lifecycle cleanup only needs the leading metadata. Never follow
-        // links or read an unbounded legacy transcript to identify its owner.
-        let mut prefix = Vec::new();
-        file.take(1024 * 1024).read_to_end(&mut prefix)?;
-        extract_top_level_metadata(&prefix)
-            .map(|metadata| Some(metadata.id))
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "unknown legacy checkpoint origin",
-                )
-            })
+        match Self::load_checkpoint_metadata(&path) {
+            Ok(metadata) => Ok(Some(metadata.id)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     /// Clear one session's crash-recovery checkpoint. Scoped: this can never
     /// remove another session's checkpoint file or the legacy slot.
     pub fn clear_session_checkpoint(&self, session_id: &str) -> std::io::Result<()> {
         let path = self.validated_checkpoint_path(session_id)?;
-        if path.exists() {
-            fs::remove_file(path)?;
-        }
-        Ok(())
-    }
-
-    /// Remove the legacy single-slot checkpoint file.
-    pub fn clear_legacy_checkpoint(&self) -> std::io::Result<()> {
-        let path = self.checkpoints_dir().join(LEGACY_CHECKPOINT_FILE);
         if path.exists() {
             fs::remove_file(path)?;
         }
@@ -3331,30 +3373,20 @@ impl SessionManager {
             let Ok(path) = self.validated_session_path(&id) else {
                 continue;
             };
-            if let Ok(meta) = Self::load_session_metadata(&path)
+            let metadata = match Self::load_session_metadata(&path) {
+                Ok(metadata) => Ok(metadata),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => self
+                    .load_recovery_checkpoint(&id)
+                    .and_then(|checkpoint| checkpoint.map(|session| session.metadata).ok_or(error)),
+                Err(error) => Err(error),
+            };
+            if let Ok(meta) = metadata
                 && workspace_scope_matches(&meta.workspace, workspace)
             {
                 return Some(meta);
             }
         }
         None
-    }
-
-    /// Migrate a session recovered from the legacy single-slot checkpoint to
-    /// a per-session checkpoint file. Never overwrites an existing
-    /// per-session file and leaves the legacy file in place (older binaries
-    /// still read it; the legacy writer is already gone). Returns whether a
-    /// file was written.
-    pub fn write_session_checkpoint_if_absent(
-        &self,
-        session: &SavedSession,
-    ) -> std::io::Result<bool> {
-        let path = self.validated_checkpoint_path(&session.metadata.id)?;
-        if path.exists() {
-            return Ok(false);
-        }
-        self.save_checkpoint(session)?;
-        Ok(true)
     }
 
     /// Acquire before loading or editing a queue, including on in-process
@@ -3699,9 +3731,26 @@ impl SessionManager {
     /// in-flight turn, and the next autosave then cleared the only record of
     /// it while the turn's file edits stayed on disk.
     pub fn attach_session(&self, id: &str) -> std::io::Result<(SessionRecovery, SessionLease)> {
+        self.attach_session_in_workspace(id, None)
+    }
+
+    pub(crate) fn attach_session_in_workspace(
+        &self,
+        id: &str,
+        workspace: Option<&Path>,
+    ) -> std::io::Result<(SessionRecovery, SessionLease)> {
         let lease = self.reserve_session_for_attach(id)?;
-        let stale_checkpoint = self.promote_interrupted_checkpoint(id);
-        let recovery = self.resume_session(id)?;
+        let stale_checkpoint = self.promote_interrupted_checkpoint(id, workspace)?;
+        let recovery = self.recover_session_for_resume(id)?;
+        if workspace.is_some_and(|workspace| {
+            !workspace_scope_matches(&recovery.session.metadata.workspace, workspace)
+        }) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "session belongs to another workspace",
+            ));
+        }
+        let recovery = self.persist_resumed_repair(recovery);
         if stale_checkpoint {
             let _ = self.clear_session_checkpoint(id);
         }
@@ -3716,31 +3765,56 @@ impl SessionManager {
     /// replaced is read in full; otherwise the comparison reads its metadata.
     /// Returns true when the checkpoint is stale: it is left for the caller to
     /// clear once the full document has been read.
-    pub(crate) fn promote_interrupted_checkpoint(&self, id: &str) -> bool {
-        let Ok(Some(checkpoint)) = self.load_session_checkpoint(id) else {
-            return false;
+    pub(crate) fn promote_interrupted_checkpoint(
+        &self,
+        id: &str,
+        workspace: Option<&Path>,
+    ) -> io::Result<bool> {
+        let Some((checkpoint, legacy)) = self.recovery_checkpoint_with_source(id, false)? else {
+            return Ok(false);
         };
-        match self.load_session_metadata_by_id(id) {
-            Ok(saved) if saved.updated_at >= checkpoint.metadata.updated_at => return true,
+        if workspace.is_some_and(|workspace| {
+            !workspace_scope_matches(&checkpoint.metadata.workspace, workspace)
+        }) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "checkpoint belongs to another workspace",
+            ));
+        }
+        let saved_metadata = self.load_session_metadata_by_id(id);
+        if let (Some(workspace), Ok(saved)) = (workspace, &saved_metadata)
+            && !workspace_scope_matches(&saved.workspace, workspace)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "saved session belongs to another workspace",
+            ));
+        }
+        match saved_metadata {
+            Ok(saved) if saved.updated_at >= checkpoint.metadata.updated_at => return Ok(!legacy),
             Ok(_) => {
-                if self.load_session_snapshot(id).is_err() {
-                    return false;
-                }
+                self.load_session_snapshot(id)?;
                 let mut promoted = checkpoint;
                 self.merge_persisted_lifecycle(&mut promoted.metadata);
-                if self.save_session(&promoted).is_err() {
-                    return false;
-                }
+                self.save_session(&promoted)?;
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                if self.save_session(&checkpoint).is_err() {
-                    return false;
+                let path = self.validated_session_path(id)?;
+                if !matches!(fs::symlink_metadata(path), Err(error) if error.kind() == io::ErrorKind::NotFound)
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "session destination is not vacant",
+                    ));
                 }
+                self.save_session(&checkpoint)?;
             }
-            Err(_) => return false,
+            Err(error) => return Err(error),
         }
-        let _ = self.clear_session_checkpoint(id);
-        false
+        if !legacy {
+            self.clear_session_checkpoint(id)?;
+        }
+        Ok(false)
     }
 
     /// [`Self::attach_session`] with a partial-ID prefix.
@@ -3748,7 +3822,7 @@ impl SessionManager {
         &self,
         prefix: &str,
     ) -> std::io::Result<(SessionRecovery, SessionLease)> {
-        self.attach_session(&self.resolve_session_id_prefix(prefix)?)
+        self.attach_session(&self.resolve_recoverable_session_id_prefix(prefix)?)
     }
 
     /// [`Self::attach_session`] for a session file `/load` has already read.
@@ -3826,23 +3900,53 @@ impl SessionManager {
 
     /// Resolve a unique ID without applying resume-time repair to its record.
     pub(crate) fn resolve_session_id_prefix(&self, prefix: &str) -> std::io::Result<String> {
-        let sessions = self.list_sessions()?;
+        self.resolve_session_id_prefix_inner(prefix, false)
+    }
 
-        // One session listed more than once (a stray copy of its file under
-        // another name) is still one session, not an ambiguous prefix.
-        let mut matches: Vec<_> = sessions
+    pub(crate) fn resolve_recoverable_session_id_prefix(
+        &self,
+        prefix: &str,
+    ) -> std::io::Result<String> {
+        self.resolve_session_id_prefix_inner(prefix, true)
+    }
+
+    fn resolve_session_id_prefix_inner(
+        &self,
+        prefix: &str,
+        include_recovery: bool,
+    ) -> std::io::Result<String> {
+        let mut matches: Vec<_> = self
+            .list_sessions()?
             .into_iter()
-            .filter(|s| s.id.starts_with(prefix))
+            .map(|session| session.id)
+            .filter(|id| id.starts_with(prefix))
             .collect();
-        matches.sort_by(|a, b| a.id.cmp(&b.id));
-        matches.dedup_by(|a, b| a.id == b.id);
+        for checkpoint in if include_recovery {
+            self.list_checkpoints()?
+        } else {
+            Vec::new()
+        } {
+            let id = match &checkpoint.source {
+                CheckpointSource::Session(id) => Some(id.clone()),
+                CheckpointSource::Legacy => self
+                    .checkpoint_metadata(&checkpoint)
+                    .ok()
+                    .flatten()
+                    .map(|metadata| metadata.id),
+            };
+            if let Some(id) = id.filter(|id| id.starts_with(prefix)) {
+                matches.push(id);
+            }
+        }
+        matches.sort();
+        matches.dedup();
 
         match matches.len() {
             0 => Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!("No session found with prefix: {prefix}"),
             )),
-            1 => Ok(matches[0].id.clone()),
+            1 => Ok(matches[0].clone()),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!(
@@ -3864,6 +3968,128 @@ impl SessionManager {
                 metadata
             })
             .collect())
+    }
+
+    pub(crate) fn list_sessions_with_recovery(
+        &self,
+    ) -> std::io::Result<(
+        Vec<SessionMetadata>,
+        std::collections::HashSet<String>,
+        Option<String>,
+    )> {
+        let mut sessions = self.list_sessions()?;
+        let mut positions: std::collections::HashMap<String, usize> = sessions
+            .iter()
+            .enumerate()
+            .map(|(index, session)| (session.id.clone(), index))
+            .collect();
+        let saved: std::collections::HashSet<String> = positions.keys().cloned().collect();
+        let mut recovery = std::collections::HashSet::new();
+        let (checkpoints, mut warning) = match self.list_checkpoints() {
+            Ok(checkpoints) => (checkpoints, None),
+            Err(error) => (Vec::new(), Some(error.to_string())),
+        };
+        for checkpoint in checkpoints {
+            if let CheckpointSource::Session(id) = &checkpoint.source
+                && self.is_session_live_anywhere(id)
+            {
+                continue;
+            }
+            let metadata = match self.checkpoint_metadata(&checkpoint) {
+                Ok(Some(metadata)) => metadata,
+                Ok(None) => continue,
+                Err(error) => {
+                    warning.get_or_insert_with(|| error.to_string());
+                    continue;
+                }
+            };
+            let id = &metadata.id;
+            if self.is_session_live_anywhere(id) {
+                continue;
+            }
+            if let Some(index) = positions.get(id).copied() {
+                let existing = &mut sessions[index];
+                if saved.contains(id) && metadata.updated_at > existing.updated_at {
+                    if !workspace_scope_matches(&metadata.workspace, &existing.workspace) {
+                        warning.get_or_insert_with(|| "recovery checkpoint and saved session belong to different workspaces".to_string());
+                        continue;
+                    }
+                    recovery.insert(id.clone());
+                    let mut metadata = metadata;
+                    metadata.title = existing.title.clone();
+                    metadata.archived = existing.archived;
+                    metadata.created_at = existing.created_at;
+                    metadata.parent_session_id = existing.parent_session_id.clone();
+                    metadata.forked_from_message_count = existing.forked_from_message_count;
+                    metadata.runtime_store = existing.runtime_store.clone();
+                    *existing = metadata;
+                } else if recovery.contains(id)
+                    && !saved.contains(id)
+                    && metadata.updated_at > existing.updated_at
+                {
+                    *existing = metadata;
+                }
+                continue;
+            }
+            let Ok(path) = self.validated_session_path(id) else {
+                continue;
+            };
+            if !matches!(fs::symlink_metadata(path), Err(error) if error.kind() == io::ErrorKind::NotFound)
+            {
+                continue;
+            }
+            recovery.insert(id.clone());
+            positions.insert(id.clone(), sessions.len());
+            sessions.push(metadata);
+        }
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at));
+        Ok((sessions, recovery, warning))
+    }
+
+    pub(crate) fn checkpoint_metadata(
+        &self,
+        checkpoint: &CheckpointRef,
+    ) -> io::Result<Option<SessionMetadata>> {
+        let metadata = Self::load_checkpoint_metadata(&checkpoint.path)?;
+        let id = &metadata.id;
+        self.validated_checkpoint_path(id)?;
+        if matches!(&checkpoint.source, CheckpointSource::Session(name) if name != id) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "checkpoint identity mismatch",
+            ));
+        }
+        if self.with_session_read_lock(id, Self::late_usage_is_deleted)? {
+            return Ok(None);
+        }
+        Ok(Some(metadata))
+    }
+
+    fn load_checkpoint_metadata(path: &Path) -> io::Result<SessionMetadata> {
+        use std::io::Read as _;
+        const CHUNK: usize = 64 * 1024;
+        const LIMIT: usize = 16 * 1024 * 1024;
+        let mut file = open_private_read_file(path)?;
+        let mut bytes = Vec::with_capacity(CHUNK);
+        let mut target = CHUNK;
+        while bytes.len() < LIMIT {
+            let count = file
+                .by_ref()
+                .take((target - bytes.len()) as u64)
+                .read_to_end(&mut bytes)?;
+            if count == 0 {
+                break;
+            }
+            if let Some(mut metadata) = extract_top_level_metadata(&bytes) {
+                apply_legacy_title_recovery(&mut metadata, &bytes);
+                return Ok(metadata);
+            }
+            target = (target * 2).min(LIMIT);
+        }
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "checkpoint metadata could not be read within the limit",
+        ))
     }
 
     /// [`Self::list_sessions`] without the late-usage cost overlay, keeping
@@ -4111,15 +4337,30 @@ impl SessionManager {
         // Older ordinary snapshots may use a name reserved by the checkpoint
         // directory. Such a name must never address its shared legacy files.
         let checkpoint = self.validated_checkpoint_path(id).ok();
-        let legacy_checkpoint = self.checkpoints_dir().join(LEGACY_CHECKPOINT_FILE);
         let (late_path, lock_path) = self.ensure_late_usage_paths(id)?;
         let lock_file = open_private_lock_file(&lock_path)?;
         let mut lock = fd_lock::RwLock::new(lock_file);
         let _guard = lock.write()?;
         let already_deleted = Self::late_usage_is_deleted(&late_path)?;
         let legacy_origin = self.legacy_checkpoint_origin();
+        if matches!(removal, SessionRemoval::Explicit)
+            && let Err(error) = &legacy_origin
+        {
+            return Err(io::Error::new(
+                error.kind(),
+                format!(
+                    "cannot verify the shared legacy checkpoint before deleting this session: {error}"
+                ),
+            ));
+        }
         let owns_legacy_checkpoint =
             matches!(&legacy_origin, Ok(Some(origin)) if origin == id.trim());
+        if matches!(removal, SessionRemoval::Explicit) && owns_legacy_checkpoint && !already_deleted
+        {
+            return Err(io::Error::other(
+                "this session has a shared legacy checkpoint; remove that checkpoint separately before deleting the session",
+            ));
+        }
         let has_recovery = match checkpoint.as_ref() {
             Some(path) => path.try_exists()?,
             None => false,
@@ -4185,13 +4426,6 @@ impl SessionManager {
         }
         if let Some(checkpoint) = checkpoint {
             match fs::remove_file(checkpoint) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
-            }
-        }
-        if owns_legacy_checkpoint {
-            match fs::remove_file(&legacy_checkpoint) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error),
@@ -5236,21 +5470,26 @@ pub(crate) fn extract_title(raw: &str) -> &str {
 /// Strip common inline thinking/reasoning XML sections from saved assistant
 /// text before it is shown in session previews.
 pub(crate) fn strip_thinking_tags(text: &str) -> String {
-    if !text.contains("<think") && !text.contains("<thinking") && !text.contains("<reasoning") {
-        return text.to_string();
-    }
-
-    let tags = ["think", "thinking", "reasoning"];
+    let tags = ["think", "thinking", "reasoning", "analysis"];
     let mut result = text.to_string();
     for tag in tags {
         let open = format!("<{tag}>");
         let close = format!("</{tag}>");
-        while let Some(start) = result.find(&open) {
-            let Some(end) = result[start..].find(&close) else {
-                break;
-            };
-            let end_abs = start + end + close.len();
-            result.replace_range(start..end_abs, "");
+        loop {
+            let lower = result.to_ascii_lowercase();
+            match (lower.find(&open), lower.find(&close)) {
+                (Some(start), Some(end)) if start < end => {
+                    result.replace_range(start..end + close.len(), "");
+                }
+                (_, Some(end)) => {
+                    result.replace_range(..end + close.len(), "");
+                }
+                (Some(start), None) => {
+                    result.truncate(start);
+                    break;
+                }
+                (None, None) => break,
+            }
         }
     }
     result

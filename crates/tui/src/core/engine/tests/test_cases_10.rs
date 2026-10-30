@@ -749,7 +749,7 @@ fn representative_prompt(
         PromptSessionContext {
             user_memory_block,
             goal_objective,
-            skills_discovery_mode: crate::skills::SkillDiscoveryMode::CodeWhaleOnly,
+            skills_config: std::sync::Arc::new(codewhale_runtime::config::SkillsConfig { scan_codewhale_only: Some(true), ..Default::default() }),
             mode: AppMode::Agent,
             ..PromptSessionContext::default()
         },
@@ -1046,8 +1046,8 @@ fn print_representative_runtime_context_metrics() {
 }
 
 fn measure_unchanged_prompt_skill_discovery() -> (
-    crate::skills::SkillDiscoveryMetrics,
-    crate::skills::SkillDiscoveryMetrics,
+    codewhale_skills::SkillDiscoveryMetrics,
+    codewhale_skills::SkillDiscoveryMetrics,
     bool,
 ) {
     let _env_lock = lock_test_env();
@@ -1070,9 +1070,9 @@ fn measure_unchanged_prompt_skill_discovery() -> (
     let _codewhale_home = EnvVarGuard::set("CODEWHALE_HOME", &codewhale_home);
     crate::test_support::trust_workspace(&workspace);
 
-    crate::skills::clear_skill_discovery_cache();
-    crate::skills::reset_discovery_metrics();
-    let start = crate::skills::discovery_metrics_snapshot();
+    codewhale_skills::clear_skill_discovery_cache();
+    codewhale_skills::reset_discovery_metrics();
+    let start = codewhale_skills::discovery_metrics_snapshot();
     let first_prompt = system_prompt_for_mode_with_context_skills_and_session(
         &workspace,
         None,
@@ -1080,7 +1080,7 @@ fn measure_unchanged_prompt_skill_discovery() -> (
         None,
         PromptSessionContext::default(),
     );
-    let after_first = crate::skills::discovery_metrics_snapshot();
+    let after_first = codewhale_skills::discovery_metrics_snapshot();
     let second_prompt = system_prompt_for_mode_with_context_skills_and_session(
         &workspace,
         None,
@@ -1088,7 +1088,7 @@ fn measure_unchanged_prompt_skill_discovery() -> (
         None,
         PromptSessionContext::default(),
     );
-    let after_second = crate::skills::discovery_metrics_snapshot();
+    let after_second = codewhale_skills::discovery_metrics_snapshot();
 
     let first = after_first.delta_since(start);
     let second = after_second.delta_since(after_first);
@@ -1100,19 +1100,19 @@ fn measure_unchanged_prompt_skill_discovery() -> (
 #[test]
 fn unchanged_prompt_skill_discovery_baseline_caches_the_second_turn() {
     let (first, second, prompts_byte_identical) = measure_unchanged_prompt_skill_discovery();
-    let first_expected = crate::skills::SkillDiscoveryMetrics {
+    let first_expected = codewhale_skills::SkillDiscoveryMetrics {
         root_discovery_calls: 1,
         directories_visited: 1,
         skill_md_read_attempts: 1,
     };
     assert_eq!(first, first_expected);
-    assert_eq!(second, crate::skills::SkillDiscoveryMetrics::default());
+    assert_eq!(second, codewhale_skills::SkillDiscoveryMetrics::default());
     assert!(prompts_byte_identical);
 }
 
 fn skill_discovery_metric_payload(
-    first: crate::skills::SkillDiscoveryMetrics,
-    second: crate::skills::SkillDiscoveryMetrics,
+    first: codewhale_skills::SkillDiscoveryMetrics,
+    second: codewhale_skills::SkillDiscoveryMetrics,
     prompts_byte_identical: bool,
 ) -> serde_json::Value {
     serde_json::json!({
@@ -1132,14 +1132,14 @@ fn skill_discovery_metric_payload(
 
 #[test]
 fn skill_discovery_metric_payload_accepts_cached_second_turn() {
-    let first = crate::skills::SkillDiscoveryMetrics {
+    let first = codewhale_skills::SkillDiscoveryMetrics {
         root_discovery_calls: 1,
         directories_visited: 1,
         skill_md_read_attempts: 1,
     };
     let payload = skill_discovery_metric_payload(
         first,
-        crate::skills::SkillDiscoveryMetrics::default(),
+        codewhale_skills::SkillDiscoveryMetrics::default(),
         true,
     );
     assert_eq!(payload["first_delta"]["root_discovery_calls"], 1);

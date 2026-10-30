@@ -126,6 +126,19 @@ impl SessionEntry {
         char_prefix(&self.id, 8)
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rebranch {
+    pub previous_active: usize,
+    pub shared_prefix: usize,
+}
+
+impl Rebranch {
+    #[must_use]
+    pub fn replaced_from_root(&self) -> bool {
+        self.previous_active > 0 && self.shared_prefix == 0
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct SessionJournal {
     #[serde(default)]
@@ -335,8 +348,8 @@ impl SessionJournal {
     ///
     /// The existing active branch remains as evidence. We reuse its longest
     /// unchanged prefix, then append the repaired suffix as a sibling branch.
-    pub fn rebranch_active_messages(&mut self, messages: &[Message]) {
-        self.rebranch_active_messages_stamped(messages, &[]);
+    pub fn rebranch_active_messages(&mut self, messages: &[Message]) -> Rebranch {
+        self.rebranch_active_messages_stamped(messages, &[])
     }
 
     /// Preserve existing entry identity and timestamps; only append the changed
@@ -345,8 +358,9 @@ impl SessionJournal {
         &mut self,
         messages: &[Message],
         stamps: &[DateTime<Utc>],
-    ) {
+    ) -> Rebranch {
         let active_path = self.root_to_leaf();
+        let previous_active = active_path.len();
         let shared_prefix = active_path
             .iter()
             .zip(messages)
@@ -362,6 +376,10 @@ impl SessionJournal {
                 },
                 stamps.get(index).copied().unwrap_or_else(Utc::now),
             );
+        }
+        Rebranch {
+            previous_active,
+            shared_prefix,
         }
     }
 
@@ -651,11 +669,17 @@ fn tree_label(kind: &SessionEntryKind) -> String {
     match kind {
         SessionEntryKind::Message { message } => {
             let role = &message.role;
+            let meta_index = codewhale_models::turn_classify::turn_metadata_text(message)
+                .filter(|_| message.role == Role::User)
+                .map(|(index, _)| index);
             let snippet: String = message
                 .content
                 .iter()
-                .filter_map(|b| match b {
-                    ContentBlock::Text { text, .. } => Some(text.as_str()),
+                .enumerate()
+                .filter_map(|(index, b)| match b {
+                    ContentBlock::Text { text, .. } if Some(index) != meta_index => {
+                        Some(text.as_str())
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>()

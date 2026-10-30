@@ -398,6 +398,7 @@ fn patch_layer_list_is_bounded_and_contained() {
 
 #[test]
 fn pinned_upstream_multifile_package_parses_without_promoting_rows() {
+    crate::extension_host::install_ports();
     let bundle = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/fixtures/dsh-web-app");
     let upstream: Json =
         serde_json::from_str(&fs::read_to_string(bundle.join("UPSTREAM.json")).unwrap()).unwrap();
@@ -940,6 +941,7 @@ mod shell_hook_import_tests {
     use super::*;
     #[test]
     fn raw_mixed_preset_import_keeps_mcp_and_skills_selected_without_global_duplicates() {
+        crate::extension_host::install_ports();
         let _home = codewhale_runtime::test_support::SealedHome::new();
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
@@ -1004,6 +1006,7 @@ mod shell_hook_import_tests {
 
     #[test]
     fn native_shell_bridge_import_seals_assets_without_executing_commands() {
+        crate::extension_host::install_ports();
         let _home = codewhale_runtime::test_support::SealedHome::new();
         let temp = tempfile::tempdir().unwrap();
         let bundle = temp.path().join("bundle");

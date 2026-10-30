@@ -40,7 +40,6 @@ use crate::model_inventory::ModelInventory;
 use crate::model_routing::{AutoRouteSelection, provider_router_candidates};
 use crate::tui::app::{App, StatusToastLevel};
 use crate::tui::history::HistoryCell;
-use crate::tui::menu_style;
 use crate::tui::views::{
     ActionHint, CommandPaletteAction, ModalKind, ModalView, ViewAction, ViewEvent,
     centered_modal_area, render_modal_footer, render_modal_surface,
@@ -49,6 +48,7 @@ use codewhale_config::ProviderKind;
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 use codewhale_runtime::config::{AutoConfig, AutoRouterConfig, Config};
+use codewhale_tui_kit::menu_style;
 
 /// Pinned OpenRouter id for Jev; `~typesafe/jev-latest` is also accepted.
 pub(crate) const JEV_OPENROUTER_MODEL: &str = "typesafe/jev-1.13";
@@ -390,13 +390,13 @@ async fn save_preset(
                 app.add_message(HistoryCell::Error {
                     message: tr(locale, MessageId::RouterRuntimeNotReloaded)
                         .replace("{error}", &error.to_string()),
-                    severity: crate::error_taxonomy::ErrorSeverity::Warning,
+                    severity: codewhale_error_taxonomy::ErrorSeverity::Warning,
                 });
             }
         }
         Err(error) => app.add_message(HistoryCell::Error {
             message: tr(locale, MessageId::RouterNotSaved).replace("{error}", &error.to_string()),
-            severity: crate::error_taxonomy::ErrorSeverity::Error,
+            severity: codewhale_error_taxonomy::ErrorSeverity::Error,
         }),
     }
 }
@@ -651,9 +651,13 @@ impl ModalView for RouterSetupView {
 
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
         if matches!(self.mode, Mode::Pick)
-            && let Some(motion) = crate::tui::list_nav::motion(&key)
-            && let Some(next) =
-                crate::tui::list_nav::apply(self.cursor, self.rows.len(), self.rows.len(), motion)
+            && let Some(motion) = codewhale_tui_kit::list_nav::motion(&key)
+            && let Some(next) = codewhale_tui_kit::list_nav::apply(
+                self.cursor,
+                self.rows.len(),
+                self.rows.len(),
+                motion,
+            )
         {
             self.cursor = next;
             return ViewAction::None;
@@ -760,7 +764,7 @@ impl ModalView for RouterSetupView {
                     .min(self.rows.len().saturating_sub(visible));
                 if header > 0 {
                     lines.push(Line::from(Span::styled(
-                        crate::tui::ui_text::semantic_truncate(&self.current, width),
+                        codewhale_tui_kit::ui_text::semantic_truncate(&self.current, width),
                         muted,
                     )));
                 }
@@ -776,12 +780,12 @@ impl ModalView for RouterSetupView {
                     } else {
                         muted
                     };
-                    let pointer = crate::tui::glyphs::selection_marker(is_cursor);
+                    let pointer = codewhale_tui_kit::glyphs::selection_marker(is_cursor);
                     let row_y = content
                         .y
                         .saturating_add(u16::try_from(lines.len()).unwrap_or(u16::MAX));
                     lines.push(Line::from(Span::styled(
-                        crate::tui::ui_text::semantic_truncate(
+                        codewhale_tui_kit::ui_text::semantic_truncate(
                             &format!("{pointer} {}", row.label),
                             width,
                         ),
@@ -791,7 +795,7 @@ impl ModalView for RouterSetupView {
                         lines.push(Line::from(Span::styled(
                             format!(
                                 "    {}",
-                                crate::tui::ui_text::semantic_truncate(
+                                codewhale_tui_kit::ui_text::semantic_truncate(
                                     &row.hint,
                                     width.saturating_sub(4)
                                 )

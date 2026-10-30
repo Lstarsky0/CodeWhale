@@ -275,7 +275,7 @@ impl VimMode {}
 pub struct QueuedMessage {
     pub display: String,
     pub skill_instruction: Option<String>,
-    pub skill_provenance: Option<crate::skills::SkillProvenance>,
+    pub skill_provenance: Option<codewhale_skills::SkillProvenance>,
     pub extension_command: Option<(crate::extension_host::command::ExtensionCommandRef, String)>,
     /// True once this turn has been painted into `history` as `HistoryCell::User`.
     /// Queue/offline submit echoes before the model runs; Immediate prepare skips
@@ -409,7 +409,7 @@ impl QueuedMessage {
     #[must_use]
     pub fn with_skill_provenance(
         mut self,
-        provenance: Option<crate::skills::SkillProvenance>,
+        provenance: Option<codewhale_skills::SkillProvenance>,
     ) -> Self {
         self.skill_provenance = provenance;
         self

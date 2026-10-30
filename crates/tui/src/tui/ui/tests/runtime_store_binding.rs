@@ -2,7 +2,7 @@ use super::*;
 use crate::automation_manager::{
     AutomationManager, AutomationStatus, CreateAutomationRequest, run_now_shared,
 };
-use crate::runtime_threads::{RuntimeThreadManager, RuntimeThreadManagerConfig};
+use crate::runtime_threads::{manager::RuntimeThreadManager, manager::RuntimeThreadManagerConfig};
 use crate::task_manager::{TaskManager, TaskManagerConfig};
 
 fn fixture_config() -> Config {

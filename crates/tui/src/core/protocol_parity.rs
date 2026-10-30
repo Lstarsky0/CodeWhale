@@ -1353,9 +1353,9 @@ mod tests {
     }
 
     use super::*;
-    use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
     use crate::tools::goal::GoalStatus;
     use crate::tools::spec::ToolResult;
+    use codewhale_error_taxonomy::{ErrorCategory, ErrorEnvelope, ErrorSeverity};
     use serde_json::json;
 
     const SOURCE: &str = include_str!("protocol_parity.rs");

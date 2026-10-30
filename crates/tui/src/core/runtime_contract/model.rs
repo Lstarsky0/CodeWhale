@@ -30,12 +30,18 @@ pub trait ModelClient: Send + Sync {
     fn route_limits(&self) -> Option<codewhale_config::route::RouteLimits> {
         None
     }
+    fn effective_context_window(&self, _model: &str) -> Option<u32> {
+        None
+    }
     fn effective_max_output_tokens(&self, requested_model: &str) -> u32 {
         let route = self.effective_route_envelope(requested_model, chrono::Utc::now());
-        crate::route_budget::effective_max_output_tokens_for_route(
+        crate::route_budget::effective_max_output_tokens_for_turn_with_window(
             route.provider,
             &route.model,
             self.route_limits(),
+            self.effective_context_window(requested_model),
+            None,
+            None,
         )
     }
     fn effective_route_envelope(
@@ -94,6 +100,10 @@ where
 
     fn route_limits(&self) -> Option<codewhale_config::route::RouteLimits> {
         LlmClient::route_limits(self)
+    }
+
+    fn effective_context_window(&self, model: &str) -> Option<u32> {
+        LlmClient::effective_context_window(self, model)
     }
 
     fn effective_max_output_tokens(&self, requested_model: &str) -> u32 {

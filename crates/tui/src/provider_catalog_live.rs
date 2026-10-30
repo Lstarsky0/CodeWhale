@@ -66,7 +66,7 @@ static CACHE: LazyLock<RwLock<ProviderCatalogCache>> =
 static REFRESH_GENERATIONS: LazyLock<RwLock<BTreeMap<String, u64>>> =
     LazyLock::new(|| RwLock::new(BTreeMap::new()));
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderCatalogRefreshTicket {
     provider: String,
     provider_kind: ProviderKind,
@@ -1456,6 +1456,21 @@ fn with_current_ticket<T>(
     Some(result)
 }
 
+pub(crate) fn with_current_route_ticket<T>(
+    ticket: &ProviderCatalogRefreshTicket,
+    provider_kind: ProviderKind,
+    provider: &str,
+    base_url: &str,
+    operation: impl FnOnce() -> T,
+) -> Option<T> {
+    if ticket.provider_kind != provider_kind
+        || ticket.fingerprint.as_deref() != Some(base_url_fingerprint(base_url).as_str())
+    {
+        return None;
+    }
+    with_current_ticket(ticket, provider, operation)
+}
+
 /// Record a successful refresh only if no newer refresh superseded it.
 pub fn record_success_if_current(
     ticket: &ProviderCatalogRefreshTicket,
@@ -1777,7 +1792,8 @@ pub(crate) fn fresh_dispatch_pricing_quote_at(
         return None;
     }
     let at = chrono::DateTime::from_timestamp(i64::try_from(dispatched_at_unix).ok()?, 0)?;
-    let hand = crate::pricing::provider_owned_hand_quote_rows(provider, wire_model, at);
+    let hand =
+        codewhale_models::hand_pricing::provider_owned_hand_quote_rows(provider, wire_model, at);
     let needs_schedule = matches!(
         provider,
         ProviderKind::Deepseek | ProviderKind::DeepseekAnthropic

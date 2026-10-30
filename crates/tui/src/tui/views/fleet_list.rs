@@ -29,13 +29,13 @@ use crate::fleet::store::{
     selected_fleet, set_selected,
 };
 use crate::tui::app::App;
-use crate::tui::menu_style;
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
 };
 use codewhale_localization::{Locale, MessageId, tr};
 use codewhale_palette as palette;
 use codewhale_runtime::config::Config;
+use codewhale_tui_kit::menu_style;
 
 /// Rows one PageUp/PageDown travels. Pages clamp at the ends per the shared
 /// vocabulary instead of wrapping (#6290).
@@ -132,20 +132,21 @@ impl FleetListView {
         if rows == 0 {
             return;
         }
-        self.row = crate::tui::list_nav::wrap_index(self.row, rows, delta);
+        self.row = codewhale_tui_kit::list_nav::wrap_index(self.row, rows, delta);
         self.hovered_row.set(None);
     }
 
-    /// Apply one [`list_nav`](crate::tui::list_nav) motion (#6290), returning
+    /// Apply one [`list_nav`](codewhale_tui_kit::list_nav) motion (#6290), returning
     /// whether it was consumed. Steps wrap; pages travel [`FLEET_LIST_PAGE`]
     /// rows and clamp. The list is single-column, so the region axis is a
     /// no-op.
-    fn apply_motion(&mut self, motion: crate::tui::list_nav::Motion) -> bool {
+    fn apply_motion(&mut self, motion: codewhale_tui_kit::list_nav::Motion) -> bool {
         let len = self.entries.len();
         if len == 0 {
             return false;
         }
-        let Some(next) = crate::tui::list_nav::apply(self.row, len, FLEET_LIST_PAGE, motion) else {
+        let Some(next) = codewhale_tui_kit::list_nav::apply(self.row, len, FLEET_LIST_PAGE, motion)
+        else {
             return false;
         };
         self.row = next;
@@ -257,7 +258,9 @@ impl ModalView for FleetListView {
             // Movement keys come from the shared vocabulary (#6290), j/k
             // aliases included — this surface captures no text. Pages are new
             // here; they used to do nothing.
-            _ if crate::tui::list_nav::motion(&key).is_some_and(|m| self.apply_motion(m)) => {
+            _ if codewhale_tui_kit::list_nav::motion(&key)
+                .is_some_and(|m| self.apply_motion(m)) =>
+            {
                 ViewAction::None
             }
             KeyCode::Enter => {

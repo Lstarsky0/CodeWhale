@@ -136,6 +136,41 @@ fn test_cost_shows_spending_info() {
     assert!(msg.contains("Covered: 1 of 1"), "{msg}");
     assert!(!msg.contains("Provider API Pricing"), "{msg}");
     assert!(!msg.contains("DeepSeek API Pricing"), "{msg}");
+
+    let mut subscription = create_test_app();
+    subscription.session.cost_route_receipts.insert(
+        "provider=example identity=- model=example surface=api endpoint_fp=- billing_mode=subscription currency=USD".to_string(),
+    );
+    let summary = cost(&mut subscription)
+        .message
+        .expect("subscription summary");
+    assert!(summary.contains("subscription billing"), "{summary}");
+    assert!(
+        summary.contains("does not know the amount charged"),
+        "{summary}"
+    );
+    let details = dispatch(&mut subscription, "cost", Some("details"))
+        .expect("cost details")
+        .message
+        .expect("details message");
+    assert!(details.contains("billing_mode=subscription"), "{details}");
+    subscription.session.session_cost = 0.5;
+    let unknown = cost(&mut subscription)
+        .message
+        .expect("unknown cost report");
+    assert!(
+        !unknown.contains("These routes use subscription billing"),
+        "{unknown}"
+    );
+    subscription.session.session_cost = 0.0;
+    subscription.session.cost_route_receipts.insert(
+        "provider=example identity=- model=example surface=api endpoint_fp=- billing_mode=metered currency=USD".to_string(),
+    );
+    let mixed = cost(&mut subscription).message.expect("mixed cost report");
+    assert!(
+        !mixed.contains("These routes use subscription billing"),
+        "{mixed}"
+    );
 }
 
 /// The same accumulator with no coverage behind it is not a total. It is the

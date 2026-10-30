@@ -164,7 +164,23 @@ pub(super) fn apply_engine_session_projection(
     if app.auto_model {
         app.last_effective_model = Some(model);
     } else {
+        let accepted_route =
+            app.pending_turn_route
+                .as_ref()
+                .is_some_and(|(provider, accepted_model, auto)| {
+                    !auto && *provider == app.api_provider && accepted_model == &model
+                });
+        let budget = accepted_route.then_some((
+            app.active_route_limits,
+            app.active_context_window,
+            app.active_context_window_source,
+        ));
         app.set_model_selection(model);
+        if let Some((limits, window, source)) = budget {
+            app.active_route_limits = limits;
+            app.active_context_window = window;
+            app.active_context_window_source = source;
+        }
     }
     app.update_model_compaction_budget();
     if app.workspace != workspace {
@@ -181,6 +197,7 @@ pub(super) fn apply_engine_session_projection(
                 return false;
             }
         };
+        let projection = saved_work_projection(app, &session);
         session.make_storage_compatible();
         if let Err(error) = request.validate_prefix(
             &session.metadata.id,
@@ -198,17 +215,27 @@ pub(super) fn apply_engine_session_projection(
             request.fail("terminal persistence actor is unavailable");
             return false;
         }
-        if app
-            .runtime_services
-            .work
-            .as_ref()
-            .is_some_and(|work| work.has_pending_publish())
-            && let Err(error) = app.publish_pending_work_state()
+        if let Some(work) = app.runtime_services.work.as_ref()
+            && work.has_pending_publish()
         {
-            request.fail(format!(
-                "checkpoint queued but Work projection failed: {error}"
-            ));
-            return false;
+            match work.publish_pending_sync_matching(
+                projection.owner.as_deref(),
+                projection
+                    .state
+                    .as_ref()
+                    .and_then(|state| state.graph.as_ref()),
+            ) {
+                Ok(false) if work.has_pending_publish() => {
+                    app.status_message = Some("A newer Work update remains pending".to_string());
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    request.fail(format!(
+                        "checkpoint queued but Work projection failed: {error}"
+                    ));
+                    return false;
+                }
+            }
         }
         codewhale_util::utils::spawn_supervised(
             "terminal-session-checkpoint",
@@ -235,15 +262,18 @@ pub(super) fn apply_engine_session_projection(
         && let Ok(manager) = SessionManager::default_location()
     {
         if let Ok(session) = build_session_snapshot(app, &manager) {
+            let projection = saved_work_projection(app, &session);
             app.session_title = Some(session.metadata.title.clone());
             // The engine's session id was pinned above, so
             // every checkpoint of this session lands in the
             // same per-session file.
-            if let Err(err) =
-                persist_with_pending_work_boundary(app, PersistRequest::SaveCheckpoint { session })
-            {
+            if let Err(err) = persist_with_pending_work_boundary(
+                app,
+                PersistRequest::SaveCheckpoint { session },
+                &projection,
+            ) {
                 app.status_message = Some(format!(
-                    "To-do list update pending: checkpoint could not be queued ({err})"
+                    "To-do list update pending while saving checkpoint ({err})"
                 ));
             }
         }
@@ -649,7 +679,7 @@ pub(super) fn flush_paste_burst_before_composer(app: &mut App, now: Instant) -> 
         return false;
     }
     match app.take_paste_burst_flush_if_enabled(now) {
-        crate::tui::paste_burst::FlushResult::Paste(text) => {
+        codewhale_tui_kit::paste_burst::FlushResult::Paste(text) => {
             // Terminals without bracketed paste deliver a dropped file the
             // same way; attach it exactly as `insert_paste_text` would.
             if !app.attach_pasted_image_paths(&text) {
@@ -657,20 +687,31 @@ pub(super) fn flush_paste_burst_before_composer(app: &mut App, now: Instant) -> 
             }
             true
         }
-        crate::tui::paste_burst::FlushResult::Typed(' ')
+        codewhale_tui_kit::paste_burst::FlushResult::Typed(' ')
             if app.input.is_empty() && handle_transcript_space(app) =>
         {
             true
         }
-        crate::tui::paste_burst::FlushResult::Typed(ch) => {
-            app.insert_char(ch);
+        codewhale_tui_kit::paste_burst::FlushResult::Typed(_) if app.vim_is_visual_mode() => true,
+        codewhale_tui_kit::paste_burst::FlushResult::Typed(ch) => {
+            let mention_menu_limit = app.mention_menu_limit;
+            if app.vim_is_normal_mode()
+                && visible_slash_menu_entries(app, SLASH_MENU_LIMIT).is_empty()
+                && crate::tui::file_mention::visible_mention_menu_entries(app, mention_menu_limit)
+                    .is_empty()
+            {
+                vim_mode::handle_vim_normal_key(app, ch);
+                app.needs_redraw = true;
+            } else {
+                app.insert_char(ch);
+            }
             true
         }
-        crate::tui::paste_burst::FlushResult::SuppressionExpired => {
+        codewhale_tui_kit::paste_burst::FlushResult::SuppressionExpired => {
             app.needs_redraw = true;
             true
         }
-        crate::tui::paste_burst::FlushResult::None => false,
+        codewhale_tui_kit::paste_burst::FlushResult::None => false,
     }
 }
 
@@ -929,7 +970,7 @@ pub async fn run_tui(
     // mishandle the terminator, so the default stays off there; opt in via
     // `[tui] osc8_links = true` on any platform.
     let osc8_default_on = !cfg!(target_os = "windows");
-    crate::tui::osc8::set_enabled(
+    codewhale_tui_kit::osc8::set_enabled(
         config
             .tui
             .as_ref()
@@ -988,7 +1029,7 @@ pub async fn run_tui(
     // messages reach the user's terminal. We accept the init failing (e.g.,
     // read-only $HOME) and continue without the redirect rather than refusing
     // to start the TUI.
-    let _tui_log_guard = match crate::runtime_log::init() {
+    let _tui_log_guard = match codewhale_runtime::runtime_log::init() {
         Ok(guard) => Some(guard),
         Err(err) => {
             tracing::warn!(target: "runtime_log", ?err, "TUI log init failed; stderr leaks may render as scroll-demon");
@@ -1046,10 +1087,10 @@ pub async fn run_tui(
     let background = palette::probe_terminal_background();
     // Same window, same reason: the kitty graphics capability query answers
     // on stdin, so it is asked before the input pump exists.
-    let kitty_graphics = crate::tui::mark::probe_kitty_graphics();
+    let kitty_graphics = codewhale_tui_kit::mark::probe_kitty_graphics();
     // Same window again: the sixel probe is a primary-DA query whose reply
     // also arrives on stdin. Keep both capability receipts before input starts.
-    let sixel_graphics = crate::tui::mark::probe_sixel_graphics();
+    let sixel_graphics = codewhale_tui_kit::mark::probe_sixel_graphics();
     crate::tui::composer_ui::probe_terminal_keyboard_enhancement();
     let palette_mode = background.mode();
     tracing::debug!(
@@ -1083,7 +1124,7 @@ pub async fn run_tui(
     let mut config = config.clone();
     let config = &mut config;
     let mut app = App::new_with_plugin_registry(options.clone(), config, plugin_registry);
-    let _cursor_accent_guard = crate::tui::cursor_accent::CursorAccentGuard::install(
+    let _cursor_accent_guard = codewhale_tui_kit::cursor_accent::CursorAccentGuard::install(
         app.low_motion || !app.fancy_animations,
         app.ui_theme.accent_primary,
     );
@@ -1529,7 +1570,7 @@ pub async fn run_tui(
     }
 
     cleanup_guard.defused = true;
-    crate::tui::cursor_accent::restore_cursor_accent();
+    codewhale_tui_kit::cursor_accent::restore_cursor_accent();
     pop_keyboard_enhancement_flags(terminal.backend_mut());
     disable_alternate_scroll_mode(terminal.backend_mut());
     execute!(terminal.backend_mut(), DisableFocusChange)?;
@@ -1719,7 +1760,7 @@ pub(super) fn present_turn_failure(
         })
         && let Some(HistoryCell::Error { severity, .. }) = app.cell_at_virtual_index_mut(index)
     {
-        *severity = crate::error_taxonomy::ErrorSeverity::Error;
+        *severity = codewhale_error_taxonomy::ErrorSeverity::Error;
     }
     // What the transcript shows for this turn's failure: the error cell an
     // earlier `Event::Error` already posted, or the notice added here.
@@ -1730,7 +1771,7 @@ pub(super) fn present_turn_failure(
         if failed {
             app.add_message(HistoryCell::Error {
                 message: notice.clone(),
-                severity: crate::error_taxonomy::ErrorSeverity::Error,
+                severity: codewhale_error_taxonomy::ErrorSeverity::Error,
             });
         }
         app.set_sticky_status(notice.clone(), StatusToastLevel::Error, None);
@@ -2239,7 +2280,7 @@ pub(crate) async fn run_event_loop(
             // Transient toast for immediate visibility, plus a durable
             // in-transcript notice so the prompt survives the toast TTL and
             // stays actionable during a busy session (#3961). The persistent
-            // header chip keeps a quiet affordance after both (#14).
+            // metrics-line notice keeps a quiet affordance after both (#14).
             // Which command to advertise depends on who owns this binary on
             // disk, so resolve that here rather than hardcoding our own
             // updater into the wording.
@@ -2667,6 +2708,20 @@ pub(crate) async fn run_event_loop(
                 let turn_end_lifecycle = TurnEndLifecycleReceipt::capture(&event);
                 match event {
                     EngineEvent::MessageStarted { .. } => {
+                        // #7123: deliver a live reasoning block's tail BEFORE
+                        // `flush_active_cell`, which clears
+                        // `streaming_thinking_active_entry` on every path
+                        // (`App::flush_active_cell`). It only marks the cell
+                        // finished; a delta that never reached it is not
+                        // delivered by the flush, so draining afterwards would
+                        // be dead code and the tail would be lost by the reset
+                        // below.
+                        if app.streaming_thinking_active_entry.is_some() {
+                            if streaming_thinking::finalize_current(app) {
+                                transcript_batch_updated = true;
+                            }
+                            streaming_thinking::stash_reasoning_buffer_into_last_reasoning(app);
+                        }
                         // Assistant text starting after parallel tool work
                         // means the tool group is done. Flush the active
                         // cell first so the message lands BELOW the
@@ -2720,7 +2775,7 @@ pub(crate) async fn run_event_loop(
                         if let Some(index) = app.streaming_message_index.take() {
                             completed_message_index = Some(index);
                             stream_display_clock.flush_now(Instant::now());
-                            let remaining = app.streaming_state.finalize_block_text(0);
+                            let remaining = drain_text_block(&mut app.streaming_state);
                             if !remaining.is_empty() {
                                 append_streaming_text(app, index, &remaining);
                                 accrue_streaming_token_estimate(app, &remaining);
@@ -2748,7 +2803,9 @@ pub(crate) async fn run_event_loop(
 
                         if app.translation_enabled
                             && !current_streaming_text.is_empty()
-                            && crate::tui::translation::needs_translation(&current_streaming_text)
+                            && codewhale_tui_kit::translation::needs_translation(
+                                &current_streaming_text,
+                            )
                             && let Some(translation_client) = active_translation_client.as_ref()
                         {
                             app.status_message = Some(
@@ -2844,7 +2901,12 @@ pub(crate) async fn run_event_loop(
                                 .streaming_thinking_active_entry
                                 .map(|entry_idx| app.history.len() + entry_idx);
                             let original_thinking = app.reasoning_buffer.clone();
-                            let _ = app.streaming_state.finalize_block_text(0);
+                            // #7123: only the reasoning block may be drained
+                            // here. A text block that lost its boundary event
+                            // would otherwise be consumed and dropped.
+                            if app.streaming_state.block_is_thinking(0) {
+                                let _ = app.streaming_state.finalize_block_text(0);
+                            }
                             let duration = app
                                 .thinking_started_at
                                 .take()
@@ -2853,7 +2915,9 @@ pub(crate) async fn run_event_loop(
                                 transcript_batch_updated = true;
                             }
                             if !original_thinking.is_empty()
-                                && crate::tui::translation::needs_translation(&original_thinking)
+                                && codewhale_tui_kit::translation::needs_translation(
+                                    &original_thinking,
+                                )
                                 && let Some(translation_client) = active_translation_client.as_ref()
                                 && let Some(cell_index) = cell_index
                             {
@@ -3050,10 +3114,10 @@ pub(crate) async fn run_event_loop(
                             tracing::warn!(
                                 tool = %name,
                                 error = %err,
-                                "Work Graph checkpoint was not enqueued; projections remain unpublished"
+                                "Work Graph checkpoint did not complete; projections remain unpublished"
                             );
                             app.status_message = Some(format!(
-                                "To-do list update pending: checkpoint could not be queued ({err})"
+                                "To-do list update pending: checkpoint or Work update did not complete ({err})"
                             ));
                         }
 
@@ -3653,6 +3717,7 @@ pub(crate) async fn run_event_loop(
                         if let Ok(manager) = SessionManager::default_location()
                             && let Ok(session) = build_session_snapshot(app, &manager)
                         {
+                            let projection = saved_work_projection(app, &session);
                             app.current_session_id = Some(session.metadata.id.clone());
                             // Compound completion commit: the actor writes the
                             // completed snapshot and clears this session's
@@ -3664,7 +3729,9 @@ pub(crate) async fn run_event_loop(
                                     session,
                                 });
                             if queued {
-                                if let Err(err) = publish_pending_work_projection(app).await {
+                                if let Err(err) =
+                                    publish_saved_work_projection(app, &projection).await
+                                {
                                     tracing::warn!(
                                         error = %err,
                                         "completed-turn Work projections remain unpublished"
@@ -3843,7 +3910,7 @@ pub(crate) async fn run_event_loop(
                         let rollback_after_auth_failure =
                             matches!(
                                 envelope.category,
-                                crate::error_taxonomy::ErrorCategory::Authentication
+                                codewhale_error_taxonomy::ErrorCategory::Authentication
                             ) && app.pending_provider_switch.is_some();
                         apply_engine_error_to_app(app, envelope);
                         if app.api_provider != provider_before_error
@@ -4633,7 +4700,7 @@ pub(crate) async fn run_event_loop(
                                 transcript_batch_updated = true;
                             }
                             if let Some(index) = app.streaming_message_index.take() {
-                                let remaining = app.streaming_state.finalize_block_text(0);
+                                let remaining = drain_text_block(&mut app.streaming_state);
                                 if !remaining.is_empty() {
                                     append_streaming_text(app, index, &remaining);
                                     accrue_streaming_token_estimate(app, &remaining);
@@ -4864,11 +4931,11 @@ pub(crate) async fn run_event_loop(
                 #[cfg(test)]
                 let _manager = crate::extension_host::TestManagerGuard::install(manager);
                 let _policy = codewhale_plugins::activation::PolicyScope::propagate(policy);
-                crate::skills::clear_skill_discovery_cache();
+                codewhale_skills::clear_skill_discovery_cache();
                 App::discover_cached_skills(
                     &scan.workspace,
                     &scan.skills_dir,
-                    scan.mode,
+                    &scan.config,
                     &scan.plugins,
                 )
             });
@@ -5441,7 +5508,8 @@ pub(crate) async fn run_event_loop(
                 && matches!(&evt, Event::Key(_) | Event::Paste(_) | Event::Resize(_, _))
             {
                 app.launch.mark_reveal_started_at = Some(
-                    Instant::now() - Duration::from_millis(crate::tui::mark::REVEAL_MS as u64),
+                    Instant::now()
+                        - Duration::from_millis(codewhale_tui_kit::mark::REVEAL_MS as u64),
                 );
             }
             app.needs_redraw = true;
@@ -6195,10 +6263,15 @@ pub(crate) async fn run_event_loop(
                             // the plan shed on a tiny stage).
                             let rows = crate::tui::underwater::launch_rows_for_app(app);
                             let entries = rows.len().max(1) as i32;
-                            // First arrow lands on the first (Up: last)
-                            // row; from there it moves.
+                            // First arrow lands on the first row; Up lands on
+                            // the newest recent session, else the last row.
                             app.launch.menu_selected = Some(match app.launch.menu_selected {
-                                None if delta < 0 => (entries - 1) as usize,
+                                None if delta < 0 => rows
+                                    .iter()
+                                    .position(|row| {
+                                        matches!(row.id, crate::tui::app::LaunchRowId::Recent(_))
+                                    })
+                                    .unwrap_or((entries - 1) as usize),
                                 None => 0,
                                 Some(current) => {
                                     (current as i32 + delta).rem_euclid(entries) as usize
@@ -6341,7 +6414,7 @@ pub(crate) async fn run_event_loop(
                     build_command_palette_entries(
                         app.ui_locale,
                         &app.skills_dir,
-                        app.skills_discovery_mode,
+                        &app.skills_config,
                         &app.workspace,
                         &app.mcp_config_path,
                         app.mcp_snapshot.as_ref(),
@@ -7049,14 +7122,14 @@ pub(crate) async fn run_event_loop(
                     move_slash_menu_selection(
                         app,
                         slash_menu_entries.len(),
-                        crate::tui::list_nav::Motion::PagePrev,
+                        codewhale_tui_kit::list_nav::Motion::PagePrev,
                     );
                 }
                 KeyCode::PageDown if key.modifiers.is_empty() && slash_menu_open => {
                     move_slash_menu_selection(
                         app,
                         slash_menu_entries.len(),
-                        crate::tui::list_nav::Motion::PageNext,
+                        codewhale_tui_kit::list_nav::Motion::PageNext,
                     );
                 }
                 // Home/End deliberately stay cursor keys while the menu is open:
@@ -7572,10 +7645,10 @@ pub(crate) async fn run_event_loop(
                 }
                 // Vim composer: Normal-mode motion / operator keys.
                 // Only fires when vim is enabled, the input is focused (no modal
-                // open on top), and the key has no modifier (pure char).
+                // open on top), and the key is a plain char (Shift allowed).
                 KeyCode::Char(c)
                     if app.vim_is_normal_mode()
-                        && key.modifiers.is_empty()
+                        && is_plain_char
                         && !slash_menu_open
                         && !mention_menu_open
                         && app.view_stack.is_empty() =>
@@ -7586,9 +7659,7 @@ pub(crate) async fn run_event_loop(
                 // Vim composer: in Visual mode plain chars are ignored
                 // (no text insertion until `i` / `a` enters Insert).
                 KeyCode::Char(_)
-                    if app.vim_is_visual_mode()
-                        && key.modifiers.is_empty()
-                        && app.view_stack.is_empty() =>
+                    if app.vim_is_visual_mode() && is_plain_char && app.view_stack.is_empty() =>
                 {
                     // absorb — Visual mode not yet fully implemented
                 }
@@ -7722,7 +7793,16 @@ pub(super) async fn adopt_live_local_ollama_catalog(
             return;
         }
     };
-    let switched = switch_provider(app, engine_handle, config, identity, Some(tag.clone())).await;
+    let switched = super::provider_routes::switch_provider_with_ollama_probe(
+        app,
+        engine_handle,
+        config,
+        identity,
+        tag.clone(),
+        &catalog.endpoint_v1,
+        &catalog.ticket,
+    )
+    .await;
     if !switched {
         return;
     }

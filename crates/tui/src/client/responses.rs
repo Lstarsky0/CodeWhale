@@ -1080,12 +1080,13 @@ fn compatible_responses_reasoning_effort(raw: &str) -> Option<&'static str> {
 /// tier ladder — including the documented `"none"` off tier, so the picker's
 /// Off entry stays off instead of collapsing into a still-thinking low.
 ///
-/// Unlike the Chat wire, this endpoint must send *some* documented label once
-/// an effort is requested at all, so unknown/automatic tiers normalize to the
-/// table's default tier rather than writing nothing.
+/// Unknown tiers normalize to the table's default tier.
 pub(super) fn responses_reasoning_effort(raw: &str, is_deepseek: bool) -> Option<&'static str> {
     if !is_deepseek {
         return compatible_responses_reasoning_effort(raw);
+    }
+    if raw.trim().eq_ignore_ascii_case("auto") {
+        return None;
     }
     Some(super::deepseek_effort::deepseek_effort_tier_or_default(raw).responses_effort())
 }

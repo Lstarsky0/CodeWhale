@@ -39,12 +39,12 @@ mod cost_status;
 pub mod delivery_files;
 mod doctor;
 mod doctor_fix;
-mod error_taxonomy;
 mod eval;
 mod extension_host;
 mod fleet;
 mod git_status;
 mod keybinding_table;
+mod llm_error_envelope;
 mod usage_persistence;
 use crate::fleet::executor::exec_stream_final_answer_excerpt;
 mod hooks;
@@ -92,7 +92,6 @@ mod route_runtime;
 mod runtime_api;
 mod runtime_chat_relay;
 mod runtime_handoff;
-mod runtime_log;
 mod runtime_threads;
 #[cfg(test)]
 mod sandbox_stay_tests;
@@ -113,7 +112,6 @@ mod session_projection;
 mod session_reconcile;
 mod session_resume;
 mod session_secret_scrub;
-mod skills;
 mod superfast;
 mod task_manager;
 mod telemetry_notice;
@@ -132,7 +130,6 @@ mod vision;
 mod voice;
 pub mod whats_new;
 mod work_graph;
-mod working_set;
 mod workspace_lease;
 mod workspace_trust;
 
@@ -807,8 +804,9 @@ enum FleetAlertAdapterArg {
 }
 
 /// Spawn a tokio task that listens for terminating signals (SIGINT
-/// always; SIGTERM and SIGHUP on Unix) and, on receipt, restores the
-/// terminal modes and exits with the conventional 128 + signal code.
+/// always; SIGTERM and SIGHUP on Unix) and, on receipt, flushes already queued
+/// persistence, restores terminal modes and exits with the conventional
+/// 128 + signal code. State not yet queued by the TUI is not captured here.
 /// Multiple deliveries are tolerated: once the cleanup runs, a second
 /// signal short-circuits to plain exit so a stuck cleanup can never
 /// trap a frustrated user pressing Ctrl+C repeatedly.
@@ -826,11 +824,16 @@ fn spawn_signal_cleanup_task() {
     let mut signals = TerminatingSignals::register();
     tokio::spawn(async move {
         let exit_code = signals.wait().await;
-        // A serving Runtime API gets a bounded window to end its open event
-        // streams with a typed `stream.end`, so clients can tell a Runtime
-        // that stopped from a dropped connection. A second signal skips it.
+        // Persistence and a serving Runtime API share a bounded window to
+        // flush queued saves and end open streams with a typed `stream.end`.
+        // A second signal skips both waits.
         tokio::select! {
-            () = runtime_api::drain_for_signal_exit() => {}
+            _ = async {
+                tokio::join!(
+                    runtime_api::drain_for_signal_exit(),
+                    crate::tui::persistence_actor::flush_for_signal_exit(),
+                )
+            } => {}
             _ = signals.wait() => {}
         }
         // If we get here a fatal signal arrived. Restore the terminal
@@ -898,6 +901,9 @@ fn telemetry_session_end() -> codewhale_telemetry::Event {
 /// A no-op unless this process was armed.
 fn record_signal_session_end() {
     codewhale_telemetry::set_exit_class(codewhale_telemetry::ExitClass::Signal);
+    for event in codewhale_telemetry::session_counters().usage_events() {
+        codewhale_telemetry::record_blocking(event);
+    }
     codewhale_telemetry::record_blocking(telemetry_session_end());
 }
 
@@ -1302,6 +1308,9 @@ struct DoctorArgs {
         conflicts_with_all = ["json", "context_json", "fix", "installs", "repair_sessions"]
     )]
     restore: Option<String>,
+    /// Show every resolved path, the search provider and secret-backend details
+    #[arg(long, default_value_t = false, conflicts_with_all = ["json", "context_json"])]
+    all: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -1928,7 +1937,7 @@ pub fn run(options: RuntimeOptions, args: Vec<String>) -> std::process::ExitCode
 /// args instead of reading `std::env::args()`. Startup facts are captured by
 /// the canonical CLI and applied before config/discovery or worker startup.
 fn run_with_args(options: RuntimeOptions, args: Vec<String>) -> Result<()> {
-    crate::extension_host::composition_review::install();
+    crate::extension_host::install_ports();
     let inherited_listener = prepare_runtime_listener_handoff()?;
     let args: Vec<String> = std::iter::once("codewhale".to_string())
         .chain(args)
@@ -2314,6 +2323,19 @@ fn telemetry_session_source(command: Option<&Commands>) -> codewhale_telemetry::
     }
 }
 
+fn telemetry_session_source_for_run(
+    command: Option<&Commands>,
+) -> codewhale_telemetry::SessionSource {
+    let flag = |name: &str| {
+        std::env::var(name).is_ok_and(|value| !matches!(value.trim(), "" | "0" | "false"))
+    };
+    if flag("CI") || flag("GITHUB_ACTIONS") {
+        codewhale_telemetry::SessionSource::Ci
+    } else {
+        telemetry_session_source(command)
+    }
+}
+
 /// Read-only commands must not create telemetry state as a side effect.
 // Sessions export only projects local records to an explicit output. Like
 // listing, it must not initialize telemetry or interactive session state.
@@ -2381,7 +2403,7 @@ fn arm_telemetry(cli: &Cli, command: Option<&Commands>) {
     arm_telemetry_with_setup(
         cli.config.clone(),
         telemetry_surface(command),
-        telemetry_session_source(command),
+        telemetry_session_source_for_run(command),
         None,
     );
 }
@@ -2434,6 +2456,9 @@ async fn finish_telemetry(outcome: &Result<()>, surface: codewhale_telemetry::Su
         && codewhale_telemetry::exit_class() == codewhale_telemetry::ExitClass::Clean
     {
         codewhale_telemetry::set_exit_class(codewhale_telemetry::ExitClass::Error);
+    }
+    for event in codewhale_telemetry::session_counters().usage_events() {
+        codewhale_telemetry::record(event);
     }
     codewhale_telemetry::record(telemetry_session_end());
     if surface == codewhale_telemetry::Surface::Cli {
@@ -2491,7 +2516,7 @@ async fn run_async_main_inner(
     let telemetry_notice_plan = if surface == codewhale_telemetry::Surface::Tui {
         crate::telemetry_notice::plan_if_due(
             cli.config.clone(),
-            telemetry_session_source(command.as_ref()),
+            telemetry_session_source_for_run(command.as_ref()),
         )
     } else {
         crate::telemetry_notice::TelemetryNoticePlan::NotDue
@@ -2586,6 +2611,7 @@ async fn run_async_main_dispatch(
                         effective_config_profile(&cli).as_deref(),
                         probes,
                         plugin_registry.as_ref(),
+                        args.all,
                     )
                     .await;
                     if args.fix {
@@ -2813,12 +2839,22 @@ async fn run_async_main_dispatch(
                         || explicit_model.is_some()
                         || codewhale_runtime::config::explicit_launch_provider_override().is_some()
                         || codewhale_runtime::config::explicit_launch_model_override().is_some();
-                    apply_selected_fleet_operator_for_launch(
+                    let fleet_route_applied = apply_selected_fleet_operator_for_launch(
                         &mut config,
                         &workspace,
                         explicit_route_override,
                         explicit_reasoning.is_some(),
                     )?;
+                    if !explicit_route_override
+                        && !fleet_route_applied
+                        && let Some(tag) =
+                            crate::local_ollama::adopt_live_local_ollama_for_run(&mut config, false)
+                                .await
+                    {
+                        eprintln!(
+                            "codewhale exec: no cloud API key, so this run uses local Ollama {tag}; nothing was saved."
+                        );
+                    }
                 }
                 // The `codewhale` dispatcher refuses `--provider`/`--model`
                 // after `exec` and forwards the top-level flags as
@@ -2991,9 +3027,8 @@ async fn run_async_main_dispatch(
                 if args.mcp {
                     let config = load_structural_config_from_cli(&cli)?;
                     let skills_dir = config.skills_dir();
-                    let skills_mode =
-                        skills::SkillDiscoveryMode::from_config(&config.skills_config());
-                    mcp_server::run_mcp_server(workspace, skills_dir, skills_mode).await
+                    let skills_config = std::sync::Arc::new(config.skills_config());
+                    mcp_server::run_mcp_server(workspace, skills_dir, skills_config).await
                 } else if http_selected {
                     let (mut config, config_profile) =
                         load_config_from_cli_with_effective_profile(&cli)?;
@@ -3730,7 +3765,7 @@ async fn run_fleet_command(workspace: &Path, config: &Config, args: FleetArgs) -
             // re-arm mouse reporting in the caller's shell and leave it
             // executing escape fragments after this command exits.
             let mut safe_preview = String::with_capacity(preview.len());
-            crate::tui::osc8::strip_ansi_into(&preview, &mut safe_preview);
+            codewhale_tui_kit::osc8::strip_ansi_into(&preview, &mut safe_preview);
             print!("{safe_preview}");
             if contents.chars().count() > preview.chars().count() {
                 println!("\n[truncated]");
@@ -4693,7 +4728,7 @@ fn skills_count_for(dir: &Path) -> usize {
     if !dir.exists() {
         return 0;
     }
-    crate::skills::SkillRegistry::discover(dir).len()
+    codewhale_skills::SkillRegistry::discover(dir).len()
 }
 
 fn run_setup_status(
@@ -4984,6 +5019,7 @@ async fn run_doctor(
     profile: Option<&str>,
     probes: crate::doctor::DoctorProbeRequest,
     plugins: &codewhale_plugins::PluginRegistry,
+    all: bool,
 ) {
     use codewhale_palette as palette;
     use colored::Colorize;
@@ -5000,6 +5036,20 @@ async fn run_doctor(
             .bold()
     );
     println!("{}", "==================".truecolor(sky_r, sky_g, sky_b));
+    let local_route = if probes.probe_local {
+        let mut local = config.clone();
+        crate::local_ollama::adopt_live_local_ollama_for_run(&mut local, true)
+            .await
+            .map(|tag| (local, tag))
+    } else {
+        None
+    };
+    if let Some((_, tag)) = &local_route {
+        println!(
+            "No cloud API key, so Codewhale and `codewhale exec` use local Ollama {tag}; this report checks that route, and nothing was saved."
+        );
+    }
+    let config = local_route.as_ref().map_or(config, |(local, _)| local);
     // The answer comes before the detail (U7). A requested live probe runs
     // first so that answer can include it; the probe line is the only thing
     // printed while that check is in flight.
@@ -5038,6 +5088,15 @@ async fn run_doctor(
             live_probe_timed_out: live_probe
                 .as_ref()
                 .is_some_and(|result| result.as_ref().is_err_and(doctor_probe_timed_out)),
+            local_discovery: !probes.probe_local
+                && identity.as_ref().is_some_and(|identity| {
+                    crate::local_ollama::should_adopt_live_local_ollama(
+                        crate::local_ollama::startup_route_configured(config),
+                        identity.provider,
+                        false,
+                        true,
+                    )
+                }),
         },
     );
     println!("{}", verdict.truecolor(aqua_r, aqua_g, aqua_b).bold());
@@ -5131,15 +5190,22 @@ async fn run_doctor(
 
     println!();
     println!("{}", "Resolved User Paths (read-only):".bold());
-    for (label, path) in doctor_paths.entries() {
+    let entries = doctor_paths.entries();
+    let shown = if all { entries.len() } else { 5 };
+    for (label, path) in entries.iter().take(shown) {
         println!("  · {label}: {}", codewhale_util::utils::display_path(path));
     }
 
     let secret_backend = codewhale_secrets::diagnose_secret_backend();
     println!();
     println!("{}", "Secret Backend (structural only):".bold());
-    for line in crate::doctor::secret_backend_human_lines(&secret_backend) {
+    let backend_lines = crate::doctor::secret_backend_human_lines(&secret_backend);
+    let shown = if all { backend_lines.len() } else { 1 };
+    for line in backend_lines.iter().take(shown) {
         println!("  · {line}");
+    }
+    if !all {
+        println!("  · `codewhale doctor --all` shows every path and backend detail");
     }
 
     println!();
@@ -5640,9 +5706,35 @@ async fn run_doctor(
     println!();
     println!("{}", "Skills:".bold());
     let global_skills_dir = config.skills_dir();
+    let skills_config = config.skills_config();
+    let skill_registry = codewhale_skills::discover_for_workspace(
+        workspace,
+        Some(&global_skills_dir),
+        &skills_config,
+        None,
+    );
+    if let Some(status) = codewhale_skills::bundled_skills_status(&skills_config, &skill_registry) {
+        println!("  {}", status.summary());
+        if !status.unknown.is_empty() {
+            println!("  ⚠ Unknown bundled names: {}", status.unknown.join(", "));
+        }
+        if !status.ignored.is_empty() {
+            println!(
+                "  ⚠ Ignored explicit_only entries: {}",
+                status.ignored.join(", ")
+            );
+        }
+        if !status.selected_missing.is_empty() {
+            println!(
+                "  Selected but not installed: {}",
+                status.selected_missing.join(", ")
+            );
+        }
+    }
+
     let agents_skills_dir = workspace.join(".agents").join("skills");
     let local_skills_dir = workspace.join("skills");
-    let agents_global_skills_dir = crate::skills::agents_global_skills_dir();
+    let agents_global_skills_dir = codewhale_skills::agents_global_skills_dir();
     // #432: cross-tool skill discovery dirs. Presence is reported here
     // even though they sit lower in the precedence chain so users can
     // see at a glance whether a `.opencode/skills/`, `.claude/skills/`,
@@ -5746,13 +5838,16 @@ async fn run_doctor(
         "·".dimmed(),
         codewhale_util::utils::display_path(&selected_skills_dir)
     );
-    let unrecognized_system_skills = crate::skills::unrecognized_system_skills(&global_skills_dir);
+    let unrecognized_system_skills = codewhale_runtime::config::owned_skills_dir()
+        .map(|dir| {
+            codewhale_skills::unrecognized_system_skills(&dir, &config.skills_config().bundled)
+        })
+        .unwrap_or_default();
     if !unrecognized_system_skills.is_empty() {
         println!(
-            "  {} {} bundled skill(s) in {} are customized or from an unknown generation and are never refreshed: {}",
+            "  {} {} bundled skill(s) in the owned global root are customized or from an unknown generation and are never refreshed: {}",
             "!".truecolor(sky_r, sky_g, sky_b),
             unrecognized_system_skills.len(),
-            codewhale_util::utils::display_path(&global_skills_dir),
             unrecognized_system_skills.join(", ")
         );
     }
@@ -6192,6 +6287,7 @@ struct DoctorVerdictFacts {
     /// The live check failed by running out of time, not by being refused
     /// (#6889). A model the provider is still loading looks exactly like this.
     live_probe_timed_out: bool,
+    local_discovery: bool,
 }
 
 /// `set via <VAR> (value not shown; not checked offline)`.
@@ -6264,6 +6360,10 @@ fn doctor_verdict(
                 format!(
                     "Ready: onboarding is complete (saved {provider} key not checked offline; {PROBE_HINT})."
                 )
+            } else if facts.local_discovery {
+                format!(
+                    "Not confirmed: the {provider} route has no verified key, so Codewhale and `codewhale exec` use a local Ollama model if one is running → `codewhale doctor --probe-local` checks for one; or save a key with /provider in Codewhale or `codewhale auth set --provider {provider}`."
+                )
             } else {
                 format!(
                     "Not ready: the {provider} route has no verified key → save one with /provider in Codewhale or `codewhale auth set --provider {provider}`; `codewhale doctor --probe-api` checks a key already saved."
@@ -6271,8 +6371,13 @@ fn doctor_verdict(
             }
         }),
         _ => env_ready.unwrap_or_else(|| {
-            "Not ready: no model provider set up → run /provider in Codewhale, or `codewhale setup`."
-                .to_string()
+            if facts.local_discovery {
+                "Not confirmed: no model provider is set up, so Codewhale and `codewhale exec` use a local Ollama model if one is running → `codewhale doctor --probe-local` checks for one; or run /provider in Codewhale, or `codewhale setup`."
+                    .to_string()
+            } else {
+                "Not ready: no model provider set up → run /provider in Codewhale, or `codewhale setup`."
+                    .to_string()
+            }
         }),
     }
 }
@@ -6354,6 +6459,7 @@ mod doctor_verdict_tests {
             env_key_source: env_key_source.map(str::to_string),
             live_probe,
             live_probe_timed_out: false,
+            local_discovery: false,
         }
     }
 
@@ -8197,7 +8303,7 @@ fn run_doctor_json(
     let global_skills_dir = config.skills_dir();
     let agents_skills_dir = workspace.join(".agents").join("skills");
     let local_skills_dir = workspace.join("skills");
-    let agents_global_skills_dir = crate::skills::agents_global_skills_dir();
+    let agents_global_skills_dir = codewhale_skills::agents_global_skills_dir();
     // #432: cross-tool skill discovery dirs surface in the JSON
     // report so external dashboards can see whether any
     // `.opencode/skills/`, `.claude/skills/`, `.cursor/skills/`, or
@@ -8308,8 +8414,9 @@ fn run_doctor_json(
         "memory": memory_summary,
         "mcp": mcp_summary,
         "skills": {
+            "bundled": codewhale_skills::bundled_skills_status(&config.skills_config(), &codewhale_skills::discover_for_workspace(workspace, Some(&selected_skills_dir), &config.skills_config(), None)),
             "selected": selected_skills_dir.display().to_string(),
-            "unrecognized_system_skills": crate::skills::unrecognized_system_skills(&global_skills_dir),
+            "unrecognized_system_skills": codewhale_runtime::config::owned_skills_dir().map(|dir| codewhale_skills::unrecognized_system_skills(&dir, &config.skills_config().bundled)).unwrap_or_default(),
             "global": {
                 "path": global_skills_dir.display().to_string(),
                 "present": global_skills_dir.exists(),
@@ -9272,7 +9379,7 @@ async fn print_doctor_stored_secrets_report(config_path: Option<PathBuf>, profil
 
     let scan = tokio::task::spawn_blocking(move || -> Result<_> {
         let sessions_dir = codewhale_config::resolve_state_dir("sessions")?;
-        let runtime = runtime_threads::RuntimeThreadManagerConfig::from_task_data_dir(
+        let runtime = runtime_threads::manager::RuntimeThreadManagerConfig::from_task_data_dir(
             task_manager::default_tasks_dir(),
         );
         let mut unreadable = Vec::new();
@@ -9355,7 +9462,7 @@ fn run_sessions_scrub_secrets_blocking(
     profile: Option<&str>,
 ) -> Result<()> {
     let manager = session_manager::SessionManager::default_location()?;
-    let runtime = runtime_threads::RuntimeThreadManagerConfig::from_task_data_dir(
+    let runtime = runtime_threads::manager::RuntimeThreadManagerConfig::from_task_data_dir(
         task_manager::default_tasks_dir(),
     );
     let mut unreadable = Vec::new();
@@ -9425,10 +9532,14 @@ fn list_sessions(limit: usize, search: Option<String>) -> Result<()> {
 
     let manager = SessionManager::default_location()?;
 
-    let sessions = if let Some(query) = search {
-        manager.search_sessions(&query)?
+    let (sessions, interrupted) = if let Some(query) = search {
+        (manager.search_sessions(&query)?, Default::default())
     } else {
-        manager.list_sessions()?
+        let (sessions, interrupted, warning) = manager.list_sessions_with_recovery()?;
+        if let Some(warning) = warning {
+            eprintln!("Some interrupted sessions could not be listed: {warning}");
+        }
+        (sessions, interrupted)
     };
 
     if sessions.is_empty() {
@@ -9450,7 +9561,10 @@ fn list_sessions(limit: usize, search: Option<String>) -> Result<()> {
     println!();
 
     for (i, session) in sessions.iter().take(limit).enumerate() {
-        let line = format_session_line(session);
+        let mut line = format_session_line(session);
+        if interrupted.contains(&session.id) {
+            line.push_str(" | interrupted");
+        }
         if i == 0 {
             println!("  {} {}", "*".truecolor(aqua_r, aqua_g, aqua_b), line);
         } else {
@@ -9649,7 +9763,7 @@ fn load_structural_config_from_cli(cli: &Cli) -> Result<Config> {
     Ok(config)
 }
 
-/// Select the plugin activation policy (v5, or v6 with the experimental
+/// Select the plugin activation policy (v5, or v8 with the experimental
 /// extension host) and the host's runtime settings, once per process, before
 /// any plugin discovery. Later config reloads never flip either.
 fn install_extension_host_boot_config(config: &Config) {
@@ -9657,7 +9771,7 @@ fn install_extension_host_boot_config(config: &Config) {
         .features()
         .enabled(codewhale_runtime::features::Feature::ExtensionHost);
     codewhale_plugins::activation::install_extension_host_policy(enabled);
-    crate::extension_host::composition_review::install();
+    crate::extension_host::install_ports();
     // Builtin MCP uses the configured runtime without enabling Native plugins.
     // Configuration is lazy: it does not start an unused host.
     crate::extension_host::configure_with_handle(
@@ -10035,11 +10149,13 @@ async fn prepare_mounted_session(
     plugins: Arc<codewhale_plugins::PluginRegistry>,
 ) -> Result<(PreparedInteractiveConfig, String)> {
     use crate::runtime_api::thread_history::{
-        history_owner_work, lookup_thread_history_operation_in_runtime,
-        mutate_thread_history_in_runtime, recover_thread_history_operation_in_runtime,
-        saved_document_digest, session_goal_digest,
+        lookup_thread_history_operation_in_runtime, mutate_thread_history_in_runtime,
+        recover_thread_history_operation_in_runtime, session_goal_digest,
     };
-    use crate::runtime_threads::{RuntimeThreadManager, RuntimeThreadManagerConfig};
+    use crate::runtime_threads::manager::history::{history_owner_work, saved_document_digest};
+    use crate::runtime_threads::{
+        manager::RuntimeThreadManager, manager::RuntimeThreadManagerConfig,
+    };
     use codewhale_protocol::{
         CanonicalHistoryOptions, CanonicalHistorySource, CanonicalThreadMutation,
         CanonicalThreadMutationRequest, CanonicalThreadOperationKind,
@@ -10064,14 +10180,14 @@ async fn prepare_mounted_session(
                 .ok_or_else(|| anyhow!("No saved sessions found for this workspace"))?
                 .id
         } else {
-            manager.resolve_session_id_prefix(&selector)?
+            manager.resolve_recoverable_session_id_prefix(&selector)?
         };
         // Under the existing inactive-session guard, promote any crash
         // checkpoint first: the mount below stamps a newer document, and the
         // later attach would then discard the checkpoint as stale. Then
         // capture the complete document and separate local goal.
         let _source_lease = manager.reserve_session_for_external_write(&id)?;
-        let stale_checkpoint = manager.promote_interrupted_checkpoint(&id);
+        let stale_checkpoint = manager.promote_interrupted_checkpoint(&id, Some(&selection_workspace))?;
         let saved = manager.load_session_snapshot_bounded(&id, MAX_CANONICAL_HISTORY_BYTES)?;
         if stale_checkpoint {
             let _ = manager.clear_session_checkpoint(&id);
@@ -12960,23 +13076,17 @@ fn default_mouse_capture_enabled(
     true
 }
 
-/// A loadable crash-recovery checkpoint candidate: session content, file
-/// age, and which slot it came from (per-session file or the legacy single
-/// slot).
+/// A crash-recovery checkpoint candidate: session metadata and file age.
 struct RecentCheckpoint {
-    session: session_manager::SavedSession,
+    metadata: session_manager::SessionMetadata,
     age: std::time::Duration,
-    source: session_manager::CheckpointSource,
 }
 
-const CHECKPOINT_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
-
-/// Load all recent crash-recovery checkpoints, pruning stale ones first.
+/// Load crash-recovery checkpoints.
 ///
 /// Candidates are the per-session checkpoint files plus the legacy
-/// single-slot `checkpoints/latest.json` (compatibility read). Files older
-/// than 24 hours are removed; unreadable files are skipped. The result is
-/// sorted most recent first.
+/// single-slot `checkpoints/latest.json` (compatibility read). Unreadable
+/// files are skipped. The result is sorted most recent first.
 fn load_recent_checkpoints(manager: &session_manager::SessionManager) -> Vec<RecentCheckpoint> {
     let refs = manager.list_checkpoints().unwrap_or_default();
     let mut recent = Vec::new();
@@ -12986,39 +13096,16 @@ fn load_recent_checkpoints(manager: &session_manager::SessionManager) -> Vec<Rec
         // take that session's only crash-recovery record while it runs. The
         // legacy slot is checked by the session it names, before anything
         // prunes, promotes or migrates it over that session's live state.
-        let owner = match &checkpoint_ref.source {
-            session_manager::CheckpointSource::Session(id) => Some(id.clone()),
-            session_manager::CheckpointSource::Legacy => {
-                manager.legacy_checkpoint_origin().ok().flatten()
-            }
+        let Ok(Some(metadata)) = manager.checkpoint_metadata(&checkpoint_ref) else {
+            continue;
         };
-        if owner.is_some_and(|id| manager.is_session_live_anywhere(&id)) {
+        if manager.is_session_live_anywhere(&metadata.id) {
             continue;
         }
         let Ok(age) = std::time::SystemTime::now().duration_since(checkpoint_ref.modified) else {
             continue;
         };
-        if age > CHECKPOINT_MAX_AGE {
-            let _ = match &checkpoint_ref.source {
-                session_manager::CheckpointSource::Session(id) => {
-                    manager.clear_session_checkpoint(id)
-                }
-                session_manager::CheckpointSource::Legacy => manager.clear_legacy_checkpoint(),
-            };
-            continue;
-        }
-        let loaded = match &checkpoint_ref.source {
-            session_manager::CheckpointSource::Session(id) => manager.load_session_checkpoint(id),
-            session_manager::CheckpointSource::Legacy => manager.load_legacy_checkpoint(),
-        };
-        let Ok(Some(session)) = loaded else {
-            continue;
-        };
-        recent.push(RecentCheckpoint {
-            session,
-            age,
-            source: checkpoint_ref.source,
-        });
+        recent.push(RecentCheckpoint { metadata, age });
     }
     // `list_checkpoints` sorts newest-first already; keep it explicit here so
     // selection does not silently depend on the manager's ordering.
@@ -13041,9 +13128,9 @@ fn checkpoint_age_label(age: std::time::Duration) -> String {
 /// workspace.
 ///
 /// Candidates are all per-session checkpoint files plus the legacy
-/// single-slot `checkpoints/latest.json`; each must be younger than 24 hours
-/// **and its workspace must match the resolved launch workspace after
-/// canonicalisation** — the newest matching candidate wins. If no candidate
+/// single-slot `checkpoints/latest.json`; its workspace must match the
+/// resolved launch workspace after canonicalisation — the newest matching
+/// candidate wins. If no candidate
 /// matches, a one-line notice points at `codewhale sessions`, and nothing is
 /// auto-loaded: another workspace's checkpoint file is never touched (it may
 /// belong to a live session there).
@@ -13081,10 +13168,7 @@ fn recover_interrupted_checkpoint_for_resume(launch_workspace: &Path) -> Option<
     // using `--workspace` cannot accidentally recover a checkpoint from the
     // directory their shell happened to be in.
     let (matching, mismatched): (Vec<_>, Vec<_>) = candidates.into_iter().partition(|candidate| {
-        session_manager::workspace_scope_matches(
-            &candidate.session.metadata.workspace,
-            launch_workspace,
-        )
+        session_manager::workspace_scope_matches(&candidate.metadata.workspace, launch_workspace)
     });
 
     let Some(best) = matching.into_iter().next() else {
@@ -13093,46 +13177,49 @@ fn recover_interrupted_checkpoint_for_resume(launch_workspace: &Path) -> Option<
                 "Note: an interrupted session from another workspace ({}) is \
                  available. Run `codewhale sessions` to list saved sessions. Starting \
                  fresh in {}.",
-                newest.session.metadata.workspace.display(),
+                newest.metadata.workspace.display(),
                 launch_workspace.display(),
             );
         }
         return None;
     };
 
-    let session_id = best.session.metadata.id.clone();
+    let session_id = best.metadata.id.clone();
 
     // Hold the session's live lease while promoting or clearing anything:
     // the liveness filter above is a check, and another terminal can attach
     // between it and these writes. Losing the race leaves every file alone.
     // The lease is released on return, as `--resume <id>` does, so the resume
     // capture that follows can take it.
-    let Ok(_lease) = manager.reserve_session_for_attach(&session_id) else {
-        return None;
+    let _lease = match manager.reserve_session_for_attach(&session_id) {
+        Ok(lease) => lease,
+        Err(error) => {
+            eprintln!("Interrupted session was preserved but could not be resumed: {error}");
+            return None;
+        }
     };
 
-    // Persist the checkpoint as a regular session so the TUI can load it by
-    // id — unless a newer regular session file for the same id already
-    // exists (e.g. `--continue` ran before and the session advanced since).
-    // A stale checkpoint must never overwrite newer durable session state.
-    if !saved_session_is_newer(&manager, &best.session)
-        && manager.save_session(&best.session).is_err()
-    {
+    let stale_checkpoint =
+        match manager.promote_interrupted_checkpoint(&session_id, Some(launch_workspace)) {
+            Ok(stale) => stale,
+            Err(error) => {
+                eprintln!("Interrupted session was preserved but could not be resumed: {error}");
+                return None;
+            }
+        };
+    let recovered = match manager.load_session(&session_id) {
+        Ok(recovered) => recovered,
+        Err(error) => {
+            eprintln!("Interrupted session was preserved but could not be resumed: {error}");
+            return None;
+        }
+    };
+    if !session_manager::workspace_scope_matches(&recovered.metadata.workspace, launch_workspace) {
+        eprintln!("Interrupted session was preserved but belongs to another workspace.");
         return None;
     }
-
-    match &best.source {
-        session_manager::CheckpointSource::Session(id) => {
-            // Consume the per-session checkpoint now that it is recovered.
-            let _ = manager.clear_session_checkpoint(id);
-        }
-        session_manager::CheckpointSource::Legacy => {
-            // Migrate the legacy slot to a per-session file (never
-            // overwriting an existing one) and leave `latest.json` in place
-            // so an older binary can still find it; its writer is already
-            // gone and the file ages out within 24 hours.
-            let _ = manager.write_session_checkpoint_if_absent(&best.session);
-        }
+    if stale_checkpoint {
+        let _ = manager.clear_session_checkpoint(&session_id);
     }
 
     let age_str = checkpoint_age_label(best.age);
@@ -13141,43 +13228,20 @@ fn recover_interrupted_checkpoint_for_resume(launch_workspace: &Path) -> Option<
     Some(session_id)
 }
 
-/// Whether a regular session file for the checkpoint's id already exists and
-/// is at least as recent as the checkpoint. When it is, persisting the
-/// checkpoint over it would replace newer durable state with older in-flight
-/// state.
-fn saved_session_is_newer(
-    manager: &session_manager::SessionManager,
-    checkpoint: &session_manager::SavedSession,
-) -> bool {
-    manager
-        .load_session(&checkpoint.metadata.id)
-        .is_ok_and(|existing| existing.metadata.updated_at >= checkpoint.metadata.updated_at)
-}
-
 /// Preserve an interrupted checkpoint on a normal fresh launch without
 /// attaching it to the new TUI instance. This keeps "open another codewhale in
 /// the same folder" from re-entering the previous in-flight session while still
 /// leaving an explicit resume path.
 ///
 /// Only the newest recent checkpoint drives the notice, which is returned for
-/// the TUI to show. The legacy single-slot file is migrated to a per-session
-/// checkpoint and consumed; per-session checkpoint files are left in place —
+/// the TUI to show. Checkpoint files are left in place —
 /// they may belong to a live session in another terminal, and `--continue`
 /// reads them directly.
 fn preserve_interrupted_checkpoint_for_explicit_resume(launch_workspace: &Path) -> Option<String> {
     let manager = session_manager::SessionManager::default_location().ok()?;
     let newest = load_recent_checkpoints(&manager).into_iter().next()?;
 
-    let session_workspace = newest.session.metadata.workspace.clone();
-    // #4479: removed save_session call — checkpoint should not be auto-promoted to session
-    if newest.source == session_manager::CheckpointSource::Legacy {
-        // Migrate legacy single-slot checkpoint to per-session format
-        // before clearing the legacy file, or the data is unrecoverable.
-        if manager.save_checkpoint(&newest.session).is_ok() {
-            let _ = manager.clear_legacy_checkpoint();
-        }
-    }
-
+    let session_workspace = newest.metadata.workspace.clone();
     let age_str = checkpoint_age_label(newest.age);
     Some(
         if session_manager::workspace_scope_matches(&session_workspace, launch_workspace) {
@@ -13771,7 +13835,8 @@ async fn run_interactive_prepared(
     // Errors are non-fatal: log a warning and continue.
     let skills_dir = config.skills_dir();
     if let Some(install_dir) = config.bundled_skills_install_dir()
-        && let Err(e) = crate::skills::install_system_skills(&install_dir)
+        && let Err(e) =
+            codewhale_skills::install_system_skills(&install_dir, &config.skills_config().bundled)
     {
         logging::warn(format!("Failed to install system skills: {e}"));
     }
@@ -14403,7 +14468,7 @@ fn exec_failure_exit_code(error_category: Option<&str>) -> i32 {
 /// visibility, but the terminal `TurnComplete` event carries the
 /// authoritative turn outcome — a warning must never fail a run whose turn
 /// later completes.
-fn exec_error_event_is_fatal(envelope: &crate::error_taxonomy::ErrorEnvelope) -> bool {
+fn exec_error_event_is_fatal(envelope: &codewhale_error_taxonomy::ErrorEnvelope) -> bool {
     !envelope.recoverable
 }
 
@@ -14769,7 +14834,7 @@ async fn build_direct_workflow_tool(
     .with_features(config.features())
     .with_skills_config(
         config.skills_dir(),
-        crate::skills::SkillDiscoveryMode::from_config(&config.skills_config()),
+        std::sync::Arc::new(config.skills_config()),
     )
     .with_plugin_registry(std::sync::Arc::clone(&plugin_registry))
     .with_shell_policy(shell_policy)
@@ -17542,7 +17607,8 @@ mod interactive_startup_tests {
 mod mounted_history_tests {
     use super::*;
     use crate::runtime_threads::{
-        RuntimeThreadManager, RuntimeThreadManagerConfig, ThreadListFilter,
+        manager::RuntimeThreadManager, manager::RuntimeThreadManagerConfig,
+        manager::ThreadListFilter,
     };
     use crate::session_manager::{SavedSession, SessionGoalState, SessionWorkState};
     use crate::test_support::{EnvVarGuard, lock_test_env};
@@ -18236,7 +18302,7 @@ mod mounted_history_tests {
     #[tokio::test]
     async fn mounted_retained_pending_resume_finishes_published_source_once_without_reconstructing_intent()
     -> Result<()> {
-        use crate::runtime_api::thread_history::saved_document_digest;
+        use crate::runtime_threads::manager::history::saved_document_digest;
         let _env = lock_test_env();
         let _runtime_override = EnvVarGuard::remove("CODEWHALE_RUNTIME_DIR");
         let _legacy_runtime_override = EnvVarGuard::remove("DEEPSEEK_RUNTIME_DIR");
@@ -20078,7 +20144,7 @@ mod setup_helper_tests {
     }
 
     #[test]
-    fn plain_launch_consumes_legacy_checkpoint_after_preserving_it() {
+    fn plain_launch_preserves_legacy_checkpoint() {
         let _guard = crate::test_support::lock_test_env();
         let tmp = TempDir::new().unwrap();
         let workspace = tmp.path().join("workspace");
@@ -20108,16 +20174,16 @@ mod setup_helper_tests {
                 manager
                     .load_legacy_checkpoint()
                     .expect("load legacy checkpoint")
-                    .is_none(),
-                "normal launch should consume the legacy single-slot checkpoint"
+                    .is_some(),
+                "normal launch must preserve the legacy single-slot checkpoint"
             );
             // #4479: checkpoint is no longer promoted to session file.
             assert!(
                 manager
                     .load_session_checkpoint(&session_id)
                     .expect("load checkpoint")
-                    .is_some(),
-                "checkpoint stays in checkpoints/ for --continue"
+                    .is_none(),
+                "fresh launch need not copy the legacy checkpoint"
             );
         });
     }
@@ -20140,7 +20206,15 @@ mod setup_helper_tests {
             }];
             let session = create_saved_session(&messages, "test-model", &workspace, 0, None);
             let session_id = session.metadata.id.clone();
-            manager.save_checkpoint(&session).expect("save checkpoint");
+            let checkpoint = manager.save_checkpoint(&session).expect("save checkpoint");
+            std::fs::File::options()
+                .write(true)
+                .open(&checkpoint)
+                .expect("open checkpoint")
+                .set_times(std::fs::FileTimes::new().set_modified(
+                    std::time::SystemTime::now() - std::time::Duration::from_secs(48 * 3600),
+                ))
+                .expect("age checkpoint");
 
             let recovered = recover_interrupted_checkpoint_for_resume(&workspace);
 
@@ -20360,7 +20434,7 @@ mod setup_helper_tests {
     }
 
     #[test]
-    fn continue_recovers_legacy_checkpoint_and_migrates_it() {
+    fn continue_recovers_legacy_checkpoint_without_removing_it() {
         let _guard = crate::test_support::lock_test_env();
         let tmp = TempDir::new().unwrap();
         let workspace = tmp.path().join("workspace");
@@ -20385,13 +20459,6 @@ mod setup_helper_tests {
             assert!(
                 manager.load_session(&session_id).is_ok(),
                 "recovered legacy checkpoint must be loadable as a session"
-            );
-            assert!(
-                manager
-                    .load_session_checkpoint(&session_id)
-                    .expect("load per-session checkpoint")
-                    .is_some(),
-                "legacy recovery must migrate to a per-session checkpoint file"
             );
             assert!(
                 manager

@@ -325,9 +325,10 @@ fn explicit_codewhale_home_owns_every_default_user_path() {
 
     let report = DoctorPathReport::resolve(None).expect("resolve doctor paths");
     let task_manager_root = crate::task_manager::default_tasks_dir();
-    let runtime_config = crate::runtime_threads::RuntimeThreadManagerConfig::from_task_data_dir(
-        task_manager_root.clone(),
-    );
+    let runtime_config =
+        crate::runtime_threads::manager::RuntimeThreadManagerConfig::from_task_data_dir(
+            task_manager_root.clone(),
+        );
     let (secrets, legacy_secrets) =
         codewhale_secrets::FileKeyringStore::default_paths_read_only().expect("secret paths");
 

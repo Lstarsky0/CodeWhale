@@ -621,41 +621,88 @@ async fn emergency_compaction_cancellation_drops_provider_and_never_mutates_cont
 /// Emergency recovery must not start a pass (no spinner, no model call)
 /// before the failure the caller reports anyway.
 #[tokio::test]
-async fn emergency_recovery_skips_a_history_with_nothing_to_compact() {
+async fn emergency_recovery_preserves_history_when_disabled_or_unnecessary() {
     use crate::llm_client::mock::MockLlmClient;
     let _env_lock = lock_test_env();
     let workspace = tempdir().unwrap();
     let _home = EnvVarGuard::set("CODEWHALE_HOME", workspace.path());
-    let (mut engine, handle) = Engine::new(
-        deterministic_engine_config(workspace.path()),
-        &Config::default(),
-    );
-    engine.session.messages = vec![Message {
-        role: Role::User,
-        content: vec![ContentBlock::Text {
-            text: "hello".to_string(),
-            cache_control: None,
-        }],
-    }]
-    .into();
-    let client = MockLlmClient::new(Vec::new());
-    let mut turn = TurnContext::new(1);
-    assert!(
-        !engine
-            .recover_context_overflow(&client, None, "preflight token budget", &mut turn)
-            .await
-    );
-    assert_eq!(client.call_count(), 0, "no summary request for one message");
-    assert_eq!(turn.stop_diagnostics.emergency_compaction_attempts, 0);
-    let mut events = handle.rx_event.write().await;
-    let drained = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
-    assert!(
-        !drained.iter().any(|event| matches!(
-            event,
-            Event::CompactionStarted { .. } | Event::CompactionFailed { .. }
-        )),
-        "{drained:?}"
-    );
+    for automatic in [true, false] {
+        let mut config = deterministic_engine_config(workspace.path());
+        config.compaction.enabled = automatic;
+        let (mut engine, handle) = Engine::new(config, &Config::default());
+        let count = if automatic { 1 } else { 8 };
+        engine.session.messages = (0..count)
+            .map(|index| Message {
+                role: if index % 2 == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                },
+                content: vec![ContentBlock::Text {
+                    text: format!("Original conversation step {index}"),
+                    cache_control: None,
+                }],
+            })
+            .collect::<Vec<_>>()
+            .into();
+        assert_eq!(
+            crate::compaction::has_compactable_history(&engine.session.messages),
+            !automatic
+        );
+        let original = engine.session.messages.snapshot();
+        let client = MockLlmClient::new(Vec::new());
+        let mut turn = TurnContext::new(1);
+        assert!(
+            !engine
+                .recover_context_overflow(&client, None, "preflight token budget", &mut turn)
+                .await
+        );
+        assert_eq!(client.call_count(), 0);
+        assert_eq!(turn.stop_diagnostics.emergency_compaction_attempts, 0);
+        assert_eq!(engine.session.messages.snapshot(), original);
+        if !automatic {
+            assert!(
+                turn.context_recovery_rejection
+                    .as_ref()
+                    .is_some_and(|error| matches!(
+                        error.downcast_ref::<crate::llm_client::LlmError>(),
+                        Some(crate::llm_client::LlmError::ContextLengthError(_))
+                    ))
+            );
+            let message = engine
+                .report_context_recovery_failure(&mut turn)
+                .await
+                .expect("disabled-setting explanation");
+            assert!(
+                message.contains("Automatic compaction is disabled"),
+                "{message}"
+            );
+            assert!(
+                engine
+                    .report_context_recovery_failure(&mut turn)
+                    .await
+                    .is_none()
+            );
+        } else {
+            assert!(turn.context_recovery_rejection.is_none());
+        }
+        let mut events = handle.rx_event.write().await;
+        let drained = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
+        assert!(
+            !drained.iter().any(|event| matches!(
+                event,
+                Event::CompactionStarted { .. } | Event::CompactionFailed { .. }
+            )),
+            "{drained:?}"
+        );
+        assert_eq!(
+            drained
+                .iter()
+                .filter(|event| matches!(event, Event::Error { .. }))
+                .count(),
+            usize::from(!automatic)
+        );
+    }
 }
 
 #[test]

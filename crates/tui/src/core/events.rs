@@ -14,12 +14,12 @@ use tokio_util::sync::CancellationToken;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-use crate::error_taxonomy::ErrorEnvelope;
 use crate::tools::goal::GoalSnapshot;
 use crate::tools::spec::{ToolError, ToolResult};
 use crate::tools::subagent::{AgentWorkerStatus, CoordinationDetailProjection, SubAgentResult};
 use crate::tools::user_input::UserInputRequest;
 use codewhale_config::ProviderKind;
+use codewhale_error_taxonomy::ErrorEnvelope;
 use codewhale_models::{Message, SystemPrompt, Tool, Usage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1142,7 +1142,14 @@ pub fn status_visibility(message: &str) -> StatusVisibility {
     // #6511: a nested sub-RLM's forwarded rounds are the record of model
     // calls the parent never saw; keep them, collapsed.
     let nested_rlm_row = message.starts_with(crate::rlm::bridge::NESTED_RLM_STATUS_PREFIX);
-    if scheduler_row || continuation_row || agent_resume_row || approval_wait_row || nested_rlm_row
+    let mcp_guidance_row = message.starts_with("MCP server guidance added to context")
+        || message == "MCP server guidance withdrawn from context";
+    if scheduler_row
+        || continuation_row
+        || agent_resume_row
+        || approval_wait_row
+        || nested_rlm_row
+        || mcp_guidance_row
     {
         StatusVisibility::Internal
     } else {

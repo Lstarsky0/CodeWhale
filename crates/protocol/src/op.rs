@@ -185,6 +185,32 @@ pub struct ReviewOperationIntent {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ReviewSourceFile {
+    pub path: String,
+    pub revision: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewPriorFinding {
+    pub key: String,
+    pub path: String,
+    pub line: u32,
+    pub summary: String,
+    pub discussion: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewOperationContext {
+    pub files: Vec<ReviewSourceFile>,
+    pub omitted: Vec<String>,
+    pub previous_findings: Vec<ReviewPriorFinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReviewOperation {
     pub version: u32,
     pub repository: String,
@@ -197,6 +223,8 @@ pub struct ReviewOperation {
     pub max_claims: usize,
     pub max_nits: usize,
     pub max_chars: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ReviewOperationContext>,
 }
 
 /// Operations that can be submitted to the core engine. This is the
@@ -647,6 +675,7 @@ mod tests {
                     max_claims: 40,
                     max_nits: 3,
                     max_chars: 60_000,
+                    context: None,
                 },
             },
             headless_send_message_op(ThreadId::new(), "hello").op,

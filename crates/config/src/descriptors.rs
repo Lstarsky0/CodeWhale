@@ -418,6 +418,6 @@ mod tests {
         // reusing its name; compatible-host lookup remains separately scoped.
         assert!(provider_descriptor("openai").is_none());
         assert!(provider_descriptor("deepseek").is_none());
-        assert_eq!(bundled_provider_descriptors().len(), 11);
+        assert_eq!(bundled_provider_descriptors().len(), 12);
     }
 }

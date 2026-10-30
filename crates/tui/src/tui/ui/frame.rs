@@ -72,10 +72,9 @@ fn output_tokens(app: &App) -> Option<u64> {
 /// the git bottom view own them. Fleet, whale and automation counts left too —
 /// the posture bar's live counts own activity.
 ///
-/// Composition is the user's (#5950): every segment here is gated on the
-/// matching [`StatusItem`] in `app.status_items`, which is what `/statusline`
-/// edits and `tui.status_items` persists. Between 0.9.12 and this change the
-/// row ignored that list entirely and the picker's toggles did nothing.
+/// Session metrics follow the matching [`StatusItem`] in `app.status_items`,
+/// which `/statusline` edits and `tui.status_items` persists. The active goal
+/// and available-update notice follow their own live state.
 pub(crate) fn info_segments(app: &App, width: u16) -> Vec<InfoSegment> {
     use codewhale_localization::MessageId;
     use codewhale_palette::ChromeInk;
@@ -325,6 +324,15 @@ pub(crate) fn info_segments(app: &App, width: u16) -> Vec<InfoSegment> {
         }
     }
 
+    if let Some(label) = app.update_available.as_deref() {
+        segments.push(InfoSegment::new(
+            InfoSegmentId::Update,
+            "",
+            label,
+            ChromeInk::Info,
+        ));
+    }
+
     segments
 }
 
@@ -356,6 +364,7 @@ struct InfoLineInteractionHitboxes {
     /// The model name and its effort tier — one span, because they are
     /// always adjacent and `/model` owns both.
     model: Option<Rect>,
+    update: Option<Rect>,
 }
 
 /// Separator between rendered route fields. Three columns wide, matching
@@ -418,10 +427,9 @@ fn split_route_hitbox(
 }
 
 /// Render the info line into its one row and record its segment
-/// hitboxes (spec §5b `Constraint::Length(1)`). The ONE header on every
-/// screen: the session shell and the launch screen both call this, so the
-/// brand lockup, contextual segments, and the pinned meter + clock never
-/// change identity between pre- and post-session states. Segment rects are
+/// hitboxes (spec §5b `Constraint::Length(1)`). The session shell and launch
+/// screen both use this row, keeping the visible identity and notice facts
+/// consistent between pre- and post-session states. Segment rects are
 /// recorded for hover (this frame's highlight resolves against the previous
 /// frame's rects, the standard one-frame-lag registry pattern) and for typed
 /// click routing.
@@ -446,7 +454,10 @@ fn render_info_row(
         segments.retain(|segment| {
             matches!(
                 segment.id,
-                InfoSegmentId::Model | InfoSegmentId::Workspace | InfoSegmentId::GitBranch
+                InfoSegmentId::Model
+                    | InfoSegmentId::Workspace
+                    | InfoSegmentId::GitBranch
+                    | InfoSegmentId::Update
             )
         });
     }
@@ -455,8 +466,10 @@ fn render_info_row(
             .last_infoline_hitboxes
             .iter()
             .find(|hb| {
-                matches!(hb.id, InfoSegmentId::Model | InfoSegmentId::Context)
-                    && hb.area.x <= mx
+                matches!(
+                    hb.id,
+                    InfoSegmentId::Model | InfoSegmentId::Context | InfoSegmentId::Update
+                ) && hb.area.x <= mx
                     && mx < hb.area.right()
                     && hb.area.y == my
             })
@@ -500,6 +513,10 @@ fn render_info_row(
         context: crate::tui::infoline::context_meter_hitbox(&info, area),
         route: provider_area,
         model: model_area,
+        update: hitboxes
+            .iter()
+            .find(|hitbox| hitbox.id == InfoSegmentId::Update)
+            .map(|hitbox| hitbox.area),
     };
     // Keep the row's quiet background under the widget itself.
     let buf = f.buffer_mut();
@@ -658,6 +675,18 @@ fn register_info_interaction_targets(app: &mut App, hitboxes: InfoLineInteractio
                 inspect_detail: crate::tui::tideline::InspectDetail::Route,
             });
     }
+    if let Some(hitbox) = hitboxes.update {
+        app.viewport
+            .interaction_targets
+            .register(crate::tui::tideline::InteractionTarget {
+                id: crate::tui::tideline::InteractionTargetId::HEADER_UPDATE,
+                area: hitbox,
+                focus: crate::tui::tideline::InteractionFocus::Direct,
+                keyboard_action: None,
+                mouse_action: Some(crate::tui::tideline::InteractionAction::OpenUpdate),
+                inspect_detail: crate::tui::tideline::InspectDetail::Update,
+            });
+    }
 
     for target in app.viewport.interaction_targets.iter() {
         let label = match target.mouse_action {
@@ -690,6 +719,13 @@ fn register_info_interaction_targets(app: &mut App, hitboxes: InfoLineInteractio
                 codewhale_localization::tr(
                     app.ui_locale,
                     codewhale_localization::MessageId::CmdModelDescription,
+                ),
+            ),
+            Some(crate::tui::tideline::InteractionAction::OpenUpdate) => format!(
+                "/update · {}",
+                codewhale_localization::tr(
+                    app.ui_locale,
+                    codewhale_localization::MessageId::CmdUpdateDescription,
                 ),
             ),
             Some(crate::tui::tideline::InteractionAction::ShowDockPanel(panel)) => {
@@ -913,15 +949,18 @@ pub(crate) async fn build_preview_request_inputs(
                 app.translation_enabled,
                 app.verbosity.clone(),
             );
+            prompt_context.context_window = Some(planned.route.context_window);
             let effort = planned.effective_reasoning_effort.as_deref();
-            prompt_context.planned_output_tokens =
-                Some(crate::route_budget::effective_max_output_tokens_for_turn(
+            prompt_context.planned_output_tokens = Some(
+                crate::route_budget::effective_max_output_tokens_for_turn_with_window(
                     planned.route.identity.provider,
                     &planned.route.model,
                     crate::route_budget::known_route_limits(planned.route.candidate.limits()),
+                    Some(planned.route.context_window.tokens),
                     None,
                     effort,
-                ));
+                ),
+            );
             posture(
                 Some(Box::new(PreviewNextTurn {
                     content,
@@ -969,7 +1008,7 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         mcp_oauth_callback_port: config.mcp_oauth_callback_port,
         mcp_oauth_callback_url: config.mcp_oauth_callback_url.clone(),
         skills_dir: app.skills_dir.clone(),
-        skills_discovery_mode: app.skills_discovery_mode,
+        skills_config: app.skills_config.clone(),
         plugin_registry: Some(std::sync::Arc::clone(&app.plugin_registry)),
         instructions: configured_instruction_sources(config),
         project_context_pack_enabled: config.project_context_pack_enabled(),
@@ -1137,21 +1176,21 @@ pub(crate) fn build_app_system_prompt_with_goal(
     let budgets = crate::project_context::InstructionBudgets::resolve_or_default(
         &settings.budget,
         crate::route_runtime::ContextWindowResolution {
-            tokens: crate::route_budget::route_context_window_tokens(
-                app.api_provider,
-                &app.model,
-                app.active_route_limits,
-            ),
-            source: app.active_context_window_source,
+            tokens: app.effective_context_window(),
+            source: app.effective_context_window_source(),
         }
         .instruction_budget_tokens(),
-        Some(crate::route_budget::effective_max_output_tokens_for_turn(
-            app.api_provider,
-            &app.model,
-            app.active_route_limits,
-            None,
-            effort.as_deref(),
-        ) as usize),
+        Some({
+            let (provider, model, limits, window) = app.effective_budget_route();
+            crate::route_budget::effective_max_output_tokens_for_turn_with_window(
+                provider,
+                model,
+                limits,
+                window.map(|window| window.tokens),
+                None,
+                effort.as_deref(),
+            ) as usize
+        }),
     );
     prompts::system_prompt_with_instruction_assembly_for_host(
         &app.workspace,
@@ -1165,14 +1204,10 @@ pub(crate) fn build_app_system_prompt_with_goal(
             locale_tag: app.ui_locale.tag(),
             translation_enabled: app.translation_enabled,
             model_id: &app.model,
-            context_window_override: Some(crate::route_budget::route_context_window_tokens(
-                app.api_provider,
-                &app.model,
-                app.active_route_limits,
-            )),
+            context_window_override: Some(app.effective_context_window()),
             verbosity: app.verbosity.as_deref(),
             recovery_hint: recovery_hint.as_deref(),
-            skills_discovery_mode: app.skills_discovery_mode,
+            skills_config: app.skills_config.clone(),
             plugin_registry: Some(app.extension_plugin_view().as_ref()),
             mode: app.mode,
         },
@@ -1180,6 +1215,26 @@ pub(crate) fn build_app_system_prompt_with_goal(
         Some((&raw, &settings, budgets)),
     )
     .0
+}
+
+fn record_window_reroot(
+    session_id: Option<&str>,
+    previous_window: usize,
+    window: usize,
+    journal_entries: usize,
+) {
+    let details = serde_json::json!({
+        "session_id": session_id,
+        "reason": "first_message_changed",
+        "previous_window": previous_window,
+        "window": window,
+        "journal_entries": journal_entries,
+    });
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn_blocking(move || {
+            codewhale_runtime::audit::log_sensitive_event("session.window.rerooted", details);
+        });
+    }
 }
 
 /// Build the session snapshot every product caller queues into the
@@ -1206,8 +1261,17 @@ pub(crate) fn build_session_snapshot(
             tracing::warn!(%error, "kept archived journal entries in memory");
         }
     }
-    app.session_journal
+    let rebranch = app
+        .session_journal
         .rebranch_active_messages_stamped(&app.api_messages, &app.api_message_stamps);
+    if rebranch.replaced_from_root() && !app.api_messages.is_empty() {
+        record_window_reroot(
+            app.current_session_id.as_deref(),
+            rebranch.previous_active,
+            app.api_messages.len(),
+            app.session_journal.entries.len(),
+        );
+    }
     let mut session = crate::session_manager::create_saved_session_journal_only(
         app.current_session_id
             .clone()
@@ -1387,6 +1451,18 @@ pub(crate) fn accrue_streaming_token_estimate(app: &mut App, visible_text: &str)
         .saturating_add(estimate_output_tokens_from_text(visible_text));
 }
 
+/// Take a finished text block's remaining buffer, leaving a reasoning block
+/// untouched (#7123). A text drain must never carry reasoning into the
+/// assistant cell, and must never take a block that is not its own: taking a
+/// reasoning tail here would append it to the prose and drop it from the card.
+pub(crate) fn drain_text_block(state: &mut codewhale_tui_kit::streaming::StreamingState) -> String {
+    if state.block_is_thinking(0) {
+        String::new()
+    } else {
+        state.finalize_block_text(0)
+    }
+}
+
 pub(crate) fn commit_streaming_display_tick(
     app: &mut App,
     stream_display_clock: &mut StreamDisplayClock,
@@ -1401,27 +1477,32 @@ pub(crate) fn commit_streaming_display_tick(
     // function of the clock instead of the provider's chunking.
     let interval = stream_display_clock.interval();
     let mut updated = false;
-    if let Some(index) = app.streaming_message_index {
-        let budget =
-            crate::tui::streaming::reveal_budget(interval, app.streaming_state.pending_len(0));
-        let committed = app.streaming_state.commit_text(0, budget);
-        if !committed.is_empty() {
-            append_streaming_text(app, index, &committed);
-            accrue_streaming_token_estimate(app, &committed);
-            updated = true;
-        }
-    } else if let Some(entry_idx) = app.streaming_thinking_active_entry {
-        let budget =
-            crate::tui::streaming::reveal_budget(interval, app.streaming_state.pending_len(0));
-        let committed = app.streaming_state.commit_text(0, budget);
-        if !committed.is_empty() {
+    let budget =
+        codewhale_tui_kit::streaming::reveal_budget(interval, app.streaming_state.pending_len(0));
+    let committed = app.streaming_state.commit_text(0, budget);
+    if !committed.is_empty() {
+        // #7123: route by the block's own kind. An assistant cell stays live
+        // from an earlier text block while a later thinking block streams, so
+        // preferring `streaming_message_index` wrote reasoning into the prose
+        // body, splitting one sentence across the thinking card and the
+        // answer that follows it.
+        if app.streaming_state.block_is_thinking(0) {
+            let entry_idx = app
+                .streaming_thinking_active_entry
+                .unwrap_or_else(|| streaming_thinking::ensure_active_entry(app));
             if app.translation_enabled {
                 streaming_thinking::set_placeholder(app, entry_idx);
             } else {
                 streaming_thinking::append(app, entry_idx, &committed);
             }
-            updated = true;
+        } else {
+            let index = app
+                .streaming_message_index
+                .unwrap_or_else(|| ensure_streaming_assistant_history_cell(app));
+            append_streaming_text(app, index, &committed);
+            accrue_streaming_token_estimate(app, &committed);
         }
+        updated = true;
     }
 
     if app.streaming_state.has_pending_stream_text(0) {
@@ -2267,11 +2348,7 @@ pub(crate) fn estimated_context_tokens(app: &App) -> Option<i64> {
 }
 
 pub(crate) fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
-    let max = crate::route_budget::route_context_window_tokens(
-        app.api_provider,
-        app.effective_model_for_budget(),
-        app.active_route_limits,
-    );
+    let max = app.effective_context_window();
     context_usage_snapshot_for_window(app, max)
 }
 
@@ -2352,8 +2429,43 @@ pub(crate) fn workflow_tool_is_running(app: &App) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{register_info_interaction_targets, render_info_row, short_title_truncate};
+    use super::{
+        drain_text_block, register_info_interaction_targets, render_info_row, short_title_truncate,
+    };
     use ratatui::{Terminal, backend::TestBackend};
+
+    /// #7123: the text drain must never take a reasoning block. A reasoning
+    /// tail handed to the assistant cell would appear as prose, which is the
+    /// split sentence this fix exists to prevent.
+    #[test]
+    fn issue_7123_drain_text_block_leaves_a_reasoning_block_alone() {
+        use codewhale_tui_kit::streaming::StreamingState;
+
+        let mut state = StreamingState::new();
+        state.start_thinking(0);
+        state.push_content(0, "reasoning tail");
+        assert_eq!(
+            drain_text_block(&mut state),
+            "",
+            "a reasoning block must not be drained into the prose"
+        );
+        assert_eq!(
+            state.pending_len(0),
+            "reasoning tail".len(),
+            "the reasoning tail must stay buffered for its own drain"
+        );
+
+        let mut state = StreamingState::new();
+        state.start_text(0);
+        state.push_content(0, "prose tail");
+        assert_eq!(drain_text_block(&mut state), "prose tail");
+        assert_eq!(state.pending_len(0), 0);
+
+        // An empty state has no block at index 0; the drain is a no-op rather
+        // than a panic.
+        let mut state = StreamingState::new();
+        assert_eq!(drain_text_block(&mut state), "");
+    }
 
     /// Chrome that answers a click must also answer the pointer, or the app
     /// teaches people that pointing at things does not work here.
@@ -3019,9 +3131,8 @@ mod tests {
         }
     }
 
-    /// Every remaining status item owns a segment, and an empty list leaves
-    /// the row with nothing but the help hint — no toggle in `/statusline`
-    /// paints something no toggle can remove.
+    /// Every selected status item owns its segment; without live notices an
+    /// empty list leaves the metrics line empty.
     #[test]
     fn every_metrics_segment_answers_to_a_status_item() {
         let mut app = app_with_context_percent(60);
@@ -3066,17 +3177,20 @@ mod tests {
 
     #[test]
     fn empty_session_keeps_opted_in_workspace_identity_visible() {
+        let _guard = crate::tui::hover_layer::HOVER_TEST_LOCK.lock().unwrap();
         let mut app = app_with_context_percent(0);
         app.workspace = std::path::PathBuf::from("/fixture/checkout");
         app.workspace_context = Some("feature-6112 | clean".to_string());
         app.status_items = vec![StatusItem::Workspace, StatusItem::GitBranch];
+        app.update_available = Some("↑ v9.9.9".to_string());
         app.metrics_line = codewhale_runtime::config::ChromeRowPreset::Compact;
         let backend = ratatui::backend::TestBackend::new(100, 1);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                super::render_info_row(frame, &mut app, area, true);
+                let hitboxes = super::render_info_row(frame, &mut app, area, true);
+                super::register_info_interaction_targets(&mut app, hitboxes);
             })
             .unwrap();
         let rendered: String = terminal
@@ -3088,6 +3202,57 @@ mod tests {
             .collect();
         assert!(rendered.contains("checkout"), "{rendered}");
         assert!(rendered.contains("feature-6112"), "{rendered}");
+        assert!(rendered.contains("v9.9.9"), "{rendered}");
+        let target = *app
+            .viewport
+            .interaction_targets
+            .iter()
+            .find(|target| target.id == crate::tui::tideline::InteractionTargetId::HEADER_UPDATE)
+            .expect("visible update notice is actionable");
+        assert_eq!(
+            target.mouse_action,
+            Some(crate::tui::tideline::InteractionAction::OpenUpdate)
+        );
+        app.last_mouse_pos = Some((target.area.x, target.area.y));
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                super::render_info_row(frame, &mut app, area, true);
+            })
+            .unwrap();
+        assert!(
+            terminal.backend().buffer()[(target.area.x, target.area.y)]
+                .modifier
+                .contains(ratatui::style::Modifier::UNDERLINED)
+        );
+        for launch_visible in [true, false] {
+            app.launch.visible = launch_visible;
+            let events = crate::tui::mouse_ui::handle_mouse_event(
+                &mut app,
+                crossterm::event::MouseEvent {
+                    kind: crossterm::event::MouseEventKind::Down(
+                        crossterm::event::MouseButton::Left,
+                    ),
+                    column: target.area.x,
+                    row: target.area.y,
+                    modifiers: crossterm::event::KeyModifiers::NONE,
+                },
+            );
+            assert!(matches!(
+                events.as_slice(),
+                [crate::tui::views::ViewEvent::CommandPaletteSelected {
+                    action: crate::tui::views::CommandPaletteAction::ExecuteCommand { command },
+                }] if command == "/update"
+            ));
+        }
+        let mut notice = super::super::UpdateNotice {
+            current: "0.10.1".to_string(),
+            latest: "0.10.2".to_string(),
+            staged: Some(false),
+        };
+        assert_eq!(notice.chip_label(), "↑ v0.10.2");
+        notice.staged = Some(true);
+        assert_eq!(notice.chip_label(), "↑ v0.10.2 ready");
     }
 
     /// #6112: the opt-in workspace and branch chips read cached state only —

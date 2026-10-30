@@ -975,7 +975,7 @@ mod tests {
         app.runtime_turn_status = Some("failed".into());
         app.add_message(HistoryCell::Error {
             message: "Actual failure receipt".into(),
-            severity: crate::error_taxonomy::ErrorSeverity::Error,
+            severity: codewhale_error_taxonomy::ErrorSeverity::Error,
         });
         assert!(paint(&mut app, 40, 12).contains("Actual failure receipt"));
         assert_eq!(app.input, "retained draft");

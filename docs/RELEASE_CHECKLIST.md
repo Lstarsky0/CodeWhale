@@ -30,8 +30,11 @@ known limitations and publication approval. These proofs are separate.
       preserving dirty/untracked files and comparing commits with current
       `origin/main`. Keep a recoverable backup and unresolved inventory; do not
       reset away work, stash it indefinitely or create another development lane.
-- [ ] Partition files among active writers. Check status before staging and
-      stage only owned paths. Historical branches/checkouts are inventoried;
+- [ ] Uncommitted work found in the checkout is yours (founder, 2026-10-22):
+      read it, prove it, and commit it by explicit path. A file changed in the
+      last 15 minutes or held by a live session is mid-edit: ask that writer
+      to commit first. Check status before staging; never `git add -A`.
+      Historical branches/checkouts are inventoried;
       deleting them requires explicit Hunter approval even if a helper calls
       their tips safe to delete.
 

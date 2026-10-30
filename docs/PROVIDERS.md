@@ -59,6 +59,7 @@ against the vendor's own docs before trusting any value here:
 | Cheaper Inference | `https://api.cheaperinference.com/v1` | `gpt-5.4-mini`, `claude-sonnet-5`, `gemini-3.1-pro` | `CHEAPER_INFERENCE_API_KEY` |
 | Yolo-Auto | `https://yolo-auto.com/v1` | `qwen3.8-flash`; `yolo` / `yolo-small` | `YOLO_AUTO_API_KEY` |
 | Standard Compute | `https://api.stdcmpt.com/v1` | `standardcompute` (router); `deepseek/deepseek-v4-pro`, `anthropic/claude-sonnet-5.5` | `STANDARDCOMPUTE_API_KEY` |
+| Runcrate | `https://api.runcrate.ai/v1` | `deepseek-ai/DeepSeek-V4.1-Flash`, `zai-org/GLM-5.3`, `openai/gpt-oss-120b` | `RUNCRATE_API_KEY` |
 
 AICraft's roster spans DeepSeek, Anthropic Claude, Google Gemini, Qwen, GLM,
 MiniMax and Doubao ids on its OpenAI-compatible endpoint. The authority is
@@ -83,6 +84,12 @@ The `standardcompute` model id routes each request across models and providers;
 vendor-prefixed ids such as `deepseek/deepseek-v4-pro` pin one model. The
 authority is `GET https://api.stdcmpt.com/v1/models`.
 Docs: <https://docs.standardcompute.com/quickstart>.
+
+Runcrate is an OpenAI-compatible gateway with one key for models from several
+labs. Model ids are case-sensitive `org/Name` ids such as
+`deepseek-ai/DeepSeek-V4.1-Flash`. The authority is
+`GET https://api.runcrate.ai/v1/models`, which is public and needs no key.
+Docs: <https://www.runcrate.ai/docs/getting-started/quickstart>.
 
 OpenCode Zen and OpenCode Go are first-class provider routes, configured like
 any other provider below; they are not part of this table. In `/provider`,

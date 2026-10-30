@@ -546,7 +546,7 @@ mod tests {
             .iter()
             .find(|row| row.id.0 == "coordination")
             .expect("blocked coordination Work row");
-        assert_eq!(row.mark, crate::tui::glyphs::ATTENTION);
+        assert_eq!(row.mark, codewhale_tui_kit::glyphs::ATTENTION);
         assert_eq!(row.tone, super::model::WorkTone::Attention);
         assert_eq!(row.detail, "0 decisions · 1 contentions · 0 reconciled");
     }
@@ -589,9 +589,9 @@ mod tests {
         }
 
         let text = render_text(&mut app, 80, 7);
-        let done = format!("1 · {} finished", crate::tui::glyphs::DONE);
-        let current = format!("2 · {} current", crate::tui::glyphs::SELECTION);
-        let next = format!("3 · {} next", crate::tui::glyphs::READY);
+        let done = format!("1 · {} finished", codewhale_tui_kit::glyphs::DONE);
+        let current = format!("2 · {} current", codewhale_tui_kit::glyphs::SELECTION);
+        let next = format!("3 · {} next", codewhale_tui_kit::glyphs::READY);
 
         assert!(text.contains("To-do · 1/3 · 2 left"), "{text:?}");
         assert_eq!(text.matches("To-do ·").count(), 1, "{text:?}");
@@ -921,7 +921,10 @@ mod tests {
 
         assert!(text.contains("To-do · 1/3 · 2 left"), "{text:?}");
         assert!(
-            text.contains(&format!("2 · {} current", crate::tui::glyphs::SELECTION)),
+            text.contains(&format!(
+                "2 · {} current",
+                codewhale_tui_kit::glyphs::SELECTION
+            )),
             "{text:?}"
         );
         assert_eq!(app.work_surface.hitboxes[0].row_y, 2);
@@ -2306,6 +2309,10 @@ mod tests {
     #[test]
     fn context_view_renders_the_budget_in_a_side_rail() {
         let mut app = app();
+        let (_, max, _) = crate::tui::ui::context_usage_snapshot(&app).expect("context budget");
+        app.auto_compact = true;
+        app.auto_compact_threshold_percent = 80.0;
+        app.compact_threshold = usize::try_from(max / 2).expect("context window");
         app.work_surface.placement = super::WorkSurfacePlacement::Right;
         super::interaction::select_dock_panel(&mut app, super::RailPanel::Context);
         let area = ratatui::layout::Rect::new(0, 0, 100, 24);
@@ -2323,6 +2330,10 @@ mod tests {
             .expect("draw");
         let text = terminal_text(&terminal);
         assert!(text.contains(" of "), "budget row; got: {text}");
+        assert!(
+            text.contains("auto ~50%"),
+            "effective threshold; got: {text}"
+        );
         assert!(text.contains("compact now"), "compact door; got: {text}");
         assert!(
             app.work_surface
@@ -2331,6 +2342,29 @@ mod tests {
                 .any(|hit| hit.id.0 == "context:compact"),
             "the compact row is a hit target"
         );
+
+        let rows = super::views::context_rows(&mut app);
+        let automatic = rows
+            .iter()
+            .find(|row| row.id.0 == "context:automatic")
+            .unwrap();
+        assert_eq!(automatic.label, "auto ~50% · target 80%");
+        assert!(automatic.detail.contains("other routes may differ"));
+        app.compact_threshold = usize::try_from(max * 4 / 5).expect("context window");
+        let rows = super::views::context_rows(&mut app);
+        let automatic = rows
+            .iter()
+            .find(|row| row.id.0 == "context:automatic")
+            .unwrap();
+        assert_eq!(automatic.label, "auto ~80% · target 80%");
+        app.auto_compact = false;
+        let rows = super::views::context_rows(&mut app);
+        let automatic = rows
+            .iter()
+            .find(|row| row.id.0 == "context:automatic")
+            .unwrap();
+        assert_eq!(automatic.label, "automatic compaction off");
+        assert!(automatic.detail.contains("/compact"));
     }
 
     #[test]
@@ -2591,7 +2625,7 @@ mod tests {
             .iter()
             .find(|row| row.selectable)
             .expect("operation row");
-        assert_eq!(row.mark, crate::tui::glyphs::ATTENTION);
+        assert_eq!(row.mark, codewhale_tui_kit::glyphs::ATTENTION);
         assert!(row.detail.contains("completed · evidence pending"));
         assert_ne!(row.mark, "✓");
         let Some(SidebarRowAction::InspectWork { body, .. }) = row.primary_action.as_ref() else {

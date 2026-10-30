@@ -534,9 +534,34 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
 
         // Portable save failure: block the canonical file with a directory.
         // Preserve the last durable snapshot as a sibling for inspection.
+        let before_failure = handle.get_session_snapshot().await.unwrap();
         std::fs::rename(&path, path.with_extension("before-failure")).unwrap();
         std::fs::create_dir(&path).unwrap();
+        app.input = "unrelated draft".into();
+        app.cursor_position = app.input.chars().count();
         let result = commands::execute("/retry", &mut app);
+        apply_command_result(
+            &mut terminal,
+            &mut app,
+            &mut handle,
+            &tasks,
+            &mut config,
+            result,
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.input, "unrelated draft");
+        assert!(app.queued_messages.is_empty());
+        assert!(app.history.iter().any(|cell| matches!(cell, HistoryCell::System { content } if content == "Retry prompt was not sent. Copy it from here to retry:\nkeep this")));
+        assert_eq!(mock.captured_requests().len(), 6);
+        handle.send(sync_snapshot(&before_failure)).await.unwrap();
+        assert_eq!(handle.get_session_snapshot().await.unwrap().messages, before_failure.messages);
+        app.set_api_messages(Arc::new(before_failure.messages));
+        app.push_history_cell(HistoryCell::User { content: "keep this".into() });
+        let loaded = commands::execute("/edit", &mut app);
+        assert!(!loaded.is_error, "{:?}", loaded.message);
+        let result = super::super::event_loop::edit_replacement_result(&mut app, "replacement after failed save")
+            .expect("a pending edit stages a replacement");
         apply_command_result(
             &mut terminal,
             &mut app,
@@ -563,6 +588,10 @@ fn undo_retry_apply_path_keeps_engine_request_and_reopened_session_consistent() 
             app.api_messages.as_slice() == [checkpoint.clone()],
             "acknowledged undo remains visible after save failure"
         );
+        assert_eq!(app.input, "replacement after failed save");
+        assert!(!app.edit_in_progress);
+        assert!(super::super::event_loop::edit_replacement_result(&mut app, "replacement after failed save").is_none());
+        assert!(app.status_toasts.back().unwrap().text.contains("Conversation was rewound"));
         assert!(
             handle
                 .get_session_snapshot()

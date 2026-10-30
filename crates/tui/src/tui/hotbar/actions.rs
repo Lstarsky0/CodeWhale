@@ -1074,7 +1074,7 @@ impl HotbarAction for AppHotbarAction {
                     build_command_palette_entries(
                         app.ui_locale,
                         &app.skills_dir,
-                        app.skills_discovery_mode,
+                        &app.skills_config,
                         &app.workspace,
                         &app.mcp_config_path,
                         app.mcp_snapshot.as_ref(),
@@ -1197,7 +1197,7 @@ impl RouteHotbarAction {
         let trimmed_model = model.trim().to_string();
         Self {
             id: route_action_id(&identity, &trimmed_model),
-            short_label: crate::tui::ui_text::truncate_line_to_width(
+            short_label: codewhale_tui_kit::ui_text::truncate_line_to_width(
                 identity.key.as_str(),
                 HOTBAR_COMPACT_LABEL_MAX_WIDTH,
             ),
@@ -1277,7 +1277,7 @@ impl SkillHotbarAction {
         Self {
             name: name.to_string(),
             id: format!("skill.{name}"),
-            short_label: crate::tui::ui_text::truncate_line_to_width(
+            short_label: codewhale_tui_kit::ui_text::truncate_line_to_width(
                 name,
                 HOTBAR_COMPACT_LABEL_MAX_WIDTH,
             ),
@@ -1352,7 +1352,7 @@ impl McpToolHotbarAction {
             model_name: tool.model_name.trim().to_string(),
             description: tool.description.clone(),
             id: format!("mcp.{server}.{}", tool.name),
-            short_label: crate::tui::ui_text::truncate_line_to_width(
+            short_label: codewhale_tui_kit::ui_text::truncate_line_to_width(
                 &tool.name,
                 HOTBAR_COMPACT_LABEL_MAX_WIDTH,
             ),
@@ -1829,7 +1829,10 @@ mod tests {
         let palette_slash_ids = build_command_palette_entries(
             Locale::En,
             tmp.path(),
-            crate::skills::SkillDiscoveryMode::CodeWhaleOnly,
+            &codewhale_runtime::config::SkillsConfig {
+                scan_codewhale_only: Some(true),
+                ..Default::default()
+            },
             tmp.path(),
             &tmp.path().join("mcp.json"),
             None,

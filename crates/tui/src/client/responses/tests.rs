@@ -985,6 +985,9 @@ fn deepseek_flash_responses_body_uses_stateless_0731_contract() {
         body.pointer("/input/0/content/0/text"),
         Some(&json!("preserve this tool-loop reasoning"))
     );
+    request.reasoning_effort = Some("auto".to_string());
+    let automatic = build_responses_body_for_provider(&request, ProviderKind::Deepseek, None);
+    assert!(automatic.get("reasoning").is_none());
 }
 
 #[test]

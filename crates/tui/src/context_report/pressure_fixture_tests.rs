@@ -168,6 +168,7 @@ fn assert_one_pressure_number(
     app.model = route.model.clone();
     app.active_route_limits = crate::route_budget::known_route_limits(route.candidate.limits());
     app.active_context_window_source = route.context_window.source;
+    app.active_context_window = Some(route.context_window);
     // Install the transcript the way the host applies an engine session
     // projection (`apply_engine_session_projection`): the meter's per-message
     // cache is dropped before the rewritten history lands, so a compaction

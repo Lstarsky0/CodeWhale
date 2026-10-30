@@ -4227,13 +4227,48 @@ fn command_registry_refuses_shadowing_and_undoes_exactly_one_entry() {
         )
         .unwrap();
 
-    // Built-in names, their aliases, and the fixed mode aliases, as the
-    // catalog says (the real table: `commands::extension_host_tests`).
+    // Built-in spellings remain protected while plugins receive distinct names.
     for name in ["help", "trust", "model", "jihua", "zidong", "stub-alias"] {
-        let refused = register_command(&mut registry, &a, name, None)
-            .expect_err(&format!("/{name} must be refused"));
-        assert!(refused.contains("built-in command"), "{name}: {refused}");
+        let handle = register_command(&mut registry, &a, name, None).unwrap();
+        let _ = registry.mark_active(&a);
+        let registered = registry.live_command(handle, "a", a.generation).unwrap();
+        assert_eq!(registered.name, format!("plugin-a-{name}"));
+        assert_eq!(registered.declared_name, name);
+        registry.unregister(&a, handle);
     }
+    let mut long_registry = OwnerRegistry::new();
+    let long_name = "name".repeat(40);
+    let long_owner = long_registry
+        .begin_owner(
+            HostTier::Plugin,
+            "long-id",
+            &long_name,
+            Some(fake_authority("long-id")),
+            "hash-long",
+        )
+        .unwrap();
+    let long_help = register_command(&mut long_registry, &long_owner, "help", None).unwrap();
+    let long_model = register_command(&mut long_registry, &long_owner, "model", None).unwrap();
+    let _ = long_registry.mark_active(&long_owner);
+    let help_name = long_registry
+        .live_command(long_help, "long-id", long_owner.generation)
+        .unwrap()
+        .name;
+    let model_name = long_registry
+        .live_command(long_model, "long-id", long_owner.generation)
+        .unwrap()
+        .name;
+    assert!(help_name.len() <= 64 && model_name.len() <= 64);
+    assert_ne!(help_name, model_name);
+    let aliased = register_command(&mut registry, &a, "help", None).unwrap();
+    let clash = register_command(&mut registry, &a, "plugin-a-help", None).unwrap_err();
+    assert!(clash.contains("namespaced alias"), "{clash}");
+    assert!(registry.live_command(aliased, "a", a.generation).is_some());
+    registry.unregister(&a, aliased);
+    let explicit = register_command(&mut registry, &a, "plugin-a-help", None).unwrap();
+    let clash = register_command(&mut registry, &a, "help", None).unwrap_err();
+    assert!(clash.contains("namespaced alias"), "{clash}");
+    registry.unregister(&a, explicit);
     // Names outside DSH's grammar (upper case, a leading digit or slash,
     // spaces), and over-long ones.
     for name in [
@@ -4546,10 +4581,14 @@ fn a_command_registration_is_refused_when_no_built_in_catalog_is_installed() {
 
     let _stub = stub_builtin_commands();
     register_command(&mut registry, &a, "fine-name", None).unwrap();
-    let clash = register_command(&mut registry, &a, "help", None).unwrap_err();
-    assert!(
-        clash.contains("collides with a built-in command"),
-        "{clash}"
+    let handle = register_command(&mut registry, &a, "help", None).unwrap();
+    let _ = registry.mark_active(&a);
+    assert_eq!(
+        registry
+            .live_command(handle, "a", a.generation)
+            .unwrap()
+            .name,
+        "plugin-a-help"
     );
 }
 

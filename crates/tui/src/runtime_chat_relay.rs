@@ -24,8 +24,9 @@ use sha2::{Digest, Sha256};
 use crate::{
     core::engine::ISOLATED_CHAT_SYSTEM_PROMPT,
     runtime_threads::{
-        CreateThreadRequest, RuntimeEventRecord, RuntimeThreadManager, RuntimeThreadManagerConfig,
-        RuntimeTurnStatus, StartTurnRequest,
+        RuntimeEventRecord, RuntimeTurnStatus, manager::CreateThreadRequest,
+        manager::RuntimeThreadManager, manager::RuntimeThreadManagerConfig,
+        manager::StartTurnRequest,
     },
 };
 use codewhale_runtime::config::{Config, MemoryBackend, MemoryConfig, SkillsConfig};

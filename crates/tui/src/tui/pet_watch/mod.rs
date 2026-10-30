@@ -793,7 +793,7 @@ fn render_tank(frame: &mut Frame, area: Rect, app: &mut App) {
 /// at the largest rung that fits. Static: it rests until the companion's own
 /// frames take over the tank.
 fn paint_resting_whale(frame: &mut Frame, area: Rect, style: Style) {
-    use crate::tui::mark::MarkSize;
+    use codewhale_tui_kit::mark::MarkSize;
     let tank_height = area.height.saturating_sub(1);
     let Some(size) = [MarkSize::Large, MarkSize::Small, MarkSize::Tiny]
         .into_iter()
@@ -834,7 +834,7 @@ fn cell_pixels() -> Option<(f64, f64)> {
         })
 }
 fn pixels_need(synchronized: bool) -> Option<MessageId> {
-    if !crate::tui::mark::kitty_graphics_supported() {
+    if !codewhale_tui_kit::mark::kitty_graphics_supported() {
         Some(MessageId::PetNeedsKittyGraphics)
     } else if !synchronized {
         Some(MessageId::PetNeedsSynchronizedOutput)
@@ -939,7 +939,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(
-            text.contains(crate::tui::mark::MarkSize::Large.rows()[3].trim()),
+            text.contains(codewhale_tui_kit::mark::MarkSize::Large.rows()[3].trim()),
             "the tank paints the resting whale: {text}"
         );
         assert!(

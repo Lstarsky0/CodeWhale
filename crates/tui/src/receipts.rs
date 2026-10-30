@@ -392,10 +392,11 @@ pub(crate) fn run_receipts_command(
     use anyhow::Context as _;
     let sessions = crate::session_manager::SessionManager::default_location()
         .context("could not open the saved sessions directory")?;
-    let runtime_root = crate::runtime_threads::RuntimeThreadManagerConfig::from_task_data_dir(
-        crate::task_manager::default_tasks_dir(),
-    )
-    .data_dir;
+    let runtime_root =
+        crate::runtime_threads::manager::RuntimeThreadManagerConfig::from_task_data_dir(
+            crate::task_manager::default_tasks_dir(),
+        )
+        .data_dir;
     let store = crate::runtime_threads::RuntimeThreadStore::open_read_only(runtime_root)?;
 
     let receipt = match id.map(str::trim).filter(|id| !id.is_empty()) {

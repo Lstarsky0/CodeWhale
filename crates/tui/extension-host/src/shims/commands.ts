@@ -13,8 +13,8 @@
  * `register` returns an idempotent disposer, like `tools.register`; a
  * registration is an effect of the calling plugin's fiber, so unloading the
  * plugin removes it. The core admits or refuses each one (`registry/register`
- * with `kind: 'command'`): a name that collides with a built-in command or
- * another plugin's command is refused and activation fails with the reason.
+ * with `kind: 'command'`). A plugin command colliding with a built-in gets a
+ * plugin-specific name; unavailable names are refused with a reason.
  *
  * A handler is called only when the *user* runs the command, and it can only
  * return an answer; it cannot call the model, a tool or approval. Results:

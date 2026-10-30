@@ -40,7 +40,6 @@ use ratatui::{
 
 use crate::fleet::profile::FleetProfileScope;
 use crate::tui::app::App;
-use crate::tui::menu_style;
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, centered_modal_area,
     render_modal_footer_with_gutter, render_modal_surface, truncate_view_text,
@@ -49,6 +48,7 @@ use codewhale_agent_contract::role::public_role_label;
 use codewhale_localization::{MessageId, tr};
 use codewhale_palette as palette;
 use codewhale_runtime::config::Config;
+use codewhale_tui_kit::menu_style;
 
 const PROFILE_DIR: &str = ".codewhale/agents";
 
@@ -1562,22 +1562,25 @@ impl FleetSetupView {
         match self.step {
             Step::Role => {
                 self.role_idx =
-                    crate::tui::list_nav::wrap_index(self.role_idx, self.step_len(), -1);
+                    codewhale_tui_kit::list_nav::wrap_index(self.role_idx, self.step_len(), -1);
                 self.discard_model_draft();
                 self.composition_decision = CompositionDecision::Pending;
             }
             Step::Composition => {}
             Step::Model => {
                 self.model_idx =
-                    crate::tui::list_nav::wrap_index(self.model_idx, self.step_len(), -1);
+                    codewhale_tui_kit::list_nav::wrap_index(self.model_idx, self.step_len(), -1);
                 self.discard_model_draft();
                 if self.composition_decision != CompositionDecision::Pending {
                     self.composition_decision = CompositionDecision::Edited;
                 }
             }
             Step::Destination => {
-                self.destination_idx =
-                    crate::tui::list_nav::wrap_index(self.destination_idx, self.step_len(), -1);
+                self.destination_idx = codewhale_tui_kit::list_nav::wrap_index(
+                    self.destination_idx,
+                    self.step_len(),
+                    -1,
+                );
             }
             Step::Review => self.review_scroll = self.review_scroll.saturating_sub(1),
         }
@@ -1602,35 +1605,39 @@ impl FleetSetupView {
     fn move_down(&mut self) {
         match self.step {
             Step::Role => {
-                self.role_idx = crate::tui::list_nav::wrap_index(self.role_idx, self.step_len(), 1);
+                self.role_idx =
+                    codewhale_tui_kit::list_nav::wrap_index(self.role_idx, self.step_len(), 1);
                 self.discard_model_draft();
                 self.composition_decision = CompositionDecision::Pending;
             }
             Step::Composition => {}
             Step::Model => {
                 self.model_idx =
-                    crate::tui::list_nav::wrap_index(self.model_idx, self.step_len(), 1);
+                    codewhale_tui_kit::list_nav::wrap_index(self.model_idx, self.step_len(), 1);
                 self.discard_model_draft();
                 if self.composition_decision != CompositionDecision::Pending {
                     self.composition_decision = CompositionDecision::Edited;
                 }
             }
             Step::Destination => {
-                self.destination_idx =
-                    crate::tui::list_nav::wrap_index(self.destination_idx, self.step_len(), 1);
+                self.destination_idx = codewhale_tui_kit::list_nav::wrap_index(
+                    self.destination_idx,
+                    self.step_len(),
+                    1,
+                );
             }
             Step::Review => self.review_scroll = self.review_scroll.saturating_add(1),
         }
     }
 
-    /// Apply one [`list_nav`](crate::tui::list_nav) motion (#6290), returning
+    /// Apply one [`list_nav`](codewhale_tui_kit::list_nav) motion (#6290), returning
     /// whether it was consumed. Steps wrap; pages travel [`SETUP_PAGE`] rows
     /// and clamp. On the Review step the same keys scroll the proof pane
     /// instead — it has no row list — and render clamps the offset. The
     /// region axis is declined so Tab/Left/Right keep their explicit wizard
     /// arms below.
-    fn apply_motion(&mut self, motion: crate::tui::list_nav::Motion) -> bool {
-        use crate::tui::list_nav::Motion;
+    fn apply_motion(&mut self, motion: codewhale_tui_kit::list_nav::Motion) -> bool {
+        use codewhale_tui_kit::list_nav::Motion;
         match motion {
             Motion::Prev => {
                 self.move_up();
@@ -1669,7 +1676,8 @@ impl FleetSetupView {
                     Step::Destination => self.destination_idx,
                     _ => return false,
                 };
-                let Some(next) = crate::tui::list_nav::apply(current, len, SETUP_PAGE, motion)
+                let Some(next) =
+                    codewhale_tui_kit::list_nav::apply(current, len, SETUP_PAGE, motion)
                 else {
                     return false;
                 };
@@ -2025,7 +2033,7 @@ impl ModalView for FleetSetupView {
         if self.step == Step::Model && self.model_filter_active {
             // Typing-safe movement set: pages and edges work while filtering
             // without letter aliases eating the query (#6290).
-            if let Some(motion) = crate::tui::list_nav::motion_while_typing(&key)
+            if let Some(motion) = codewhale_tui_kit::list_nav::motion_while_typing(&key)
                 && self.apply_motion(motion)
             {
                 return ViewAction::None;
@@ -2069,7 +2077,7 @@ impl ModalView for FleetSetupView {
         // Movement keys come from the shared vocabulary (#6290), j/k aliases
         // included; the region axis is declined so Tab/Left/Right keep their
         // explicit wizard arms, and letter verbs below are unaffected.
-        if let Some(motion) = crate::tui::list_nav::motion(&key)
+        if let Some(motion) = codewhale_tui_kit::list_nav::motion(&key)
             && self.apply_motion(motion)
         {
             return ViewAction::None;
@@ -2462,7 +2470,7 @@ impl FleetSetupView {
                 Span::styled(
                     format!(
                         "{} {}",
-                        crate::tui::glyphs::selection_marker(selected),
+                        codewhale_tui_kit::glyphs::selection_marker(selected),
                         suggestion.role
                     ),
                     if selected {
@@ -2749,7 +2757,7 @@ impl FleetSetupView {
             let focused = focus == self.review_focus;
             let text = format!(
                 "{} {} ",
-                crate::tui::glyphs::selection_marker(focused),
+                codewhale_tui_kit::glyphs::selection_marker(focused),
                 label
             );
             let style = match (focused, enabled) {
@@ -2856,7 +2864,10 @@ fn render_choice_step(
     let mut list_lines: Vec<Line> = Vec::with_capacity(visible);
     for (idx, choice) in choices.iter().enumerate().skip(row_start).take(visible) {
         let is_selected = idx == selected;
-        let pointer = format!("{} ", crate::tui::glyphs::selection_marker(is_selected));
+        let pointer = format!(
+            "{} ",
+            codewhale_tui_kit::glyphs::selection_marker(is_selected)
+        );
         let style = if is_selected {
             menu_style::selected_row_style()
         } else {
@@ -3794,7 +3805,7 @@ approval_required = true
             "anthropic".to_string(),
             "blocked-model".to_string(),
             crate::provider_readiness::ResolvedProviderReadiness::SavedLastCheckFailed {
-                category: crate::error_taxonomy::ErrorCategory::Authentication,
+                category: codewhale_error_taxonomy::ErrorCategory::Authentication,
                 message: "auth failed".to_string(),
             },
         ));
@@ -4549,7 +4560,7 @@ approval_required = true
             "zai".to_string(),
             "glm-5.2".to_string(),
             crate::provider_readiness::ResolvedProviderReadiness::SavedLastCheckFailed {
-                category: crate::error_taxonomy::ErrorCategory::Authentication,
+                category: codewhale_error_taxonomy::ErrorCategory::Authentication,
                 message: "auth failed".to_string(),
             },
         )];

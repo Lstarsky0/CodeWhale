@@ -3,7 +3,7 @@ use axum::extract::{Path, State};
 use serde_json::{Value, json};
 
 use crate::automation_manager::{AutomationStatus, DelayedTriggerStatus};
-use crate::runtime_threads::ThreadListFilter;
+use crate::runtime_threads::manager::ThreadListFilter;
 use crate::session_manager::SessionManager;
 
 use super::sessions::map_session_err;

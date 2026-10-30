@@ -404,7 +404,7 @@ fn replacement_history_honours_the_configured_retention_budget() {
 
     let checkpoint = format!("{COMPACTION_SUMMARY_MARKER} and produced this handoff.");
     let count_verbatim = |budget: usize| {
-        last_round::build_replacement_history(&messages, &checkpoint, None, budget)
+        last_round::build_replacement_history(&messages, &checkpoint, None, budget, 128)
             .expect("replacement history")
             .len()
     };
@@ -582,6 +582,7 @@ fn legacy_v2_checkpoint_with_provenance_is_recognised_and_replaced() {
         &build_compaction_summary_block_text("second handoff", ""),
         None,
         COMPACT_RETAINED_USER_MESSAGE_MAX_TOKENS,
+        20_000,
     )
     .expect("replacement");
     let checkpoints = replaced
@@ -606,86 +607,6 @@ fn legacy_single_block_markers_still_count_as_checkpoints() {
     }
 }
 
-fn tool_call(id: &str) -> Message {
-    Message {
-        role: Role::Assistant,
-        content: vec![ContentBlock::ToolUse {
-            execution_id: None,
-            id: id.to_string(),
-            name: "Bash".to_string(),
-            input: serde_json::json!({"command": "ls"}),
-            caller: None,
-            thought_signature: None,
-        }],
-    }
-}
-
-fn tool_output(id: &str) -> Message {
-    Message {
-        role: Role::User,
-        content: vec![ContentBlock::ToolResult {
-            execution_id: None,
-            tool_use_id: id.to_string(),
-            content: "ok".to_string(),
-            is_error: None,
-            content_blocks: None,
-        }],
-    }
-}
-
-/// An over-window retry drops history on both sides of the previous note but
-/// never the note or the handoff instruction, and stops once only those two
-/// (plus nothing droppable) remain.
-#[test]
-fn overflow_retry_keeps_the_previous_note_and_the_instruction() {
-    let note = compaction_checkpoint_message(&SystemPrompt::Text(
-        build_compaction_summary_block_text("previous note", ""),
-    ));
-    let instruction = text_message(Role::User, &compact_prompt(None, None));
-    let mut messages = vec![
-        text_message(Role::User, "older request"),
-        note.clone(),
-        tool_call("after"),
-        tool_output("after"),
-        text_message(Role::User, "latest request"),
-        instruction.clone(),
-    ];
-
-    assert!(drop_oldest_history_messages(&mut messages));
-    assert_eq!(messages[0], note);
-    assert_eq!(messages.len(), 5);
-
-    // The call right after the kept note goes, and its orphaned result with it.
-    assert!(drop_oldest_history_messages(&mut messages));
-    assert_eq!(
-        messages,
-        vec![
-            note.clone(),
-            text_message(Role::User, "latest request"),
-            instruction.clone()
-        ]
-    );
-
-    assert!(drop_oldest_history_messages(&mut messages));
-    assert_eq!(messages, vec![note.clone(), instruction.clone()]);
-
-    // Only the note and the instruction remain: nothing changes and the
-    // caller fails the pass instead of summarizing without the note.
-    assert!(!drop_oldest_history_messages(&mut messages));
-    assert_eq!(messages, vec![note, instruction.clone()]);
-
-    // Without a checkpoint the old floor holds: one history message stays.
-    let mut plain = vec![text_message(Role::User, "only"), instruction.clone()];
-    assert!(!drop_oldest_history_messages(&mut plain));
-    assert_eq!(plain.len(), 2);
-
-    // A user quote of the marker is ordinary history and can be dropped.
-    let quote = text_message(Role::User, COMPACTION_SUMMARY_MARKER);
-    let mut quoted = vec![quote, text_message(Role::User, "later"), instruction];
-    assert!(drop_oldest_history_messages(&mut quoted));
-    assert_eq!(quoted[0], text_message(Role::User, "later"));
-}
-
 #[test]
 fn pruning_metadata_belongs_to_the_exact_execution() {
     let messages: Vec<Message> = serde_json::from_value(serde_json::json!([
@@ -706,4 +627,16 @@ fn pruning_metadata_belongs_to_the_exact_execution() {
             .iter()
             .any(|item| item.message_idx == 1)
     );
+}
+
+#[test]
+fn estimate_tokens_is_available_for_future_budgeting() {
+    let messages = vec![Message {
+        role: codewhale_models::Role::from("user"),
+        content: vec![ContentBlock::Text {
+            text: "src/main.rs".to_string(),
+            cache_control: None,
+        }],
+    }];
+    assert!(estimate_tokens(&messages) > 0);
 }

@@ -518,11 +518,34 @@ impl WorkRuntime {
 
     /// Publish the latest validated legacy views after the caller has queued
     /// their graph-backed session/checkpoint write.
+    #[cfg(test)]
     pub async fn publish_pending(&self) -> Result<bool, String> {
+        self.publish_pending_guarded(None).await
+    }
+
+    pub async fn publish_pending_matching(
+        &self,
+        session_id: Option<&str>,
+        graph: Option<&WorkGraphSnapshot>,
+    ) -> Result<bool, String> {
+        self.publish_pending_guarded(Some((session_id, graph)))
+            .await
+    }
+
+    async fn publish_pending_guarded(
+        &self,
+        expected: Option<(Option<&str>, Option<&WorkGraphSnapshot>)>,
+    ) -> Result<bool, String> {
         let mut todos = self.todos.lock().await;
         let mut plan = self.plan.lock().await;
         let mut active = lock_unpoisoned(&self.graph);
         if !active.pending_publish {
+            return Ok(false);
+        }
+        if expected.is_some_and(|(owner, graph)| {
+            active.session_id.as_deref() != Some(owner.unwrap_or("unsaved-work"))
+                || active.snapshot.as_ref() != graph
+        }) {
             return Ok(false);
         }
         let graph = active
@@ -542,7 +565,11 @@ impl WorkRuntime {
 
     /// Synchronous counterpart for explicit save/rename/fork commands that
     /// have already completed their atomic disk write.
-    pub fn publish_pending_sync(&self) -> Result<bool, String> {
+    pub fn publish_pending_sync_matching(
+        &self,
+        session_id: Option<&str>,
+        expected_graph: Option<&WorkGraphSnapshot>,
+    ) -> Result<bool, String> {
         let mut todos = retry_lock(&self.todos, 100).ok_or_else(|| {
             "To-do state is busy; saved Work views were not published".to_string()
         })?;
@@ -550,6 +577,11 @@ impl WorkRuntime {
             .ok_or_else(|| "Plan state is busy; saved Work views were not published".to_string())?;
         let mut active = lock_unpoisoned(&self.graph);
         if !active.pending_publish {
+            return Ok(false);
+        }
+        if active.session_id.as_deref() != Some(session_id.unwrap_or("unsaved-work"))
+            || active.snapshot.as_ref() != expected_graph
+        {
             return Ok(false);
         }
         let graph = active
@@ -1944,9 +1976,45 @@ mod tests {
             .expect("state");
         assert!(captured.graph.import_digest.is_some());
         assert_eq!(plan.blocking_lock().snapshot(), legacy_plan);
-        assert_eq!(runtime.publish_pending_sync(), Ok(true));
+        assert_eq!(
+            runtime.publish_pending_sync_matching(Some("other-session"), Some(&captured.graph)),
+            Ok(false)
+        );
+        let mut newer_plan = legacy_plan.clone();
+        newer_plan.items[0].step = "Keep the newer work".to_string();
+        let newer = runtime
+            .restore(
+                "legacy-session",
+                None,
+                &TodoListSnapshot::default(),
+                &newer_plan,
+            )
+            .expect("restore newer work")
+            .expect("newer graph");
+        assert_eq!(
+            runtime.publish_pending_sync_matching(Some("legacy-session"), Some(&captured.graph)),
+            Ok(false)
+        );
+        assert!(runtime.has_pending_publish());
+        assert_eq!(
+            runtime.publish_pending_sync_matching(Some("legacy-session"), Some(&newer.graph)),
+            Ok(true)
+        );
         assert!(!runtime.has_pending_publish());
         assert!(todos.blocking_lock().snapshot().is_empty());
+        let unsaved = runtime
+            .restore(
+                "unsaved-work",
+                None,
+                &TodoListSnapshot::default(),
+                &legacy_plan,
+            )
+            .expect("restore unsaved work")
+            .expect("unsaved graph");
+        assert_eq!(
+            runtime.publish_pending_sync_matching(None, Some(&unsaved.graph)),
+            Ok(true)
+        );
     }
 
     /// #6842: one Operation node per finished shell call grew without bound.

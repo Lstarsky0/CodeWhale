@@ -15,6 +15,7 @@ release_crates=(
   codewhale-execpolicy
   codewhale-hooks
   codewhale-tools
+  codewhale-error-taxonomy
   codewhale-config
   codewhale-agent-contract
   codewhale-cloud-facts
@@ -50,6 +51,8 @@ release_crates=(
   codewhale-repl
   codewhale-skill-install
   codewhale-plugins
+  codewhale-skills
+  codewhale-tui-kit
   codewhale-tui
   codewhale-cli
 )

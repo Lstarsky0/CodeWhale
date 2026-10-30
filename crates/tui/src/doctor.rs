@@ -43,15 +43,16 @@ impl DoctorPathReport {
             .context("could not resolve the canonical settings path")?;
         let sessions = codewhale_config::resolve_state_dir("sessions")
             .context("could not resolve the sessions path")?;
-        let logs = crate::runtime_log::log_directory()
+        let logs = codewhale_runtime::runtime_log::log_directory()
             .context("could not resolve the runtime log directory")?;
         let automations = crate::automation_manager::default_automations_dir();
         let task_manager_root = crate::task_manager::default_tasks_dir();
         let task_manager_tasks = task_manager_root.join("tasks");
         let task_manager_artifacts = task_manager_root.join("artifacts");
-        let runtime_config = crate::runtime_threads::RuntimeThreadManagerConfig::from_task_data_dir(
-            task_manager_root.clone(),
-        );
+        let runtime_config =
+            crate::runtime_threads::manager::RuntimeThreadManagerConfig::from_task_data_dir(
+                task_manager_root.clone(),
+            );
         let runtime_store = runtime_config.data_dir;
         let runtime_events = runtime_store.join("events");
         let personal_fleet_definitions = crate::fleet::exact::personal_fleet_definitions_dir()

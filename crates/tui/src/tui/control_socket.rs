@@ -91,8 +91,8 @@ use std::thread;
 use serde::{Deserialize, Serialize};
 
 use crate::tui::app::{App, ComposerSubmitAction, QueuedMessage, SubmitDisposition};
-use crate::tui::streaming::StreamDisplayClock;
 use crate::tui::ui::{DispatchRecovery, dispatch_composer_message, escape_cancel_request};
+use codewhale_tui_kit::streaming::StreamDisplayClock;
 
 /// Socket file name inside the per-session artifact directory.
 pub(crate) const SOCKET_FILE_NAME: &str = "control.sock";

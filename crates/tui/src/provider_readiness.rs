@@ -6,9 +6,9 @@
 
 use std::borrow::Cow;
 
-use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope};
 use codewhale_config::ProviderKind;
 use codewhale_config::route::{LogicalModelRef, RouteRequest, RouteResolver};
+use codewhale_error_taxonomy::{ErrorCategory, ErrorEnvelope};
 use codewhale_runtime::config::{
     Config, ProviderIdentity, provider_is_configured, resolve_credential_source,
 };
@@ -965,7 +965,7 @@ mod tests {
         );
     }
 
-    use crate::error_taxonomy::ErrorSeverity;
+    use codewhale_error_taxonomy::ErrorSeverity;
 
     fn literal_health_config(kind: ProviderKind) -> codewhale_runtime::config::Config {
         let mut config = {
@@ -1603,7 +1603,7 @@ mod tests {
             &config,
             &(config).test_identity_for_kind(ProviderKind::Deepseek),
             "deepseek-v4-pro",
-            crate::error_taxonomy::ErrorCategory::Authentication,
+            codewhale_error_taxonomy::ErrorCategory::Authentication,
             "401 unauthorized",
         );
         assert!(

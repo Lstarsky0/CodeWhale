@@ -1693,7 +1693,7 @@ async fn canonical_history_import_runs_real_engine_retains_all_branches_and_refu
     assert_eq!(
         runtime
             .list_threads(
-                crate::runtime_threads::ThreadListFilter::IncludeArchived,
+                crate::runtime_threads::manager::ThreadListFilter::IncludeArchived,
                 None
             )
             .await?
@@ -1922,7 +1922,7 @@ async fn canonical_create_commits_one_identity_and_read_only_lookup_has_no_turn_
         fixture
             .runtime
             .list_threads(
-                crate::runtime_threads::ThreadListFilter::IncludeArchived,
+                crate::runtime_threads::manager::ThreadListFilter::IncludeArchived,
                 None
             )
             .await?
@@ -2050,7 +2050,7 @@ async fn canonical_fork_keeps_all_branches_selects_exact_leaf_and_recovers_after
     let mut prepared: Value = serde_json::from_slice(&fs::read(&operation_path)?)?;
     assert_eq!(
         prepared["target_document_digest"],
-        json!(super::super::thread_history::saved_document_digest(&raw)?),
+        json!(crate::runtime_threads::manager::history::saved_document_digest(&raw)?),
         "Fork recovery binds the exact shorter branch count published to disk"
     );
     // Model interruption after complete publication but before the intent commit.
@@ -2292,7 +2292,7 @@ async fn canonical_resume_offered_suffix_settles_once_and_full_graph_witness_ref
     let mut operation: Value = serde_json::from_slice(&fs::read(&operation_path)?)?;
     assert_eq!(
         operation["target_document_digest"],
-        json!(super::super::thread_history::saved_document_digest(&raw)?),
+        json!(crate::runtime_threads::manager::history::saved_document_digest(&raw)?),
         "the retained recovery witness must bind the exact count and offered leaf published to disk"
     );
     operation["committed"] = json!(false);
@@ -2748,7 +2748,7 @@ async fn native_fork_copy_refusal_never_publishes_a_shared_session_thread() -> R
     let before = fixture
         .runtime
         .list_threads(
-            crate::runtime_threads::ThreadListFilter::IncludeArchived,
+            crate::runtime_threads::manager::ThreadListFilter::IncludeArchived,
             None,
         )
         .await?;
@@ -2766,7 +2766,7 @@ async fn native_fork_copy_refusal_never_publishes_a_shared_session_thread() -> R
     let after = fixture
         .runtime
         .list_threads(
-            crate::runtime_threads::ThreadListFilter::IncludeArchived,
+            crate::runtime_threads::manager::ThreadListFilter::IncludeArchived,
             None,
         )
         .await?;

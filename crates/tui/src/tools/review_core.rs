@@ -43,6 +43,7 @@ the following schema:\n\
   \"verified\": [\"what you established: a dependent you read, a command you ran and its result\"],\n\
   \"ruled_out\": [\"what you examined and found sound, and the reason\"],\n\
   \"not_reviewed\": [\"what you did not look at, and why\"],\n\
+  \"resolved_findings\": [{\"key\": \"exact prior finding key\", \"evidence\": {\"tier\": \"traced\", \"detail\": \"the original triggering input and the current path:line chain that now prevents it\"}}],\n\
   \"overall_assessment\": \"final assessment\"\n\
 }\n\
 If a field is unknown, use an empty string or null. An empty issues array is a valid result.\n\

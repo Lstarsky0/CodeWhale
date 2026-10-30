@@ -241,11 +241,14 @@ pub struct CodewhaleClient {
     billing_surface: Option<String>,
     billing_mode: crate::cost_status::RouteBillingMode,
     configured_models: Arc<Vec<codewhale_config::catalog::configured::ConfiguredModel>>,
+    context_window_override: Option<u32>,
+    model_context_windows: Option<std::collections::BTreeMap<String, u32>>,
     /// Non-secret limits frozen from the same resolved candidate as the
     /// endpoint and wire model. Auxiliary calls carry only this client, so
     /// they must not reconstruct output caps with `None` and discard a custom
     /// route's context window.
     route_limits: Option<RouteLimits>,
+    context_window: Option<crate::route_runtime::ContextWindowResolution>,
     route_facts: Option<Arc<codewhale_config::catalog::CatalogOffering>>,
     /// Verified ChatGPT subject captured with Codewhale's own selected grant.
     pub(super) codex_account_id: Option<String>,
@@ -555,7 +558,10 @@ impl Clone for CodewhaleClient {
             billing_surface: self.billing_surface.clone(),
             billing_mode: self.billing_mode,
             configured_models: Arc::clone(&self.configured_models),
+            context_window_override: self.context_window_override,
+            model_context_windows: self.model_context_windows.clone(),
             route_limits: self.route_limits,
+            context_window: self.context_window,
             route_facts: self.route_facts.clone(),
             codex_account_id: self.codex_account_id.clone(),
             chatgpt_reasoning_api: self.chatgpt_reasoning_api.clone(),
@@ -1452,15 +1458,18 @@ impl CodewhaleClient {
             let route =
                 crate::route_runtime::resolve_runtime_route_for_identity(config, &identity, None)
                     .map_err(anyhow::Error::msg)?;
-            return Self::from_candidate(&route.config, &route.candidate);
+            return Self::from_candidate(&route.config, &route.candidate)
+                .map(|client| client.with_context_window(route.context_window));
         }
-        let route_limits = crate::route_runtime::resolve_runtime_route_for_identity(
+        let resolved = crate::route_runtime::resolve_runtime_route_for_identity(
             config,
             &identity,
             Some(&default_model),
         )
-        .ok()
-        .and_then(|route| crate::route_budget::known_route_limits(route.candidate.limits()));
+        .ok();
+        let route_limits = resolved
+            .as_ref()
+            .and_then(|route| crate::route_budget::known_route_limits(route.candidate.limits()));
         Self::from_parts(
             config.active_route_base_url(),
             default_model,
@@ -1468,6 +1477,10 @@ impl CodewhaleClient {
             route_limits,
             config,
         )
+        .map(|mut client| {
+            client.context_window = resolved.map(|route| route.context_window);
+            client
+        })
     }
 
     /// Construct only the model-list probe before a route has a concrete model.
@@ -1527,6 +1540,10 @@ impl CodewhaleClient {
             .active_provider_identity()
             .map_err(anyhow::Error::msg)?;
         let api_provider = admitted_identity.provider;
+        let context_window_override = config.context_window_for_provider_config(&admitted_identity);
+        let model_context_windows = config
+            .model_context_windows_for(&admitted_identity)
+            .cloned();
         anyhow::ensure!(
             api_provider != ProviderKind::Antigravity,
             codewhale_config::LEGACY_ANTIGRAVITY_TOMBSTONE_MESSAGE
@@ -1824,7 +1841,10 @@ impl CodewhaleClient {
             billing_surface,
             billing_mode,
             configured_models: Arc::new(config.custom_models.clone().unwrap_or_default()),
+            context_window_override,
+            model_context_windows,
             route_limits,
+            context_window: None,
             route_facts,
             codex_account_id,
             chatgpt_reasoning_api,
@@ -2187,10 +2207,37 @@ impl CodewhaleClient {
             return Ok(None);
         }
         let candidate = self.resolve_model_route(model)?;
-        let candidate_limits = crate::route_budget::known_route_limits(candidate.limits());
+        let resolved = crate::route_runtime::resolve_declared_model_candidate_with_wire_override(
+            self.api_provider,
+            self.admitted_identity.key.as_str(),
+            model,
+            &self.base_url,
+            self.context_window_override,
+            self.model_context_windows.as_ref(),
+            &self.configured_models,
+            (self.api_provider == ProviderKind::Custom).then_some(self.wire_format),
+        )
+        .ok()
+        .filter(|route| {
+            route.candidate.wire_model_id() == candidate.wire_model_id()
+                && route.candidate.protocol() == candidate.protocol()
+                && route.candidate.endpoint().base_url == candidate.endpoint().base_url
+                && route.candidate.endpoint().endpoint_key == candidate.endpoint().endpoint_key
+        });
+        let candidate_limits = resolved.as_ref().map_or_else(
+            || crate::route_budget::known_route_limits(candidate.limits()),
+            |route| crate::route_budget::known_route_limits(route.candidate.limits()),
+        );
+        let context_window = resolved.map(|route| route.context_window).or_else(|| {
+            (candidate.wire_model_id().as_str() == self.default_model
+                && candidate_limits == self.route_limits)
+                .then_some(self.context_window)
+                .flatten()
+        });
         if candidate.protocol() == self.wire_format
             && candidate.wire_model_id().as_str() == self.default_model
             && candidate_limits == self.route_limits
+            && context_window == self.context_window
         {
             return Ok(None);
         }
@@ -2203,6 +2250,7 @@ impl CodewhaleClient {
             let mut rebound = self.clone();
             rebound.default_model = candidate.wire_model_id().as_str().to_string();
             rebound.route_limits = candidate_limits;
+            rebound.context_window = context_window;
             rebound.route_facts = rebound.catalog_facts_for_model(&rebound.default_model);
             return Ok(Some(rebound));
         }
@@ -2216,7 +2264,11 @@ impl CodewhaleClient {
             )
         })?;
         let mut rebound = Self::from_candidate(config, &candidate)?;
+        rebound.route_limits = candidate_limits;
+        rebound.context_window = context_window;
         rebound.configured_models = Arc::clone(&self.configured_models);
+        rebound.context_window_override = self.context_window_override;
+        rebound.model_context_windows = self.model_context_windows.clone();
         rebound.route_facts = rebound.catalog_facts_for_model(&rebound.default_model);
         Ok(Some(rebound))
     }
@@ -3120,12 +3172,13 @@ impl CodewhaleClient {
         match self.wire_format {
             WireFormat::ChatCompletions => {
                 let chat_shape_provider = self.chat_shape_provider(&request.model);
-                let mut wire = chat::build_chat_wire_body(
+                let mut wire = chat::build_chat_wire_body_with_window(
                     &request,
                     chat_shape_provider,
                     &self.base_url,
                     stream,
                     request_route_limits,
+                    self.context_window_for_model(&request.model),
                 )?;
                 if let Some(effort) = published_wire_effort.as_deref() {
                     if wire.body.get("reasoning_effort").is_some() {
@@ -3268,6 +3321,28 @@ impl CodewhaleClient {
         self.route_limits
     }
 
+    pub(crate) fn with_context_window(
+        mut self,
+        context_window: crate::route_runtime::ContextWindowResolution,
+    ) -> Self {
+        self.context_window = Some(context_window);
+        self
+    }
+
+    fn context_window_for_model(&self, model: &str) -> Option<u32> {
+        self.context_window_resolution_for_model(model)
+            .map(|window| window.tokens)
+    }
+
+    pub(crate) fn context_window_resolution_for_model(
+        &self,
+        model: &str,
+    ) -> Option<crate::route_runtime::ContextWindowResolution> {
+        (model.trim() == self.default_model)
+            .then_some(self.context_window)
+            .flatten()
+    }
+
     /// Output cap for a request dispatched by this exact client route.
     #[must_use]
     pub fn effective_max_output_tokens(&self, requested_model: &str) -> u32 {
@@ -3295,10 +3370,11 @@ impl CodewhaleClient {
         max_tokens: u32,
         input_tokens: usize,
     ) -> Result<u32> {
-        crate::route_budget::request_output_cap_for_input(
+        crate::route_budget::request_output_cap_for_input_with_window(
             self.api_provider,
             model,
             route_limits,
+            self.context_window_for_model(model),
             max_tokens,
             u64::try_from(input_tokens).unwrap_or(u64::MAX),
         )
@@ -3318,10 +3394,11 @@ impl CodewhaleClient {
         reasoning_effort: Option<&str>,
     ) -> u32 {
         let wire_model = self.wire_model_for_route(requested_model);
-        crate::route_budget::effective_max_output_tokens_for_turn(
+        crate::route_budget::effective_max_output_tokens_for_turn_with_window(
             self.api_provider,
             &wire_model,
             route_limits,
+            self.context_window_for_model(requested_model),
             None,
             reasoning_effort,
         )
@@ -3864,6 +3941,13 @@ impl CodewhaleClient {
             .await
             .map_err(|_| CatalogRefreshError::Network)?;
             profiles.extend(fetched);
+            if tags.iter().any(|tag| {
+                profiles
+                    .get(tag)
+                    .is_none_or(|profile| profile.capabilities.is_none())
+            }) {
+                return Err(CatalogRefreshError::InvalidResponse);
+            }
             let running_url = reqwest::Url::parse(&format!("{origin}/api/ps"))
                 .map_err(|_| CatalogRefreshError::InvalidResponse)?;
             let running_deadline =
@@ -4816,6 +4900,10 @@ impl LlmClient for CodewhaleClient {
         CodewhaleClient::route_limits(self)
     }
 
+    fn effective_context_window(&self, model: &str) -> Option<u32> {
+        self.context_window_for_model(model)
+    }
+
     fn effective_max_output_tokens(&self, requested_model: &str) -> u32 {
         CodewhaleClient::effective_max_output_tokens(self, requested_model)
     }
@@ -5000,6 +5088,81 @@ struct ListedRow {
     id: String,
     #[serde(flatten)]
     limits: ListedRowLimits,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListedDeepseekRow {
+    id: String,
+    #[serde(default)]
+    effort: Option<ListedDeepseekEffort>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListedDeepseekEffort {
+    supported_levels: Vec<String>,
+    #[serde(default)]
+    default_level: Option<String>,
+}
+
+fn listed_deepseek_efforts_by_model_id(
+    body: &str,
+) -> Result<std::collections::BTreeMap<String, Vec<Value>>, CatalogRefreshError> {
+    let page: ModelsPage<'_> =
+        serde_json::from_str(body).map_err(|_| CatalogRefreshError::InvalidResponse)?;
+    let rows: Vec<Box<serde_json::value::RawValue>> = serde_json::from_str(page.rows()?.get())
+        .map_err(|_| CatalogRefreshError::InvalidResponse)?;
+    if rows.len() > PROVIDER_CATALOG_MAX_ROWS {
+        return Err(CatalogRefreshError::InvalidResponse);
+    }
+    let mut result = std::collections::BTreeMap::new();
+    for row in rows {
+        let row: ListedDeepseekRow =
+            serde_json::from_str(row.get()).map_err(|_| CatalogRefreshError::InvalidResponse)?;
+        if !codewhale_runtime::catalog_cache::valid_catalog_model_id(&row.id)
+            || result.contains_key(&row.id)
+        {
+            return Err(CatalogRefreshError::InvalidResponse);
+        }
+        let mut options = Vec::new();
+        if let Some(effort) = row.effort {
+            let mut seen = std::collections::BTreeSet::new();
+            if effort.supported_levels.len() > 16
+                || effort.supported_levels.iter().any(|level| {
+                    level.is_empty()
+                        || level.len() > 32
+                        || !level.bytes().all(|byte| {
+                            byte.is_ascii_lowercase()
+                                || byte.is_ascii_digit()
+                                || matches!(byte, b'_' | b'-')
+                        })
+                        || !seen.insert(level)
+                })
+                || effort
+                    .default_level
+                    .as_ref()
+                    .is_some_and(|default| !effort.supported_levels.contains(default))
+            {
+                return Err(CatalogRefreshError::InvalidResponse);
+            }
+            let supported: Vec<_> = effort
+                .supported_levels
+                .iter()
+                .filter(|level| matches!(level.as_str(), "low" | "high" | "max"))
+                .cloned()
+                .collect();
+            let mut option = json!({ "type": "effort", "values": supported });
+            if let Some(default) = effort
+                .default_level
+                .filter(|level| matches!(level.as_str(), "low" | "high" | "max"))
+            {
+                option["default"] = json!(default);
+            }
+            options.push(json!({ "type": "toggle" }));
+            options.push(option);
+        }
+        result.insert(row.id, options);
+    }
+    Ok(result)
 }
 
 impl ListedRowLimits {
@@ -5598,6 +5761,13 @@ fn catalog_delta_from_models_body(
         )?
     } else {
         let mut listed_limits = listed_limits_by_model_id(body);
+        let listed_efforts = if api_provider == ProviderKind::Deepseek
+            && codewhale_config::provider_base_url_is_official(api_provider, base_url)
+        {
+            listed_deepseek_efforts_by_model_id(body)?
+        } else {
+            std::collections::BTreeMap::new()
+        };
         let models = apply_provider_model_cutline(
             api_provider,
             parse_models_response_for_provider(body, api_provider)
@@ -5621,34 +5791,38 @@ fn catalog_delta_from_models_body(
         }
         models
             .into_iter()
-            .map(|model| CatalogOffering {
-                cost_source: None,
-                modalities_source: None,
-                provider: provider.clone(),
-                endpoint_key: if api_provider == ProviderKind::OpencodeGo {
-                    codewhale_config::opencode_go_endpoint_key(&model.id)
-                        .expect("filtered Go roster")
-                } else {
-                    "chat"
+            .map(|model| {
+                let reasoning_options = listed_efforts.get(&model.id);
+                CatalogOffering {
+                    cost_source: None,
+                    modalities_source: None,
+                    provider: provider.clone(),
+                    endpoint_key: if api_provider == ProviderKind::OpencodeGo {
+                        codewhale_config::opencode_go_endpoint_key(&model.id)
+                            .expect("filtered Go roster")
+                    } else {
+                        "chat"
+                    }
+                    .to_string(),
+                    limit: listed_limits.get(&model.id).cloned(),
+                    wire_model_id: model.id,
+                    canonical_model: None,
+                    default_for_provider: false,
+                    family: None,
+                    cost: None,
+                    modalities: None,
+                    attachment: None,
+                    reasoning: None,
+                    tool_call: None,
+                    structured_output: None,
+                    reasoning_options: reasoning_options.cloned().unwrap_or_default(),
+                    reasoning_options_present: reasoning_options.is_some(),
+                    source: CatalogSource::Live {
+                        base_url_fingerprint: fingerprint.clone(),
+                        fetched_at,
+                    },
+                    ..Default::default()
                 }
-                .to_string(),
-                limit: listed_limits.get(&model.id).cloned(),
-                wire_model_id: model.id,
-                canonical_model: None,
-                default_for_provider: false,
-                family: None,
-                cost: None,
-                modalities: None,
-                attachment: None,
-                reasoning: None,
-                tool_call: None,
-                structured_output: None,
-                reasoning_options: Vec::new(),
-                source: CatalogSource::Live {
-                    base_url_fingerprint: fingerprint.clone(),
-                    fetched_at,
-                },
-                ..Default::default()
             })
             .collect()
     };

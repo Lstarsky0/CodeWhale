@@ -495,8 +495,11 @@ never-reused handle) → adapter → call → teardown.
   `mark_failed`, `revoke_owner`, `forget_owner`, `host_exited` and
   `revoke_all` remove an owner's commands with its tools; a stale
   `unregister` is a no-op. Admission (`register_command`): DSH's grammar
-  (`^[a-z][a-z0-9_-]*$`, ≤ 64), refused if a built-in command or alias (or the
-  fixed `jihua`/`zidong`) answers to the name, or another plugin holds it;
+  (`^[a-z][a-z0-9_-]*$`, ≤ 64). If a built-in command or alias (including the
+  fixed `jihua`/`zidong`) answers to a plugin name, the plugin registration
+  receives a deterministic plugin-specific name; a built-in-tier collision or
+  an unavailable namespaced name is refused. Another plugin cannot take an
+  existing unscoped registration;
   descriptions ≤ 1 KiB and hints ≤ 256 bytes, single-line; 64 per owner, 256
   per host. Commands and tools are separate namespaces. The commands of the
   owners an engine's workspace snapshot desires, bound to the reviewed hash,

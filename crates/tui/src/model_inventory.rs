@@ -1382,7 +1382,7 @@ mod tests {
             .expect("DeepSeek inventory candidate");
         candidate.readiness =
             crate::provider_readiness::ResolvedProviderReadiness::SavedLastCheckFailed {
-                category: crate::error_taxonomy::ErrorCategory::Authentication,
+                category: codewhale_error_taxonomy::ErrorCategory::Authentication,
                 message: "Bearer super-secret-router-token".to_string(),
             };
         inventory.candidates.push(ModelRouteCandidate {

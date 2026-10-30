@@ -113,7 +113,8 @@ fn verify_expected_hash(
 /// The hidden compatibility schema still has a byte budget, so this is only the
 /// instruction the legacy caller needs: what to pass and what happens on a
 /// mismatch. The rationale stays in doc comments rather than schema bytes.
-pub(super) const EXPECTED_HASH_DESCRIPTION: &str = "The `content_hash` from a prior read; the write is refused and the file left unchanged if it changed since";
+pub(super) const EXPECTED_HASH_DESCRIPTION: &str =
+    "Prior read's content_hash; refuse the write if the file has changed.";
 
 // === Cross-harness parameter aliases ===
 
@@ -206,7 +207,7 @@ pub(super) const READ_PARAMS: ActionParams = params(
 
 pub(super) const WRITE_PARAMS: ActionParams = params(
     "write",
-    &["path", "content", "expected_hash"],
+    &["path", "content", "expected_hash", "line_ending"],
     &["path", "content"],
 );
 
@@ -454,6 +455,10 @@ pub(crate) fn enforce_read_denylist(path: &Path, tool: &str) -> Result<(), ToolE
             Err(ToolError::permission_denied(message))
         }
     }
+}
+
+pub(crate) fn working_set_read_allowed(path: &Path) -> bool {
+    enforce_read_denylist(path, "working_set").is_ok()
 }
 
 /// Return whether `read_file` must refuse a CodeWhale-owned credential file.
@@ -1021,7 +1026,7 @@ impl ToolSpec for ReadFileTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file (relative to workspace, absolute, or ~/ home-relative). Alias: `file_path`"
+                    "description": "File path: workspace-relative, absolute or ~/. Alias: file_path"
                 },
                 "start_line": {
                     "type": "integer",
@@ -1029,11 +1034,11 @@ impl ToolSpec for ReadFileTool {
                 },
                 "max_lines": {
                     "type": "integer",
-                    "description": "Maximum lines to return (default 500, max 500; a 16KB byte budget applies regardless). Aliases: `limit`, `n_lines`"
+                    "description": "Lines: default/max 500, also capped at 16KB. Aliases: limit, n_lines"
                 },
                 "pages": {
                     "type": "string",
-                    "description": "PDF only: page range to extract, e.g. \"1-5\" or \"10\". Ignored for non-PDF files."
+                    "description": "PDF page range, e.g. 1-5 or 10; ignored for other files."
                 }
             },
             "required": ["path"]
@@ -1591,7 +1596,8 @@ impl WriteFileTool {
         input: Value,
         context: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        reject_primitive_unknown(&input, "write", &["path", "content"])?;
+        reject_primitive_unknown(&input, "write", &["path", "content", "line_ending"])?;
+        let line_ending = requested_line_ending(&input)?;
         let path_str = required_str(&input, "path")?;
         let file_content = required_str(&input, "content")?;
         check_contract_file_size(file_content.len())?;
@@ -1607,33 +1613,11 @@ impl WriteFileTool {
         let prior_bytes = prior.unwrap_or_default();
         let prior_contents = String::from_utf8_lossy(&prior_bytes);
 
-        if let Some(parent) = file_path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|error| {
-                ToolError::execution_failed(format!(
-                    "Failed to create directory {}: {error}",
-                    parent.display()
-                ))
-            })?;
-        }
         check_file_operation_cancelled(context)?;
-        // Preserve the existing file's line-ending style on overwrite (see
-        // `preserve_prior_line_endings`); otherwise a CRLF (Windows) file is
-        // silently rewritten with LF line endings.
-        let mut written = if prior_contents.is_empty() {
-            file_content.to_string()
-        } else {
-            let normalized = normalize_contract_line_endings(file_content);
-            let ending = contract_line_ending(&prior_contents);
-            let extra = if ending == "\r\n" {
-                normalized.bytes().filter(|byte| *byte == b'\n').count()
-            } else {
-                0
-            };
-            check_contract_file_size(normalized.len().saturating_add(extra))?;
-            restore_contract_line_endings(&normalized, ending)
-        };
-        let kept_ending = (prior_contents.contains('\n') && written != file_content)
-            .then(|| contract_line_ending(&prior_contents));
+        let mut written = write_line_endings(file_content, &prior_contents, line_ending, true)?;
+        let kept_ending =
+            (line_ending.is_none() && prior_contents.contains('\n') && written != file_content)
+                .then(|| contract_line_ending(&prior_contents));
         guard_edit(
             &file_path,
             path_str,
@@ -1645,7 +1629,19 @@ impl WriteFileTool {
         {
             written = normalized;
         }
+        if line_ending.is_some() {
+            written = write_line_endings(&written, "", line_ending, true)?;
+        }
         check_contract_file_size(written.len())?;
+        check_file_operation_cancelled(context)?;
+        if let Some(parent) = file_path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|error| {
+                ToolError::execution_failed(format!(
+                    "Failed to create directory {}: {error}",
+                    parent.display()
+                ))
+            })?;
+        }
         check_file_operation_cancelled(context)?;
         // Once replacement starts, report its actual completion even if cancelled.
         run_blocking_write_atomic(&file_path, written.clone().into_bytes()).await?;
@@ -1653,7 +1649,7 @@ impl WriteFileTool {
         drop(mutation_guard);
 
         let outcome = if existed_before { "updated" } else { "created" };
-        let utf16_units = written.encode_utf16().count();
+        let written_bytes = written.len();
         Ok(contract_mutation_result(
             context,
             &file_path,
@@ -1662,12 +1658,16 @@ impl WriteFileTool {
             &written,
             written.as_bytes(),
             outcome,
-            match kept_ending {
-                Some(ending) => format!(
-                    "Successfully wrote {utf16_units} bytes to {path_str}; kept the existing file's {} line endings (write does not change a file's line-ending style)",
+            match (line_ending, kept_ending) {
+                (Some(ending), _) => format!(
+                    "Successfully wrote {written_bytes} bytes to {path_str}; used {} line endings",
                     if ending == "\r\n" { "CRLF" } else { "LF" }
                 ),
-                None => format!("Successfully wrote {utf16_units} bytes to {path_str}"),
+                (None, Some(ending)) => format!(
+                    "Successfully wrote {written_bytes} bytes to {path_str}; kept the existing file's {} line endings",
+                    if ending == "\r\n" { "CRLF" } else { "LF" }
+                ),
+                (None, None) => format!("Successfully wrote {written_bytes} bytes to {path_str}"),
             },
         )
         .await)
@@ -1703,6 +1703,11 @@ impl ToolSpec for WriteFileTool {
                 "expected_hash": {
                     "type": "string",
                     "description": EXPECTED_HASH_DESCRIPTION
+                },
+                "line_ending": {
+                    "type": "string",
+                    "enum": ["preserve", "lf", "crlf"],
+                    "description": "Default: preserve existing endings. Explicit lf/crlf converts CRLF and lone CR."
                 }
             },
             "required": ["path", "content"]
@@ -1729,6 +1734,7 @@ impl ToolSpec for WriteFileTool {
         let path_str = required_str(&input, "path")?;
         let file_content = required_str(&input, "content")?;
         let expected_hash = optional_str(&input, "expected_hash")?;
+        let line_ending = requested_line_ending(&input)?;
 
         let file_path = context.resolve_path(path_str)?;
 
@@ -1771,21 +1777,7 @@ impl ToolSpec for WriteFileTool {
             context.require_fresh_read_before_write(&file_path, path_str)?;
         }
 
-        // Create parent directories if needed
-        if let Some(parent) = file_path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                ToolError::execution_failed(format!(
-                    "Failed to create directory {}: {}",
-                    parent.display(),
-                    e
-                ))
-            })?;
-        }
-
-        // Preserve the existing file's line-ending style on overwrite (see
-        // `preserve_prior_line_endings`); a full `write_file` over a CRLF
-        // (Windows) file otherwise silently rewrites every line ending to LF.
-        let mut written = preserve_prior_line_endings(file_content, &prior_contents);
+        let mut written = write_line_endings(file_content, &prior_contents, line_ending, false)?;
 
         guard_edit(
             &file_path,
@@ -1799,6 +1791,17 @@ impl ToolSpec for WriteFileTool {
             written = normalized;
         }
 
+        if line_ending.is_some() {
+            written = write_line_endings(&written, "", line_ending, true)?;
+        }
+        if let Some(parent) = file_path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|error| {
+                ToolError::execution_failed(format!(
+                    "Failed to create directory {}: {error}",
+                    parent.display()
+                ))
+            })?;
+        }
         run_blocking_write_atomic(&file_path, written.clone().into_bytes()).await?;
         context.note_file_read(&file_path);
 
@@ -1808,6 +1811,13 @@ impl ToolSpec for WriteFileTool {
             format!("Wrote {} bytes to {}", written.len(), display)
         } else {
             format!("Created {} ({} bytes)", display, written.len())
+        };
+        let summary = match line_ending {
+            Some(ending) => format!(
+                "{summary}; used {} line endings",
+                if ending == "\r\n" { "CRLF" } else { "LF" }
+            ),
+            None => summary,
         };
         let body = if diff.is_empty() {
             format!("{summary}\n(no changes)")
@@ -1856,6 +1866,46 @@ struct ResolvedContractEdit {
     start: usize,
     end: usize,
     replacement: String,
+}
+
+fn requested_line_ending(input: &Value) -> Result<Option<&'static str>, ToolError> {
+    match input.get("line_ending") {
+        None => Ok(None),
+        Some(Value::String(value)) if value == "preserve" => Ok(None),
+        Some(Value::String(value)) if value == "lf" => Ok(Some("\n")),
+        Some(Value::String(value)) if value == "crlf" => Ok(Some("\r\n")),
+        _ => Err(ToolError::invalid_input(
+            "line_ending must be preserve, lf, or crlf",
+        )),
+    }
+}
+
+fn write_line_endings(
+    content: &str,
+    prior: &str,
+    requested: Option<&str>,
+    bounded: bool,
+) -> Result<String, ToolError> {
+    if bounded || requested.is_some() {
+        check_contract_file_size(content.len())?;
+    }
+    if !bounded && requested.is_none() {
+        return Ok(preserve_prior_line_endings(content, prior));
+    }
+    if requested.is_none() && prior.is_empty() {
+        return Ok(content.to_string());
+    }
+    let normalized = normalize_contract_line_endings(content);
+    let ending = requested.unwrap_or_else(|| contract_line_ending(prior));
+    if bounded || requested.is_some() {
+        let extra = if ending == "\r\n" {
+            normalized.bytes().filter(|byte| *byte == b'\n').count()
+        } else {
+            0
+        };
+        check_contract_file_size(normalized.len().saturating_add(extra))?;
+    }
+    Ok(restore_contract_line_endings(&normalized, ending))
 }
 
 fn normalize_contract_line_endings(text: &str) -> String {

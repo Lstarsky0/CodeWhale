@@ -38,11 +38,8 @@ use crate::tui::history::{
 };
 use crate::tui::hotbar::HotbarActionRegistry;
 use crate::tui::motion::MotionPolicy;
-use crate::tui::paste_burst::{FlushResult, PasteBurst};
-use crate::tui::scrolling::{MouseScrollState, TranscriptLineMeta, TranscriptScroll};
 use crate::tui::selection::{SelectionAutoscroll, TranscriptSelection};
 use crate::tui::shell_key_routing::Focus;
-use crate::tui::streaming::StreamingState;
 use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
 use codewhale_config::ProviderKind;
@@ -54,6 +51,9 @@ use codewhale_models::{ContentBlock, Message, SystemPrompt, Tool, Usage};
 use codewhale_palette::{self as palette, UiTheme};
 use codewhale_runtime::config::{ApprovalPolicyControl, Config};
 use codewhale_runtime::settings::{InlineDiffMode, Settings};
+use codewhale_tui_kit::paste_burst::{FlushResult, PasteBurst};
+use codewhale_tui_kit::scrolling::{MouseScrollState, TranscriptLineMeta, TranscriptScroll};
+use codewhale_tui_kit::streaming::StreamingState;
 
 mod composer;
 mod init;
@@ -199,12 +199,13 @@ pub(crate) fn resolve_skills_dir(
     config: &Config,
 ) -> PathBuf {
     let admitted =
-        |dir: &Path| crate::skills::skills_dir_allowed_by_workspace_trust(workspace, dir);
+        |dir: &Path| codewhale_skills::skills_dir_allowed_by_workspace_trust(workspace, dir);
     if config.skills_config().scan_codewhale_only() {
         if config.skills_dir.is_some() {
             return global_skills_dir.to_path_buf();
         }
-        if let Some(codewhale_skills_dir) = crate::skills::codewhale_workspace_skills_dir(workspace)
+        if let Some(codewhale_skills_dir) =
+            codewhale_skills::codewhale_workspace_skills_dir(workspace)
             && admitted(&codewhale_skills_dir)
         {
             return codewhale_skills_dir;
@@ -232,7 +233,7 @@ pub(crate) fn resolve_skills_dir(
         return global_skills_dir.to_path_buf();
     }
     if config.skills_dir.is_none()
-        && let Some(global_agents) = crate::skills::agents_global_skills_dir()
+        && let Some(global_agents) = codewhale_skills::agents_global_skills_dir()
         && global_agents.exists()
     {
         return global_agents;
@@ -515,7 +516,7 @@ impl AgentCurrentActivity {
 /// can enter the parent transcript/sidebar pass through this seam.
 pub(crate) fn bound_agent_activity_text(value: &str) -> String {
     let mut visible = String::with_capacity(value.len());
-    crate::tui::osc8::strip_ansi_into(value, &mut visible);
+    codewhale_tui_kit::osc8::strip_ansi_into(value, &mut visible);
     let redacted = codewhale_config::persistence::redact_secrets(&visible);
     crate::tui::history::summarize_tool_output(&redacted)
 }
@@ -1486,6 +1487,7 @@ pub(crate) struct PendingProviderSwitch {
     pub previous_route_limits: Option<RouteLimits>,
     pub previous_route_base_url: String,
     pub previous_context_window_source: crate::route_runtime::ContextWindowSource,
+    pub previous_context_window: Option<crate::route_runtime::ContextWindowResolution>,
     pub previous_context_window_override: Option<u32>,
     pub previous_config: Config,
     pub previous_onboarding: OnboardingState,
@@ -1550,7 +1552,7 @@ pub(crate) struct SkillCacheScope {
     pub(crate) epoch: u64,
     pub(crate) workspace: std::path::PathBuf,
     pub(crate) skills_dir: std::path::PathBuf,
-    pub(crate) mode: crate::skills::SkillDiscoveryMode,
+    pub(crate) config: std::sync::Arc<codewhale_runtime::config::SkillsConfig>,
     pub(crate) plugins: std::sync::Arc<codewhale_plugins::PluginRegistry>,
 }
 
@@ -1669,9 +1671,9 @@ pub struct App {
     pub status_message: Option<String>,
     /// Recent status toasts (ephemeral, newest at back).
     pub status_toasts: VecDeque<StatusToast>,
-    /// Header chip label (e.g. `↑ v0.9.5`) set once by the fire-and-forget
+    /// Metrics-line label (e.g. `↑ v0.9.5`) set once by the fire-and-forget
     /// startup version check when a newer stable release exists. Drives the
-    /// small persistent update chip in the header so the affordance survives
+    /// persistent update notice so the affordance survives
     /// the transient toast without nagging (FINISH-0.9.4 #14).
     pub update_available: Option<String>,
     /// Sticky status toast used for important warnings/errors.
@@ -1709,6 +1711,12 @@ pub struct App {
     pub auto_model: bool,
     /// Last concrete model chosen while `auto_model` is active.
     pub last_effective_model: Option<String>,
+    pub(crate) last_effective_budget: Option<(
+        ProviderKind,
+        String,
+        Option<RouteLimits>,
+        crate::route_runtime::ContextWindowResolution,
+    )>,
     /// Provider that actually served the latest auto-routed turn.
     pub last_effective_provider: Option<ProviderKind>,
     /// Exact non-secret identity for the provider that served the latest Auto
@@ -1768,6 +1776,7 @@ pub struct App {
     /// Provenance for `active_route_limits`' effective context window. This
     /// is an operator-facing receipt, not a claim about provider billing.
     pub active_context_window_source: crate::route_runtime::ContextWindowSource,
+    pub(crate) active_context_window: Option<crate::route_runtime::ContextWindowResolution>,
     /// User-configured provider context-window override for the active route.
     pub active_context_window_override: Option<u32>,
     /// `[providers.<id>.model_context_windows]` for the active provider
@@ -1824,7 +1833,7 @@ pub struct App {
     pub legacy_plugin_tools_dir: Option<PathBuf>,
     pub mcp_config_path: PathBuf,
     pub skills_dir: PathBuf,
-    pub skills_discovery_mode: crate::skills::SkillDiscoveryMode,
+    pub skills_config: std::sync::Arc<codewhale_runtime::config::SkillsConfig>,
     /// Whether the optional project context pack was enabled when this
     /// session loaded its configuration. Context diagnostics consult this
     /// source of truth even before the first system prompt is assembled.
@@ -2316,7 +2325,7 @@ pub struct App {
     pub active_skill: Option<String>,
     /// Content-bound plugin authority carried with `active_skill`, when the
     /// selected skill came from a reviewed plugin bundle.
-    pub active_skill_provenance: Option<crate::skills::SkillProvenance>,
+    pub active_skill_provenance: Option<codewhale_skills::SkillProvenance>,
     /// Cached (name, description) pairs from the skill registry.
     /// Populated once at startup and refreshed on install/uninstall so
     /// the slash menu can show skills without filesystem I/O on every keystroke.
@@ -2709,6 +2718,7 @@ pub(crate) struct ToolRunCache {
     pub(crate) threshold: usize,
     pub(crate) mode: ToolCollapseMode,
     pub(crate) calm_mode: bool,
+    pub(crate) locale: Locale,
     #[cfg(test)]
     pub(crate) projection_builds: usize,
     pub(crate) history_len: usize,
@@ -2777,6 +2787,7 @@ impl Default for ToolRunCache {
             threshold: usize::MAX,
             mode: ToolCollapseMode::Expanded,
             calm_mode: false,
+            locale: Locale::En,
             #[cfg(test)]
             projection_builds: 0,
             history_len: usize::MAX,
@@ -3219,6 +3230,7 @@ impl App {
         self.pending_auto_route_receipt = None;
         self.active_turn = None;
         self.last_effective_model = None;
+        self.last_effective_budget = None;
         self.last_effective_provider = None;
         self.last_effective_provider_identity = None;
         self.last_auto_route_receipt = None;
@@ -3241,6 +3253,7 @@ impl App {
         self.last_effective_reasoning_effort = None;
         if self.auto_model {
             self.last_effective_model = None;
+            self.last_effective_budget = None;
             self.last_effective_provider = None;
             self.last_effective_provider_identity = None;
             self.last_auto_route_receipt = None;
@@ -3254,21 +3267,16 @@ impl App {
     pub(crate) fn discover_cached_skills(
         workspace: &std::path::Path,
         skills_dir: &std::path::Path,
-        discovery_mode: crate::skills::SkillDiscoveryMode,
+        config: &codewhale_runtime::config::SkillsConfig,
         plugins: &codewhale_plugins::PluginRegistry,
     ) -> Vec<(String, String)> {
-        crate::skills::discover_for_workspace_and_dir_with_mode_and_plugins(
-            workspace,
-            skills_dir,
-            discovery_mode,
-            Some(plugins),
-        )
-        .into_enabled()
-        .list()
-        .iter()
-        .filter(|s| s.invocation.user_invocable())
-        .map(|s| (s.name.clone(), s.user_menu_description()))
-        .collect()
+        codewhale_skills::discover_for_workspace(workspace, Some(skills_dir), config, Some(plugins))
+            .into_enabled()
+            .list()
+            .iter()
+            .filter(|s| s.invocation.user_invocable())
+            .map(|s| (s.name.clone(), s.user_menu_description()))
+            .collect()
     }
 
     pub(crate) fn extension_plugin_view(
@@ -3285,12 +3293,12 @@ impl App {
     }
 
     pub fn refresh_skill_cache(&mut self) {
-        crate::skills::clear_skill_discovery_cache();
+        codewhale_skills::clear_skill_discovery_cache();
         let skills_dir = self.skills_dir.clone();
         let cached_skills = Self::discover_cached_skills(
             &self.workspace,
             &skills_dir,
-            self.skills_discovery_mode,
+            &self.skills_config,
             self.extension_plugin_view().as_ref(),
         );
         self.install_skill_cache(cached_skills);
@@ -3301,7 +3309,7 @@ impl App {
             epoch,
             workspace: self.workspace.clone(),
             skills_dir: self.skills_dir.clone(),
-            mode: self.skills_discovery_mode,
+            config: self.skills_config.clone(),
             plugins: self.extension_plugin_view(),
         }
     }
@@ -3315,7 +3323,7 @@ impl App {
         if scope.epoch != epoch
             || scope.workspace != self.workspace
             || scope.skills_dir != self.skills_dir
-            || scope.mode != self.skills_discovery_mode
+            || !std::sync::Arc::ptr_eq(&scope.config, &self.skills_config)
             || !std::sync::Arc::ptr_eq(&scope.plugins, &self.extension_plugin_view())
         {
             return false;
@@ -4265,7 +4273,7 @@ impl App {
         rows.iter()
             .map(|(id, status, duration, summary)| {
                 let summary =
-                    crate::tui::ui_text::truncate_line_to_width(summary, summary_width);
+                    codewhale_tui_kit::ui_text::truncate_line_to_width(summary, summary_width);
                 format!(
                     "{id:<id_width$}  {status:<status_width$}  {duration:<duration_width$}  {summary}"
                 )
@@ -6958,14 +6966,13 @@ impl App {
         if let Some(work) = self.runtime_services.work.as_ref() {
             let empty = SessionWorkState::default();
             let state = state.unwrap_or(&empty);
-            work.restore_with_workspace_owner_bindings(
+            let restored = work.restore_with_workspace_owner_bindings(
                 session_id,
                 workspace,
                 state.graph.as_ref(),
                 &state.todos,
                 &state.plan,
             )?;
-            let restored = work.capture(Some(session_id))?;
             let normalized_state = restored.map(|state| SessionWorkState {
                 graph: Some(state.graph),
                 todos: state.todos,
@@ -7031,31 +7038,36 @@ impl App {
         true
     }
 
-    /// Publish a validated Work Graph transaction after a synchronous caller
-    /// has completed its atomic session write.
-    pub fn publish_pending_work_state(&mut self) -> Result<bool, String> {
-        let published = self
-            .runtime_services
-            .work
-            .as_ref()
-            .map_or(Ok(false), |work| work.publish_pending_sync())?;
+    pub fn publish_saved_work_state(
+        &mut self,
+        owner: Option<&str>,
+        state: Option<&SessionWorkState>,
+    ) -> Result<bool, String> {
+        let Some(work) = self.runtime_services.work.as_ref() else {
+            return Ok(false);
+        };
+        let published = work
+            .publish_pending_sync_matching(owner, state.and_then(|state| state.graph.as_ref()))?;
+        if !published && work.has_pending_publish() {
+            return Err("a newer Work update remains pending".to_string());
+        }
         Ok(published)
     }
 
     pub fn update_model_compaction_budget(&mut self) {
-        let model = self.effective_model_for_budget().to_string();
-        self.compact_threshold = crate::route_budget::compaction_threshold_for_route_at_percent(
-            self.api_provider,
-            &model,
-            self.active_route_limits,
-            self.auto_compact_threshold_percent,
-        );
-        if !self.auto_compact_user_configured {
-            self.auto_compact = crate::route_budget::auto_compact_default_for_route(
-                self.api_provider,
+        let (provider, model, limits, window) = self.effective_budget_route();
+        let model = model.to_string();
+        self.compact_threshold =
+            crate::route_budget::compaction_threshold_for_route_at_percent_with_window(
+                provider,
                 &model,
-                self.active_route_limits,
+                limits,
+                window.map(|window| window.tokens),
+                self.auto_compact_threshold_percent,
             );
+        if !self.auto_compact_user_configured {
+            self.auto_compact =
+                crate::route_budget::auto_compact_default_for_route(provider, &model, limits);
         }
     }
 
@@ -7069,11 +7081,12 @@ impl App {
         &mut self,
         base_url: impl Into<String>,
         limits: RouteLimits,
-        context_window_source: crate::route_runtime::ContextWindowSource,
+        context_window: crate::route_runtime::ContextWindowResolution,
     ) {
         self.active_route_base_url = base_url.into();
         self.set_active_route_limits(limits);
-        self.active_context_window_source = context_window_source;
+        self.active_context_window_source = context_window.source;
+        self.active_context_window = Some(context_window);
     }
 
     /// Refresh the operator-configured windows for the active provider
@@ -7085,7 +7098,8 @@ impl App {
     ) {
         self.active_context_window_override = config.context_window_for_provider_config(identity);
         self.active_model_context_windows = config.model_context_windows_for(identity).cloned();
-        if let Some(resolution) = self.configured_context_window_for(&self.model.clone()) {
+        self.active_context_window = self.configured_context_window_for(&self.model.clone());
+        if let Some(resolution) = self.active_context_window {
             self.active_context_window_source = resolution.source;
         }
         if self.active_route_limits.is_none() {
@@ -7128,13 +7142,32 @@ impl App {
 
     pub fn set_model_selection(&mut self, model: String) {
         let auto_model = model.trim().eq_ignore_ascii_case("auto");
+        let model_changed = self.model != model || self.auto_model != auto_model;
         self.model = if auto_model {
             "auto".to_string()
         } else {
             model
         };
         self.auto_model = auto_model;
+        if model_changed {
+            self.active_route_limits = self.context_window_override_limits();
+            self.active_context_window = self.configured_context_window_for(&self.model);
+            self.active_context_window_source = self.active_context_window.map_or_else(
+                || {
+                    crate::route_runtime::resolve_context_window(
+                        self.api_provider,
+                        &self.model,
+                        self.active_route_limits,
+                        None,
+                        None,
+                    )
+                    .source
+                },
+                |window| window.source,
+            );
+        }
         self.last_effective_model = None;
+        self.last_effective_budget = None;
         self.last_effective_provider = None;
         self.last_effective_provider_identity = None;
         self.last_auto_route_receipt = None;
@@ -7294,6 +7327,44 @@ impl App {
                 .unwrap_or(DEFAULT_TEXT_MODEL);
         }
         &self.model
+    }
+
+    pub(crate) fn effective_context_window(&self) -> u32 {
+        let (provider, model, limits, window) = self.effective_budget_route();
+        window.map_or_else(
+            || crate::route_budget::route_context_window_tokens(provider, model, limits),
+            |window| window.tokens,
+        )
+    }
+
+    pub(crate) fn effective_budget_route(
+        &self,
+    ) -> (
+        ProviderKind,
+        &str,
+        Option<RouteLimits>,
+        Option<crate::route_runtime::ContextWindowResolution>,
+    ) {
+        if self.auto_model
+            && let Some((provider, model, limits, window)) = self.last_effective_budget.as_ref()
+            && self.last_effective_model.as_deref() == Some(model.as_str())
+        {
+            return (*provider, model, *limits, Some(*window));
+        }
+        (
+            self.api_provider,
+            self.effective_model_for_budget(),
+            self.active_route_limits,
+            self.active_context_window,
+        )
+    }
+
+    pub(crate) fn effective_context_window_source(
+        &self,
+    ) -> crate::route_runtime::ContextWindowSource {
+        self.effective_budget_route()
+            .3
+            .map_or(self.active_context_window_source, |window| window.source)
     }
 
     pub fn model_display_label(&self) -> String {
@@ -7625,11 +7696,8 @@ impl App {
     }
 
     pub fn compaction_config(&self) -> CompactionConfig {
-        let mut config = self.compaction_config_for_route(
-            self.api_provider,
-            self.effective_model_for_budget(),
-            self.active_route_limits,
-        );
+        let (provider, model, limits, window) = self.effective_budget_route();
+        let mut config = self.compaction_config_for_route(provider, model, limits, window);
         // These cached fields are the active-route compatibility authority and
         // are updated together by `update_model_compaction_budget`. Commands
         // and embedders may also adjust them directly between route updates.
@@ -7649,6 +7717,7 @@ impl App {
         provider: ProviderKind,
         model: &str,
         route_limits: Option<RouteLimits>,
+        context_window: Option<crate::route_runtime::ContextWindowResolution>,
     ) -> CompactionConfig {
         CompactionConfig {
             enabled: if self.auto_compact_user_configured {
@@ -7656,17 +7725,18 @@ impl App {
             } else {
                 crate::route_budget::auto_compact_default_for_route(provider, model, route_limits)
             },
-            token_threshold: crate::route_budget::compaction_threshold_for_route_at_percent(
-                provider,
-                model,
-                route_limits,
-                self.auto_compact_threshold_percent,
-            ),
+            token_threshold:
+                crate::route_budget::compaction_threshold_for_route_at_percent_with_window(
+                    provider,
+                    model,
+                    route_limits,
+                    context_window.map(|window| window.tokens),
+                    self.auto_compact_threshold_percent,
+                ),
             model: model.to_string(),
-            effective_context_window: Some(crate::route_budget::route_context_window_tokens(
-                provider,
-                model,
-                route_limits,
+            effective_context_window: Some(context_window.map_or_else(
+                || crate::route_budget::route_context_window_tokens(provider, model, route_limits),
+                |window| window.tokens,
             )),
             summary_instructions: self.compaction_summary_instructions.clone(),
             retained_user_message_tokens: self.compaction_retained_user_message_tokens,

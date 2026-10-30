@@ -37,6 +37,7 @@ import compatibility from './dsh/compatibility.json' with { type: 'json' }
 import { assertSupportedJsonSchema, validateJsonSchemaValue, ToolOutputError } from './dsh/dsh-tools-compat.js'
 import { isJson } from './json.ts'
 import { makeCoreApi } from './shims/core.ts'
+import { gitInvocations, installGitAdapter } from './shims/git.ts'
 import { OwnedRegistrations } from './shims/owned.ts'
 import { defineShellHooksService,type LocalShellHook } from './shims/shell-hooks.ts'
 import { hookExecution, hookVerdict, type LocalHook } from './shims/hooks.ts'
@@ -168,6 +169,7 @@ export class HostRoot {
     const root: any = new Context()
     this.root = root
     const host = this
+    if (tier === 'plugin') installGitAdapter(() => ownerStorage.getStore() !== undefined)
     this.toolRegistrations = new OwnedRegistrations(
       rpc,
       'tool',
@@ -878,10 +880,16 @@ export class HostRoot {
       active: true,
       pending: Promise.resolve(),
     }
-    const run = ownerStorage.run(local.owner, () => this.toolInvocations.run(invocation, async () => {
+    const gitInvocation = workspace && ticket ? {
+      workspace,
+      core: makeCoreApi(this.rpc, local.owner.ref, ticket, invocation.signal),
+      signal: invocation.signal,
+      live: () => invocation.active && local.owner.state === 'active' && !local.owner.disposing,
+    } : undefined
+    const run = ownerStorage.run(local.owner, () => this.toolInvocations.run(invocation, () => gitInvocations.run(gitInvocation, async () => {
       const value = await definition.execute(input, exec)
       return renderResult(definition, input, value)
-    }))
+    })))
     try {
       return await Promise.race([run, abortedBy(signal)])
     } finally {

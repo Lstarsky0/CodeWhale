@@ -128,7 +128,7 @@ fn spawn_render_prewarm_once() {
         // loads the sets lazily exactly as before.
         let _ = std::thread::Builder::new()
             .name("cw-syntax-prewarm".to_string())
-            .spawn(crate::tui::markdown_render::prewarm_syntax_highlighting);
+            .spawn(codewhale_tui_kit::markdown_render::prewarm_syntax_highlighting);
     });
 }
 
@@ -417,7 +417,7 @@ pub fn mcp_error_requires_login(error: &str) -> bool {
 /// server whose login is missing, expired, or revoked.
 #[must_use]
 pub fn mcp_auth_required_state_label() -> String {
-    format!("{} auth required", crate::tui::glyphs::ATTENTION)
+    format!("{} auth required", codewhale_tui_kit::glyphs::ATTENTION)
 }
 
 fn named_chip_line(kind: &str, count: usize, verb: &str, names: &[&str]) -> String {

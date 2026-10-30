@@ -380,13 +380,15 @@ impl Engine {
             &base_url,
             &model,
         );
-        let planned_output_tokens = crate::route_budget::effective_max_output_tokens_for_turn(
-            provider,
-            &model,
-            limits,
-            None,
-            effective_reasoning_effort.as_deref(),
-        );
+        let planned_output_tokens =
+            crate::route_budget::effective_max_output_tokens_for_turn_with_window(
+                provider,
+                &model,
+                limits,
+                Some(route.context_window.tokens),
+                None,
+                effective_reasoning_effort.as_deref(),
+            );
         let (system_prompt, preview_raw, preview_assembly) = if self.session.system_prompt_override
             || self.session.pinned_prompt_context.as_ref() == Some(&prompt_context)
         {
