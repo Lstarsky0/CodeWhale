@@ -2846,7 +2846,7 @@ async fn run_async_main_dispatch(
                                 .await
                     {
                         eprintln!(
-                            "codewhale exec: no cloud API key, so this run uses local Ollama {tag}; nothing was saved."
+                            "codewhale exec: no cloud API key, so this run uses local Ollama {tag}; no configuration was changed."
                         );
                     }
                 }
@@ -5040,7 +5040,7 @@ async fn run_doctor(
     };
     if let Some((_, tag)) = &local_route {
         println!(
-            "No cloud API key, so Codewhale and `codewhale exec` use local Ollama {tag}; this report checks that route, and nothing was saved."
+            "No cloud API key, so Codewhale and `codewhale exec` use local Ollama {tag}; this report checks that route, and no configuration was changed."
         );
     }
     let config = local_route.as_ref().map_or(config, |(local, _)| local);
