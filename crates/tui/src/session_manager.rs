@@ -335,11 +335,8 @@ pub struct OfflineQueueState {
 pub struct SessionRecovery {
     pub session: SavedSession,
     pub changed: bool,
-    #[cfg_attr(not(test), expect(dead_code))]
     pub repaired_call_count: usize,
-    #[cfg_attr(not(test), expect(dead_code))]
     pub duplicate_result_count: usize,
-    #[cfg_attr(not(test), expect(dead_code))]
     pub orphan_result_count: usize,
 }
 
@@ -3703,6 +3700,20 @@ impl SessionManager {
     /// strand the resume.
     pub fn resume_session(&self, id: &str) -> std::io::Result<SessionRecovery> {
         let recovery = self.recover_session_for_resume(id)?;
+        // A resume is where a repaired history becomes durable, so the repair
+        // counts are the dated record of what the conversation lost or had put
+        // back. They name counts, never message bodies.
+        codewhale_runtime::audit::log_sensitive_event(
+            "session.resumed",
+            serde_json::json!({
+                "session_id": recovery.session.metadata.id,
+                "repaired": recovery.changed,
+                "repaired_call_count": recovery.repaired_call_count,
+                "duplicate_result_count": recovery.duplicate_result_count,
+                "orphan_result_count": recovery.orphan_result_count,
+                "messages": recovery.session.messages.len(),
+            }),
+        );
         Ok(self.persist_resumed_repair(recovery))
     }
 
