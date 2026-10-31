@@ -313,15 +313,20 @@ impl ApprovalView {
         }
         if let Some(preview) = self.request.ask_rule_save_preview() {
             content.push_str(&format!(
-                "[s] {}\n    Save: {} · {}{}\n",
+                "[s] {}\n    {} {} · {}{}\n",
                 tr(locale, MessageId::ApprovalSaveAskRuleHint)
                     .trim_start_matches(|c: char| c.is_whitespace() || c == '·')
                     .trim_start_matches("s ")
                     .trim(),
-                preview.summary(),
+                tr(locale, MessageId::ApprovalFieldSave).trim_end(),
+                preview.summary(locale),
                 preview.entries.join(" · "),
                 if preview.omitted > 0 {
-                    format!(" +{} more", preview.omitted)
+                    format!(
+                        " +{}",
+                        tr(locale, MessageId::ApprovalSaveMore)
+                            .replace("{count}", &preview.omitted.to_string())
+                    )
                 } else {
                     String::new()
                 }
@@ -340,7 +345,8 @@ impl ApprovalView {
         );
         self.details_shown.set(true);
         ViewAction::Emit(ViewEvent::OpenTextPager {
-            title: format!("Tool Params: {}", self.request.tool_name),
+            title: tr(locale, MessageId::ApprovalToolParamsTitle)
+                .replace("{tool}", &self.request.tool_name),
             content,
         })
     }

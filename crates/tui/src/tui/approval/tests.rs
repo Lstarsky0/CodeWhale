@@ -839,7 +839,7 @@ fn ask_rule_save_preview_formats_shell_rule() {
 
     let preview = request.ask_rule_save_preview().expect("save preview");
     assert_eq!(preview.rule_count, 1);
-    assert_eq!(preview.summary(), "always ask first");
+    assert_eq!(preview.summary(Locale::En), "always ask first");
     assert_eq!(preview.entries, vec!["run cargo test --workspace"]);
     assert_eq!(preview.omitted, 0);
 }
@@ -853,7 +853,7 @@ fn safe_shell_request_builds_exact_workspace_allow_rule() {
     assert!(request.can_save_allow_rule());
     assert_eq!(request.persistent_allow_rules, vec![expected]);
     let preview = request.allow_rule_save_preview().expect("allow preview");
-    assert_eq!(preview.summary(), "always allow");
+    assert_eq!(preview.summary(Locale::En), "always allow");
     assert_eq!(
         preview.entries,
         vec!["run exactly cargo test --workspace in /workspace"]
@@ -1029,7 +1029,7 @@ diff --git a/src/b.rs b/src/b.rs
     );
     assert!(request.can_save_ask_rule());
     let preview = request.ask_rule_save_preview().expect("save preview");
-    assert_eq!(preview.summary(), "always ask first");
+    assert_eq!(preview.summary(Locale::En), "always ask first");
     assert_eq!(preview.entries, vec!["change src/a.rs", "change src/b.rs"]);
     assert_eq!(
         request.persistent_allow_rules,
@@ -1157,7 +1157,7 @@ fn ask_rule_save_preview_truncates_rule_list() {
 
     let preview = build_permission_rule_save_preview(&rules, 2).expect("save preview");
     assert_eq!(preview.rule_count, 4);
-    assert_eq!(preview.summary(), "always ask first");
+    assert_eq!(preview.summary(Locale::En), "always ask first");
     assert_eq!(preview.entries, vec!["change src/a.rs", "change src/b.rs"]);
     assert_eq!(preview.omitted, 2);
 }
@@ -1498,7 +1498,14 @@ fn tiny_localized_approval_keeps_every_action_and_hitbox() {
             let offered = hitboxes[PERSISTENT] != ratatui::layout::Rect::default();
             let screen = terminal.backend().buffer().clone();
             let text: String = screen.content.iter().map(|cell| cell.symbol()).collect();
-            assert_eq!(offered, text.contains("Save:"), "{locale:?}:\n{text}");
+            let squeeze = |value: &str| -> String {
+                value.chars().filter(|ch| !ch.is_whitespace()).collect()
+            };
+            assert_eq!(
+                offered,
+                squeeze(&text).contains(&squeeze(&tr(locale, MessageId::ApprovalFieldSave))),
+                "{locale:?}:\n{text}"
+            );
             let shown: Vec<ratatui::layout::Rect> = hitboxes
                 .iter()
                 .enumerate()

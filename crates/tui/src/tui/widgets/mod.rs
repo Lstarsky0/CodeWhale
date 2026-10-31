@@ -1542,13 +1542,19 @@ impl<'a> ApprovalWidget<'a> {
                 .allow_rule_save_preview()
                 .into_iter()
                 .map(|preview| DecisionBandSave {
-                    summary: preview.summary(),
+                    summary: preview.summary(self.view.locale()),
                     entries: preview.entries,
                     omitted: preview.omitted,
-                    label: "Save:   ".into(),
+                    label: tr(self.view.locale(), MessageId::ApprovalFieldSave).into_owned(),
                     separator: " · ".into(),
-                    compact_more: " +{count} more".into(),
-                    full_more: "... {count} more".into(),
+                    compact_more: format!(
+                        " +{}",
+                        tr(self.view.locale(), MessageId::ApprovalSaveMore)
+                    ),
+                    full_more: format!(
+                        "... {}",
+                        tr(self.view.locale(), MessageId::ApprovalSaveMore)
+                    ),
                     label_style: Style::default()
                         .fg(colors.shortcut)
                         .add_modifier(Modifier::BOLD),
@@ -1941,11 +1947,8 @@ fn approval_control_facts(
 /// Key name appended to the highlighted option row, like `Esc` on its own row.
 const APPROVAL_ENTER_TAG: &str = " (Enter)";
 
-fn approval_proceed_question(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "是否继续？",
-        _ => "Do you want to proceed?",
-    }
+fn approval_proceed_question(locale: Locale) -> Cow<'static, str> {
+    tr(locale, MessageId::ApprovalProceedQuestion)
 }
 
 fn approval_truncation_hint(locale: Locale) -> Cow<'static, str> {
@@ -2305,30 +2308,26 @@ fn push_destructive_approval_semantics(
     }
 }
 
-fn destructive_approval_compact_semantics(locale: Locale) -> (&'static str, &'static str) {
-    match locale {
-        Locale::ZhHans => ("规则: ", "批准策略要求确认；拒绝跳过本次，Esc 中止整轮。"),
-        _ => (
-            "Why: ",
-            "Your permissions ask before this; d doesn't allow it, Esc stops the turn.",
-        ),
-    }
+fn destructive_approval_compact_semantics(
+    locale: Locale,
+) -> (Cow<'static, str>, Cow<'static, str>) {
+    (
+        tr(locale, MessageId::ApprovalFieldWhy),
+        tr(locale, MessageId::ApprovalWhyCompactBody),
+    )
 }
 
-fn destructive_approval_semantics(locale: Locale) -> [(&'static str, &'static str); 2] {
-    match locale {
-        Locale::ZhHans => [
-            ("规则: ", "你的设置要求先确认这一步。"),
-            ("取消: ", "拒绝只跳过本次工具调用；Esc 会中止整轮。"),
-        ],
-        _ => [
-            ("Why: ", "Your settings ask you to confirm this step first."),
-            (
-                "Stop: ",
-                "Don't allow skips only this step; Esc stops the whole turn.",
-            ),
-        ],
-    }
+fn destructive_approval_semantics(locale: Locale) -> [(Cow<'static, str>, Cow<'static, str>); 2] {
+    [
+        (
+            tr(locale, MessageId::ApprovalFieldWhy),
+            tr(locale, MessageId::ApprovalWhyBody),
+        ),
+        (
+            tr(locale, MessageId::ApprovalFieldStop),
+            tr(locale, MessageId::ApprovalStopBody),
+        ),
+    ]
 }
 
 fn footer_controls(locale: Locale) -> Cow<'static, str> {
@@ -2443,24 +2442,15 @@ fn approval_options_for_request(
 }
 
 fn workflow_option_approve(locale: Locale) -> Cow<'static, str> {
-    match locale {
-        Locale::ZhHans => Cow::Borrowed("批准"),
-        _ => Cow::Borrowed("Approve"),
-    }
+    tr(locale, MessageId::ApprovalWorkflowApprove)
 }
 
 fn workflow_option_edit_plan(locale: Locale) -> Cow<'static, str> {
-    match locale {
-        Locale::ZhHans => Cow::Borrowed("编辑计划"),
-        _ => Cow::Borrowed("Edit plan"),
-    }
+    tr(locale, MessageId::ApprovalWorkflowEditPlan)
 }
 
 fn workflow_option_cancel(locale: Locale) -> Cow<'static, str> {
-    match locale {
-        Locale::ZhHans => Cow::Borrowed("取消"),
-        _ => Cow::Borrowed("Cancel"),
-    }
+    tr(locale, MessageId::ApprovalWorkflowCancel)
 }
 
 fn option_approve_once(locale: Locale) -> Cow<'static, str> {
