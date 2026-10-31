@@ -652,8 +652,8 @@ fn stage_profile(parent: &Path, updated: &[u8], #[cfg(unix)] mode: u32) -> Resul
         let name = staged.name().to_string();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))?;
         drop(staged);
-        return GuardedFile::open_bounded(parent, &name, MAX_PROFILE)?
-            .context("the staged profile replacement disappeared before it could be verified");
+        GuardedFile::open_bounded(parent, &name, MAX_PROFILE)?
+            .context("the staged profile replacement disappeared before it could be verified")
     }
     #[cfg(not(unix))]
     Ok(staged)
