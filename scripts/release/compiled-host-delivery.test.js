@@ -32,7 +32,7 @@ test('qualified optional assembly extends exact inventory and verifies all paylo
   const dir = temp(t), input = path.join(dir, 'input'), output = path.join(dir, 'output'), f = catalog();
   baselineInputs(input); writeCatalog(path.join(input, 'codewhale-compiled-hosts'), f);
   await assemble(input, output); await verifyAssetDirectory(output);
-  assert.equal(fs.readdirSync(output).length, 38);
+  assert.equal(fs.readdirSync(output).length, 42);
   assert.deepEqual(fs.readdirSync(output).sort(), artifacts.allReleaseAssetNames(f.value).sort());
   fs.writeFileSync(path.join(output, f.value.hosts[0].notices_asset), 'changed');
   await assert.rejects(verifyAssetDirectory(output), /checksum|SHA256/);

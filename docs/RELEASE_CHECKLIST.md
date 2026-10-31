@@ -153,12 +153,13 @@ known limitations and publication approval. These proofs are separate.
       A green workflow badge alone is insufficient: ordinary main-push CI can
       delegate Linux work to CNB and omit some smoke coverage. Manual full CI
       forces the release gates on Linux, macOS and Windows.
-- [ ] The candidate's Parity job succeeds, and its artifact jobs report all seven
-      targets and the complete 34-file asset inventory, including Android
-      arm64, Windows arm64, `codew`, the NSIS installer, archives, checksum
-      manifests, and seven compatibility-only `codewhale-tui-*` release
-      filenames that are not installed commands. The packed npm wrapper installs
-      against those assets and runs its delegated entrypoints. Keep run URLs and
+- [ ] The candidate's Parity job succeeds, and its artifact jobs report all eight
+      targets and the complete 38-file asset inventory, including Android
+      arm64, Windows arm64, native HarmonyOS arm64, `codew`, the NSIS installer,
+      archives, checksum manifests, and eight compatibility-only
+      `codewhale-tui-*` release filenames that are not installed commands. The
+      packed npm wrapper installs against those assets and runs its delegated
+      entrypoints. Keep run URLs and
       required evidence before the Actions artifacts expire; these are not a
       public release.
 - [ ] Windows static import receipts cover x64/ARM64 CLI, shim and compatibility
