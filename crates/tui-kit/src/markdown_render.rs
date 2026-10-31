@@ -1776,9 +1776,11 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<I
         // **bold**
         if let Some(end) = rest.strip_prefix("**").and_then(|s| s.find("**")) {
             let inner = &rest[2..2 + end];
-            out.push(InlineToken::new(inner.to_string(), bold_style, None));
-            rest = &rest[2 + end + 2..];
-            continue;
+            if !inner.starts_with(char::is_whitespace) && !inner.ends_with(char::is_whitespace) {
+                out.push(InlineToken::new(inner.to_string(), bold_style, None));
+                rest = &rest[2 + end + 2..];
+                continue;
+            }
         }
         // __bold__
         if let Some(end) = rest.strip_prefix("__").and_then(|s| s.find("__")) {
@@ -1797,7 +1799,10 @@ fn parse_inline_spans(line: &str, base_style: Style, link_style: Style) -> Vec<I
             // Closing delimiter must not be immediately followed by a
             // letter, digit, or underscore (otherwise it's part of an
             // identifier like `codewhale_tui`, not italic markup).
-            if !after.starts_with(|c: char| c.is_alphanumeric() || c == '_') {
+            if !inner.starts_with(char::is_whitespace)
+                && !inner.ends_with(char::is_whitespace)
+                && !after.starts_with(|c: char| c.is_alphanumeric() || c == '_')
+            {
                 out.push(InlineToken::new(inner.to_string(), italic_style, None));
                 rest = after;
                 continue;
