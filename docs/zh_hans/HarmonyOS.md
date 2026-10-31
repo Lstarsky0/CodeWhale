@@ -218,28 +218,27 @@ Codewhale 会降级而不是假装——缺什么就报什么，不会静默替�
 2in1 的用户目录（`/storage/Users/currentUser`）是分布式文件系统（hmdfs），
 行为和本地文件系统不一样：
 
-- 新文件按固定基线 `0660` 落盘，而不是请求的 mode；
-- 对调用者自己拥有的文件也拒绝 `chmod`；
-- 拒绝 `flock` 和 `fcntl(F_SETLK)`。
+- 每个对象都被报成登录用户所有（实测设备上是固定值 `20001006`），与创建它的 uid
+  无关；
+- 新文件按固定基线 `0660` 落盘、新目录按 `2771`，而不是请求的 mode；
+- 正因为调用者从来不是被报告的那个属主，之后对这类对象执行 `chmod` 会得到 `EPERM`
+  ——不管 mode 写着什么，它都不是调用者的文件。
 
 文件版 secret store 需要“仅本人可读写”的文件和跨进程锁，所以 `codewhale auth set`
-在那里可能失败，报 `insecure permissions` 或 `failed to secure config lock`。
-在 store 侧处理这个问题之前，要么把 `CODEWHALE_HOME` 指到 `/data`（hmfs，
-mode 和锁都正常）下的某个目录，要么用 provider 的环境变量提供 key——
-当 store 无法回答时，会读这个环境变量：
+在那里曾失败，报 `insecure permissions`。现在的 store 用证据判断，而不是只看 mode：
+它请文件系统收紧一个探针文件、再把 mode 读回来，只有那样才认定 mode 说明不了问题。
+把 `CODEWHALE_HOME` 指到 `/data`（hmfs，正常保存属主与 mode）下的目录可以恢复严格
+校验；也可以用 provider 的环境变量提供 key——当 store 无法回答时，会读这个环境变量：
 
 ```bash
 export DEEPSEEK_API_KEY=sk-…
 codewhale
 ```
 
-环境变量在 shell 配置里是明文，请知情后再选。想事先判断某个目录能否存放私有文件、
-从而 store 能否在那里工作：
-
-```bash
-touch /some/dir/probe && chmod 600 /some/dir/probe && stat -c '%a' /some/dir/probe
-# 600 → store 能用；660 或 640 → 不能，改用环境变量
-```
+环境变量在 shell 配置里是明文，请知情后再选。在 shell 里读回来的 mode 并不能回答
+store 能否在那里工作——在这个挂载上，文件被报成 `0640`，而本该收紧它的 `chmod` 会被
+拒绝，因为 shell 并不是被报告的那个属主。store 的做法是去问文件系统，然后说明它得到
+了哪个答案：直接运行 `codewhale auth set`，读它为 store 路径记下的那条警告。
 
 ## 常见故障排查
 
@@ -281,12 +280,15 @@ Engine 同时写同一棵树、同一份 snapshot 侧仓和同一个 git index�
 `$CODEWHALE_HOME/workspace-leases`，否则 `~/.codewhale/workspace-leases`；在 2in1 上它
 位于 hmdfs。
 
-hmdfs 承载不了这份租约。对应用在此创建的每个对象，它都报出登录用户的 uid 和一个
-组可写的 mode，拒绝 `chmod`，并对 `flock` 回答 `EPERM`；凭据存储记录了同样的三种
-行为（`crates/secrets/src/file_lock.rs`）。因此租约现在会上报「本文件系统无法提供
-工作区独占」，每个准入的工作区作用域报一次，Engine 在不带独占的情况下继续运行。
-同一进程内的两个引擎作用域仍然共享同一个槽位，所以重载或开第二个窗口不受影响；
-失去的是「跨另一个应用打开同一工作区时的互斥」。
+hmdfs 证明不了那个目录属于当前用户：这个区域上的每个对象都被报成登录用户所有，与
+创建它的 uid 无关，因此调用进程从来不是被报告的那个属主。受限的是「证明」，不是
+「锁」——这是两种能力。租约以「属主校验无法验证」的状态准入并照常获取，所以互斥依然
+成立：同一进程内的两个引擎作用域共享同一个槽位，另一个应用打开同一工作区时仍会带着
+持有者的 pid、客户端、store 和持有时长被拒绝。
+
+只有当文件系统拒绝咨询锁本身时（`flock`/`fcntl` 返回 `EPERM`、`EACCES`、`ENOTSUP`、
+`EINVAL` 或 `ENOSYS`，部分网络与 FUSE 挂载如此），Engine 才会在没有独占的情况下运行，
+并在每个准入的工作区作用域报一次。
 
 更早的构建会把同一种情况变成启动失败：
 

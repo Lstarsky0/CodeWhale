@@ -243,16 +243,22 @@ reported, not silently substituted.
 The 2in1 user directory (`/storage/Users/currentUser`) is a distributed
 filesystem (hmdfs) that does not behave like a local one:
 
-- it applies a base mode of `0660` to new files instead of the requested mode,
-- it refuses `chmod` on files the caller owns,
-- it refuses `flock` and `fcntl(F_SETLK)`.
+- it reports the logged-in user's uid as the owner of every object, whatever uid
+  created it (a fixed `20001006` on the device this was measured on),
+- it applies a base mode of `0660` to new files and `2771` to new directories
+  instead of the requested mode,
+- and because the caller is therefore never the reported owner, a later `chmod`
+  on such an object answers `EPERM` — it is not the caller's file to change,
+  whatever the mode says.
 
 The file-backed secret store wants an owner-only file and a cross-process lock,
-so `codewhale auth set` can fail there with `insecure permissions` or
-`failed to secure config lock`. Until that is addressed in the store, either
-point `CODEWHALE_HOME` at a directory on `/data` (hmfs, where modes and locks do
-work) or supply the key through the provider's environment variable, which is
-read when the store cannot answer:
+so `codewhale auth set` used to fail there with `insecure permissions`. The store
+now decides from evidence instead of from the mode alone: it asks the
+filesystem to narrow a probe file and reads the mode back, and only then treats
+the mode as uninformative. Pointing `CODEWHALE_HOME` at a directory on `/data`
+(hmfs, whose filesystem stores owner and mode normally) restores the strict
+check; supplying the key through the provider's environment variable also works
+and is read when the store cannot answer:
 
 ```bash
 export DEEPSEEK_API_KEY=sk-…
@@ -260,13 +266,11 @@ codewhale
 ```
 
 The environment variable is plaintext in the shell profile; choose it knowing
-that. To tell in advance whether a directory can hold a private file, and so
-whether the store can work there at all:
-
-```bash
-touch /some/dir/probe && chmod 600 /some/dir/probe && stat -c '%a' /some/dir/probe
-# 600 → the store can work here; 660 or 640 → it cannot, use the variable
-```
+that. A mode read back in a shell does not answer whether the store can work
+there — on this mount the file is reported at `0640` and the `chmod` that would
+narrow it is refused because the shell is not the reported owner. What the store
+does instead is ask the filesystem and then say which answer it got: run
+`codewhale auth set` and read the warning it logs for the store path.
 
 ## Troubleshooting
 
@@ -312,15 +316,19 @@ instead of two Engines writing the same tree, snapshot side-repo and git index.
 The lease lives under the state root — `$CODEWHALE_HOME/workspace-leases`, else
 `~/.codewhale/workspace-leases` — which on a 2in1 sits on hmdfs.
 
-hmdfs cannot carry that lease. It reports the logged-in user's uid and a
-group-writable mode for every object an app creates there, refuses `chmod`, and
-answers `EPERM` to `flock`; the secret store documents the same three behaviours
-in `crates/secrets/src/file_lock.rs`. The lease therefore reports that the
-filesystem cannot provide workspace exclusivity, once per admitted workspace
-scope, and the Engine runs without it. Two engine scopes inside one process
-still share a single slot, so a reload or a second window is unaffected;
-exclusivity against a different app that opens the same workspace is what is
-lost.
+hmdfs cannot prove that directory is current-user-owned: every object there is
+reported as belonging to the logged-in user, whatever uid created it, so the
+calling process is never the reported owner. That is a limit on the *proof*, not
+on the lock. The two are separate capabilities, and the lease is admitted with
+the ownership guard recorded as unverifiable and still taken, so exclusivity
+holds: two engine scopes inside one process share a single slot as before, and a
+second app that opens the same workspace is refused with the holder's pid,
+client, store and age.
+
+Only a filesystem that refuses advisory locks themselves — `EPERM`, `EACCES`,
+`ENOTSUP`, `EINVAL` or `ENOSYS` from `flock`/`fcntl`, which some network and
+FUSE mounts answer — leaves the Engine without exclusivity, and it says so once
+per admitted workspace scope.
 
 Earlier builds turned the same condition into a failed startup:
 
