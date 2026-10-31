@@ -2459,6 +2459,7 @@ fn atomically_replace_settings_file(path: &Path, body: &[u8]) -> Result<()> {
 /// has been refused. `Settings::load_persisted` already tolerates a corrupt
 /// document by falling back to defaults with `load_error` set, so the worst case
 /// here is recoverable, while the alternative is a setting that never saves.
+#[cfg(windows)]
 fn rewrite_settings_in_place(path: &Path, body: &[u8]) -> Result<()> {
     use std::io::Write as _;
 
