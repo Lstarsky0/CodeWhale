@@ -51,6 +51,7 @@ export const UNRELEASED_CONTRIBUTORS: string[] = [
   "@laozidabo",
   "@Ricardo-M-L",
   "@luochen211",
+  "@gannp",
 ];
 
 /**

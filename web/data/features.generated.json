@@ -2,7 +2,7 @@
   "format": "codewhale.features.v1",
   "source": {
     "path": "docs/features.toml",
-    "sha256": "5c6c59e71bf5cf7636f470a4f1c175a310e010b42019cf69c60c1779a0480fa5"
+    "sha256": "869d7d4cd003c5ae790eb9acdcbd1261f8c86854b91dab2d5820499de19a52cc"
   },
   "features": [
     {
@@ -974,6 +974,21 @@
       "registryLine": 728
     },
     {
+      "id": "local-model-reasoning",
+      "name": "Local model reasoning compatibility",
+      "summary": "The vLLM Chat route sends reviewed model-template effort values instead of assuming a universal ladder.",
+      "status": "stable",
+      "surfaces": {
+        "tui": "stable",
+        "web": "stable",
+        "api": "stable"
+      },
+      "since": "unreleased",
+      "flag": null,
+      "docs": "docs/LOCAL_MODEL_REASONING.md",
+      "registryLine": 736
+    },
+    {
       "id": "workbar",
       "name": "Workbar",
       "summary": "/workbar places the tasks, agents and context bar on any edge or hides it.",
@@ -984,7 +999,7 @@
       "since": null,
       "flag": null,
       "docs": null,
-      "registryLine": 736
+      "registryLine": 746
     },
     {
       "id": "terminal-dock",
@@ -997,7 +1012,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": null,
-      "registryLine": 744
+      "registryLine": 754
     },
     {
       "id": "telemetry",
@@ -1010,7 +1025,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/TELEMETRY.md",
-      "registryLine": 755
+      "registryLine": 765
     },
     {
       "id": "docker",
@@ -1023,7 +1038,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/DOCKER.md",
-      "registryLine": 764
+      "registryLine": 774
     },
     {
       "id": "termux",
@@ -1036,7 +1051,7 @@
       "since": null,
       "flag": null,
       "docs": "docs/TERMUX.md",
-      "registryLine": 773
+      "registryLine": 783
     },
     {
       "id": "chatgpt-plan-sign-in",
@@ -1051,7 +1066,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/PROVIDERS.md#sign-in-with-chatgpt",
-      "registryLine": 782
+      "registryLine": 792
     },
     {
       "id": "claude-plan-sign-in",
@@ -1066,7 +1081,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/PROVIDERS.md#sign-in-with-claude",
-      "registryLine": 792
+      "registryLine": 802
     },
     {
       "id": "plugin-oauth-providers",
@@ -1081,7 +1096,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/PLUGIN_PROVIDERS.md",
-      "registryLine": 802
+      "registryLine": 812
     },
     {
       "id": "orcarouter-sign-in",
@@ -1096,7 +1111,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/PROVIDERS.md",
-      "registryLine": 812
+      "registryLine": 822
     },
     {
       "id": "merch-interest",
@@ -1111,7 +1126,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "web/lib/merch/README.md",
-      "registryLine": 823
+      "registryLine": 833
     },
     {
       "id": "profile-constitution",
@@ -1125,7 +1140,7 @@
       "since": "0.10.1",
       "flag": null,
       "docs": "docs/RUNTIME_API.md#profile-constitution",
-      "registryLine": 833
+      "registryLine": 843
     },
     {
       "id": "plugin-shell-install",
@@ -1138,7 +1153,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": "docs/PLUGINS.md",
-      "registryLine": 843
+      "registryLine": 853
     },
     {
       "id": "herdr-agent-state",
@@ -1151,7 +1166,7 @@
       "since": "0.10.2",
       "flag": null,
       "docs": null,
-      "registryLine": 853
+      "registryLine": 863
     },
     {
       "id": "instruction-budgets",
@@ -1164,7 +1179,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/CONFIGURATION.md#instruction-budget-instruction_budget-6526",
-      "registryLine": 862
+      "registryLine": 872
     },
     {
       "id": "github-action-review",
@@ -1177,7 +1192,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "docs/GITHUB_ACTION.md",
-      "registryLine": 872
+      "registryLine": 882
     },
     {
       "id": "telegram-agent",
@@ -1190,7 +1205,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "integrations/telegram-bridge/README.md",
-      "registryLine": 882
+      "registryLine": 892
     },
     {
       "id": "dingtalk-agent",
@@ -1203,7 +1218,7 @@
       "since": "unreleased",
       "flag": null,
       "docs": "integrations/dingtalk-bridge/README.md",
-      "registryLine": 892
+      "registryLine": 902
     }
   ]
 }
