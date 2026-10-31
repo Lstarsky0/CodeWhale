@@ -64,7 +64,7 @@ still need an available release asset source.
 curl -fsSL https://codewhale.net/install.sh | sh
 
 # 2. Make sure ~/.local/bin is on your PATH, now and in future terminals.
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc    # zsh: use ~/.zshrc
+printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc    # zsh: use ~/.zshrc
 export PATH="$HOME/.local/bin:$PATH"
 codewhale --version          # -> codewhale 0.10.0 (1be1a703b975)
 
@@ -194,7 +194,8 @@ Installed checksummed release commands:
 PATH selects no codewhale command; this install is /home/you/.local/bin/codewhale
 …
 Put /home/you/.local/bin first on PATH in future shells (run once; this installer does not edit shell profiles):
-  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+  printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc
+The marker lines let codewhale uninstall remove exactly this block; a bare export line is yours and is never touched.
 Then run: . ~/.bashrc   (or open a new terminal)
 …
 ```
@@ -234,12 +235,15 @@ prints only the current-shell `export` line. On Ubuntu and Debian, `~/.profile` 
 Fix it once:
 
 ```bash
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # bash (macOS login bash: ~/.bash_profile, or ~/.profile if only that exists)
-# echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc  # zsh
+printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc   # bash (macOS login bash: ~/.bash_profile, or ~/.profile if only that exists)
+# printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.zshrc  # zsh
 # fish_add_path ~/.local/bin                               # fish (untested on this VM)
 export PATH="$HOME/.local/bin:$PATH"; hash -r
 command -v codewhale codew
 ```
+
+The three-line block is marked so `codewhale uninstall` can remove exactly it later. A bare
+`export PATH=…` line is yours: uninstall never touches it, because other tools share `~/.local/bin`.
 
 ### Options
 
@@ -1038,7 +1042,7 @@ Not sure which one you have? Run `codewhale doctor --installs`: it lists every c
 
 The Unix installers and the Windows archive installer write `.codewhale-install.sha256` beside the commands. Uninstall accepts only existing regular, single-link files whose bytes match that receipt. On Unix, receipts, selected files and their retained parent directory must belong to the current user and must not be writable by group or others. Optional compiled-host files use their existing release receipt. All selected files pass preflight before any removal; the executing command is removed last. Modified files, symlinks, ambiguous receipts, shared writable directories, legacy unreceipted installs and unrelated files are preserved. No recursive directory removal is performed. A failed removal reports which entries were unlinked, any remaining recovery paths, and any durability failure. If the command receipt was unlinked while the executable remains, recovery republishes it only to a vacant receipt name.
 
-The command runs before configuration, credential migration and telemetry, so malformed config does not block it. It preserves data, credentials, workspaces, shell profiles, completions and services. It never edits a shell profile; for a receipted release copy, it reports recognizable Codewhale PATH blocks in accessible profiles so you can delete those lines yourself. Package-managed copies get removal guidance; custom Cargo roots with local Cargo metadata are recognized. Other command copies still on PATH are listed without running them. Refresh the shell command cache with `hash -r` and inspect the remaining entries.
+The command runs before configuration, credential migration and telemetry, so malformed config does not block it. It preserves data, credentials, workspaces and services. For a receipted release copy it also removes this install's exact three-line `# >>> codewhale PATH >>>` block from your shell profiles, and the Codewhale-generated completion files at the documented paths (`~/.local/share/bash-completion/completions/codewhale`, `~/.zfunc/_codewhale`, `~/.config/fish/completions/codewhale.fish`, honouring `XDG_DATA_HOME` and `XDG_CONFIG_HOME`). Nothing else in a profile is touched, a symlinked or unreadable profile is left for you to edit by hand, and the completion files are kept while another Codewhale copy remains on PATH. If any of that cleanup fails, the command says so and exits non-zero even though the program is already gone. Package-managed copies get removal guidance; custom Cargo roots with local Cargo metadata are recognized. Other command copies still on PATH are listed without running them. Refresh the shell command cache with `hash -r` and inspect the remaining entries.
 
 Successful self-update renews an existing command receipt, and writes one for a pre-receipt directory whose commands it just installed; it never claims unknown siblings. This command does not remove a remote-setup service or a desktop application.
 
@@ -1065,7 +1069,7 @@ by the purge; review the preview and preserve anything needed before confirming.
 |---|---|
 | OS keyring entries | Run `codewhale auth clear --provider <id>` before removing the program. |
 | Per-workspace `.codewhale` directories | Inspect the known workspace individually; uninstall does not search or remove them. |
-| Shell PATH lines and completion files | Review the exact paths reported by uninstall; shell profiles are left unchanged. |
+| A bare `export PATH=…` line you added yourself, and completion files outside the documented paths | Yours to review: uninstall only removes the marked block and the documented Codewhale-generated completion files. |
 | Other installed command copies | Use `codewhale doctor --installs`; each copy follows its own owner and receipt. |
 | Legacy snapshots with explicit `CODEWHALE_HOME` | Review them separately; explicit-home purge does not include them. |
 

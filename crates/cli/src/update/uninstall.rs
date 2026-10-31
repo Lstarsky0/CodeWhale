@@ -163,7 +163,7 @@ fn remove(yes: bool) -> Result<bool> {
     let method = InstallMethod::detect(&identity.path);
     println!("Selected executable: {}", identity.path.display());
     println!(
-        "Program removal preserves user state, credentials, sessions, workspaces and services. Uninstall never edits shell profiles; for a receipted release copy it reports recognizable Codewhale PATH blocks in accessible profiles for you to remove."
+        "Program removal preserves user state, credentials, sessions, workspaces and services. For a receipted release copy it also removes this install's exact Codewhale PATH block from your shell profiles and Codewhale-generated completion files at the documented paths; nothing else in a profile is touched."
     );
     if !method.supports_self_update() {
         println!(
@@ -275,7 +275,7 @@ fn remove(yes: bool) -> Result<bool> {
             directory.join(file.name()).display()
         );
     }
-    report_path_blocks(&directory);
+    let shell = ShellIntegration::plan(&directory, &identity.path, yes);
     validate_primary_update_identity(&identity)?;
     if !yes {
         println!(
@@ -359,6 +359,7 @@ fn remove(yes: bool) -> Result<bool> {
             );
         }
     }
+    let shell_failures = shell.apply();
     println!(
         "Removed this receipted release installation. Other installations were not removed. {}",
         if cfg!(windows) {
@@ -367,17 +368,76 @@ fn remove(yes: bool) -> Result<bool> {
             "Run hash -r in your shell."
         }
     );
+    if !shell_failures.is_empty() {
+        bail!(
+            "The program files were removed, but shell integration cleanup is incomplete: {}",
+            shell_failures.join("; ")
+        );
+    }
     Ok(true)
 }
 
 const PATH_BLOCK_START: &str = "# >>> codewhale PATH >>>";
 const PATH_BLOCK_END: &str = "# <<< codewhale PATH <<<";
 const MAX_PROFILE: usize = 1024 * 1024;
+const MAX_COMPLETION: usize = 1024 * 1024;
 
-fn report_path_blocks(directory: &Path) {
-    let Some(home) = dirs::home_dir() else {
-        return;
-    };
+struct ProfileEdit {
+    profile: PathBuf,
+    file: GuardedFile,
+    updated: Vec<u8>,
+    #[cfg(unix)]
+    mode: u32,
+}
+
+#[derive(Default)]
+struct ShellIntegration {
+    edits: Vec<ProfileEdit>,
+    completions: Vec<(PathBuf, GuardedFile)>,
+}
+
+impl ShellIntegration {
+    fn plan(directory: &Path, selected: &Path, yes: bool) -> Self {
+        let Some(home) = dirs::home_dir() else {
+            return Self::default();
+        };
+        let verb = if yes { "Remove" } else { "Would remove" };
+        Self {
+            edits: plan_path_blocks(&home, directory, verb),
+            completions: plan_completions(&home, directory, selected, verb),
+        }
+    }
+
+    fn apply(self) -> Vec<String> {
+        let mut failures = Vec::new();
+        for edit in self.edits {
+            let profile = edit.profile.clone();
+            match apply_profile_edit(edit) {
+                Ok(()) => println!(
+                    "Removed the Codewhale PATH block from {}",
+                    profile.display()
+                ),
+                Err(error) => failures.push(format!(
+                    "{} was not changed ({error:#}); delete its Codewhale PATH block by hand",
+                    profile.display()
+                )),
+            }
+        }
+        for (path, mut file) in self.completions {
+            let mut unlinked = false;
+            match file.remove_checked(&mut unlinked) {
+                Ok(()) => println!("Removed completion file {}", path.display()),
+                Err(error) => failures.push(format!(
+                    "{} was not removed ({error}); delete it by hand",
+                    path.display()
+                )),
+            }
+        }
+        failures
+    }
+}
+
+fn plan_path_blocks(home: &Path, directory: &Path, verb: &str) -> Vec<ProfileEdit> {
     let zdotdir = std::env::var_os("ZDOTDIR").map(PathBuf::from);
     let mut profiles: Vec<PathBuf> = [
         ".zshrc",
@@ -419,6 +479,7 @@ fn report_path_blocks(directory: &Path) {
                     rest == format!("{value}\" $PATH") && names_directory(value)
                 })
     };
+    let mut edits = Vec::new();
     for profile in profiles {
         let (Some(parent), Some(name)) = (
             profile.parent(),
@@ -438,27 +499,37 @@ fn report_path_blocks(directory: &Path) {
                 continue;
             }
         };
-        let text = match file.read_bounded(MAX_PROFILE).map(String::from_utf8) {
-            Ok(Ok(text)) => text,
-            _ => {
+        let bytes = match file.read_bounded(MAX_PROFILE) {
+            Ok(bytes) => bytes,
+            Err(error) => {
                 println!(
-                    "Not read: {} is not a UTF-8 file within the size limit.",
+                    "Not read: {} ({error}). If it holds a Codewhale PATH block, remove that block by hand.",
                     profile.display()
                 );
                 continue;
             }
         };
-        let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
+        let Ok(text) = String::from_utf8(bytes) else {
+            println!(
+                "Not read: {} is not a UTF-8 file within the size limit.",
+                profile.display()
+            );
+            continue;
+        };
+        let segments: Vec<&str> = text.split_inclusive('\n').collect();
+        let lines: Vec<&str> = segments.iter().map(|line| line.trim_end()).collect();
+        let mut removed = vec![false; lines.len()];
         let mut index = 0;
         while index < lines.len() {
             if lines[index] == PATH_BLOCK_START {
                 if lines.get(index + 2) == Some(&PATH_BLOCK_END) && ours(lines[index + 1]) {
                     println!(
-                        "Codewhale PATH block for this install: {} lines {}-{}. Uninstall does not edit shell profiles; delete those lines yourself to drop the PATH entry.",
+                        "{verb} the Codewhale PATH block for this install: {} lines {}-{}",
                         profile.display(),
                         index + 1,
                         index + 3
                     );
+                    removed[index..index + 3].fill(true);
                     index += 3;
                     continue;
                 }
@@ -476,6 +547,216 @@ fn report_path_blocks(directory: &Path) {
             }
             index += 1;
         }
+        if !removed.contains(&true) {
+            continue;
+        }
+        #[cfg(unix)]
+        let mode = {
+            use std::os::unix::fs::PermissionsExt;
+            match std::fs::metadata(&profile) {
+                Ok(metadata) => metadata.permissions().mode() & 0o7777,
+                Err(error) => {
+                    println!(
+                        "Not changed: {} ({error}); delete its Codewhale PATH block by hand.",
+                        profile.display()
+                    );
+                    continue;
+                }
+            }
+        };
+        let updated = segments
+            .iter()
+            .zip(&removed)
+            .filter(|(_, removed)| !**removed)
+            .flat_map(|(segment, _)| segment.bytes())
+            .collect();
+        edits.push(ProfileEdit {
+            profile,
+            file,
+            updated,
+            #[cfg(unix)]
+            mode,
+        });
+    }
+    edits
+}
+
+fn apply_profile_edit(edit: ProfileEdit) -> Result<()> {
+    let ProfileEdit {
+        profile,
+        mut file,
+        updated,
+        #[cfg(unix)]
+        mode,
+    } = edit;
+    let parent = profile
+        .parent()
+        .context("profile has no parent directory")?;
+    let name = profile
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("profile name is not UTF-8")?
+        .to_string();
+    #[cfg(unix)]
+    let mut staged = stage_profile(parent, &updated, mode)?;
+    #[cfg(not(unix))]
+    let mut staged = stage_profile(parent, &updated)?;
+    // Rename the profile aside instead of unlinking it: a failure while the
+    // replacement is installed can then put the user's own bytes back by name.
+    let retired = GuardedFile::recovery_name();
+    file.move_to_vacant(&retired).with_context(|| {
+        format!(
+            "{} could not be set aside for its replacement",
+            profile.display()
+        )
+    })?;
+    if let Err(error) = staged.move_to_vacant(&name) {
+        let restore = file.move_to_vacant(&name).map_err(|restore| {
+            format!(
+                "the unchanged profile is retained at {} and could not be restored ({restore})",
+                parent.join(&retired).display()
+            )
+        });
+        let mut discarded = false;
+        let _ = staged.remove_checked(&mut discarded);
+        return match restore {
+            Ok(()) => Err(error).with_context(|| {
+                format!(
+                    "{} was left unchanged because its replacement could not be installed",
+                    profile.display()
+                )
+            }),
+            Err(restore) => Err(anyhow!("{error}; {restore}")),
+        };
+    }
+    let mut unlinked = false;
+    if file.remove_checked(&mut unlinked).is_err() || !unlinked {
+        println!(
+            "Retired copy of {} is retained at {}; delete it by hand",
+            profile.display(),
+            parent.join(&retired).display()
+        );
+    }
+    Ok(())
+}
+
+/// Stage the replacement bytes, then adopt the profile's mode before the guard
+/// captures them. `GuardedFile` pins ctime, so a chmod after `stage` invalidates
+/// the very file the caller is about to move into place.
+fn stage_profile(parent: &Path, updated: &[u8], #[cfg(unix)] mode: u32) -> Result<GuardedFile> {
+    let staged = GuardedFile::stage(parent, updated, false)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let path = parent.join(staged.name());
+        let name = staged.name().to_string();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))?;
+        drop(staged);
+        return GuardedFile::open_bounded(parent, &name, MAX_PROFILE)?
+            .context("the staged profile replacement disappeared before it could be verified");
+    }
+    #[cfg(not(unix))]
+    Ok(staged)
+}
+
+fn plan_completions(
+    home: &Path,
+    directory: &Path,
+    selected: &Path,
+    verb: &str,
+) -> Vec<(PathBuf, GuardedFile)> {
+    let absolute = |name: &str| {
+        std::env::var_os(name)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+    };
+    let data = absolute("XDG_DATA_HOME").unwrap_or_else(|| home.join(".local").join("share"));
+    let config = absolute("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config"));
+    let candidates = [
+        (
+            clap_complete::Shell::Bash,
+            data.join("bash-completion").join("completions"),
+            "codewhale",
+        ),
+        (clap_complete::Shell::Zsh, home.join(".zfunc"), "_codewhale"),
+        (
+            clap_complete::Shell::Fish,
+            config.join("fish").join("completions"),
+            "codewhale.fish",
+        ),
+    ];
+    let present: Vec<_> = candidates
+        .into_iter()
+        .filter(|(_, directory, name)| directory.join(name).symlink_metadata().is_ok())
+        .collect();
+    if present.is_empty() {
+        return Vec::new();
+    }
+    // The receipt's other commands (`codew`) and the selected executable are
+    // this installation, not a second one. Only a copy outside the directory
+    // being removed keeps the completions.
+    let install_directory = std::fs::canonicalize(directory).ok();
+    let others_remain = codewhale_release::installs::inventory(Some(selected))
+        .entries
+        .iter()
+        .any(|entry| {
+            std::fs::canonicalize(&entry.path).ok().as_deref() != Some(selected)
+                && entry
+                    .path
+                    .parent()
+                    .and_then(|parent| std::fs::canonicalize(parent).ok())
+                    .is_none_or(|parent| Some(&parent) != install_directory.as_ref())
+        });
+    let mut files = Vec::new();
+    for (shell, directory, name) in present {
+        let path = directory.join(name);
+        if others_remain {
+            println!(
+                "Kept completion file {}: another Codewhale copy remains on PATH.",
+                path.display()
+            );
+            continue;
+        }
+        let mut file = match GuardedFile::open_bounded(&directory, name, MAX_COMPLETION) {
+            Ok(Some(file)) => file,
+            Ok(None) => continue,
+            Err(error) => {
+                println!(
+                    "Not read: {} ({error}). If you generated it with codewhale completion, delete it by hand.",
+                    path.display()
+                );
+                continue;
+            }
+        };
+        let generated = file
+            .read_bounded(MAX_COMPLETION)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .is_some_and(|text| is_generated_completion(shell, &text));
+        if generated {
+            println!("{verb} completion file {}", path.display());
+            files.push((path, file));
+        } else {
+            println!(
+                "Left {} unchanged: it is not a Codewhale-generated completion script.",
+                path.display()
+            );
+        }
+    }
+    files
+}
+
+fn is_generated_completion(shell: clap_complete::Shell, text: &str) -> bool {
+    let bin = crate::COMPLETION_BIN_NAME;
+    match shell {
+        clap_complete::Shell::Bash => {
+            text.contains(&format!("_{bin}()")) && text.contains(&format!("complete -F _{bin}"))
+        }
+        clap_complete::Shell::Zsh => {
+            text.starts_with(&format!("#compdef {bin}")) && text.contains(&format!("_{bin}()"))
+        }
+        clap_complete::Shell::Fish => text.contains(&format!("complete -c {bin}")),
+        _ => false,
     }
 }
 
@@ -649,7 +930,7 @@ fn purge(yes: bool, selected: Option<&Path>) -> Result<()> {
         );
     }
     println!(
-        "Not covered: OS keychain/keyring entries (run codewhale auth clear --provider <id> before removing the program), per-workspace .codewhale directories, shell profile lines and completion files."
+        "Not covered: OS keychain/keyring entries (run codewhale auth clear --provider <id> before removing the program) and per-workspace .codewhale directories."
     );
     if !yes {
         println!(

@@ -567,7 +567,8 @@ if [ "$path_selected" -eq 0 ]; then
         *) profile=".profile" ;;
       esac
       say "Put $install_dir first on PATH in future shells (run once; this installer does not edit shell profiles):"
-      say "  echo 'export PATH=\"$path_dir:\$PATH\"' >> ~/$profile"
+      say "  printf '%s\\n' '# >>> codewhale PATH >>>' 'export PATH=\"$path_dir:\$PATH\"' '# <<< codewhale PATH <<<' >> ~/$profile"
+      say "The marker lines let codewhale uninstall remove exactly this block; a bare export line is yours and is never touched."
       say "Then run: . ~/$profile   (or open a new terminal)"
       say "Or for this shell only:"
       say "  export PATH=\"$path_dir:\$PATH\"; hash -r"

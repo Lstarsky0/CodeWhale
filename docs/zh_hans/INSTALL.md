@@ -46,7 +46,7 @@ target/release/codewhale --version
 curl -fsSL https://codewhale.net/install.sh | sh
 
 # 2. Make sure ~/.local/bin is on your PATH, now and in future terminals.
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc    # zsh: use ~/.zshrc
+printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc    # zsh: use ~/.zshrc
 export PATH="$HOME/.local/bin:$PATH"
 codewhale --version          # -> codewhale 0.10.0 (1be1a703b975)
 
@@ -150,7 +150,8 @@ Installed checksummed release commands:
 PATH selects no codewhale command; this install is /home/you/.local/bin/codewhale
 …
 Put /home/you/.local/bin first on PATH in future shells (run once; this installer does not edit shell profiles):
-  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+  printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc
+The marker lines let codewhale uninstall remove exactly this block; a bare export line is yours and is never touched.
 Then run: . ~/.bashrc   (or open a new terminal)
 …
 ```
@@ -173,12 +174,15 @@ Then run: . ~/.bashrc   (or open a new terminal)
 一次性修复：
 
 ```bash
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # bash (macOS login bash: ~/.bash_profile, or ~/.profile if only that exists)
-# echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc  # zsh
+printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.bashrc   # bash (macOS login bash: ~/.bash_profile, or ~/.profile if only that exists)
+# printf '%s\n' '# >>> codewhale PATH >>>' 'export PATH="$HOME/.local/bin:$PATH"' '# <<< codewhale PATH <<<' >> ~/.zshrc  # zsh
 # fish_add_path ~/.local/bin                               # fish (untested on this VM)
 export PATH="$HOME/.local/bin:$PATH"; hash -r
 command -v codewhale codew
 ```
+
+这个三行块带有标记，`codewhale uninstall` 之后可以精确地移除它。你自己加的裸 `export PATH=…`
+行归你自己管理：卸载从不改动它，因为 `~/.local/bin` 也被其他工具共用。
 
 ### 选项
 
@@ -690,9 +694,14 @@ codewhale auth clear --provider <id>
 | Homebrew | `brew uninstall codewhale`；不再使用该 tap 时才执行 untap。 |
 | 旧 curl 安装或其他手动副本 | 已知旧安装目录内、与当前程序字节完全一致且确属当前用户的文件可建立收据后移除；其他来源不明的文件会保留，需先核实具体路径和来源。 |
 
-卸载只移除所选安装收据拥有的命令、宿主文件和收据。它不会修改 shell 配置；
-匹配的 PATH 行会列出供手动核对。Windows 正在运行的程序会先改名，退出后由
-辅助进程删除。Windows 分支已通过编译检查，仍需在真实 Windows 主机上验证。
+卸载移除所选安装收据拥有的命令、宿主文件和收据；对带收据的发布版安装，还会移除
+该安装在 shell 配置文件中的精确三行 `# >>> codewhale PATH >>>` 块，以及文档中
+约定路径上由 Codewhale 生成的补全文件（`~/.local/share/bash-completion/completions/codewhale`、
+`~/.zfunc/_codewhale`、`~/.config/fish/completions/codewhale.fish`，并遵循
+`XDG_DATA_HOME` 和 `XDG_CONFIG_HOME`）。配置文件中的其他内容一概不动；符号链接或
+无法读取的配置文件留给你手动修改；只要 PATH 上还有其他 Codewhale 副本，补全文件
+就会保留。这部分清理若有失败，命令会如实报告并以非零状态退出，即使程序本身已经删除。
+Windows 正在运行的程序会先改名，退出后由辅助进程删除。Windows 分支已通过编译检查，仍需在真实 Windows 主机上验证。
 重复卸载不会取得其他副本的所有权；重新安装会创建新的收据。
 
 ### 第 3 步：可选的数据清理
@@ -708,8 +717,8 @@ codewhale auth clear --provider <id>
 清理会删除这些目标内的会话、工作区快照和恢复副本；确认前应先核对预览并保留
 仍需使用的内容。重新安装程序不能恢复已清理的数据。
 
-每个工作区的 `.codewhale`、系统钥匙串、shell PATH 行和补全文件不在自动清理
-范围内。请逐项检查已知路径；卸载不会扫描整个主目录。远程服务和桌面应用也有
+每个工作区的 `.codewhale` 和系统钥匙串不在自动清理范围内；你自己加的裸 `export PATH=…`
+行，以及约定路径之外的补全文件，也由你自己检查。请逐项检查已知路径；卸载不会扫描整个主目录。远程服务和桌面应用也有
 各自的安装所有权，不由所选 CLI 安装的收据代管。
 
 ---
