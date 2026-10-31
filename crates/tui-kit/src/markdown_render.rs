@@ -204,8 +204,8 @@ thread_local! {
 /// Resumable parser state.
 ///
 /// The parser is strictly line-oriented: each source line maps to blocks using
-/// only a three-field carry (`open_fence_len`, `code_language`,
-/// `code_block_id`). That is what makes resuming *exact* rather than
+/// only a four-field carry (`open_fence_len`, `code_language`,
+/// `code_block_id`, `in_list`). That is what makes resuming *exact* rather than
 /// approximate — appending text can never change how an earlier complete line
 /// parsed, so committed blocks never need revisiting.
 ///
@@ -233,6 +233,7 @@ pub struct ParseState {
     open_fence_len: Option<usize>,
     code_language: Option<String>,
     code_block_id: usize,
+    in_list: bool,
 }
 
 impl ParseState {
@@ -256,6 +257,7 @@ impl ParseState {
                 &mut self.open_fence_len,
                 &mut self.code_language,
                 &mut self.code_block_id,
+                &mut self.in_list,
             );
         }
         let mut digest = if self.consumed == 0 {
@@ -285,6 +287,7 @@ impl ParseState {
         let mut open_fence_len = self.open_fence_len;
         let mut code_language = self.code_language.clone();
         let mut code_block_id = self.code_block_id;
+        let mut in_list = self.in_list;
         for raw_line in tail.lines() {
             push_parsed_line(
                 raw_line,
@@ -292,6 +295,7 @@ impl ParseState {
                 &mut open_fence_len,
                 &mut code_language,
                 &mut code_block_id,
+                &mut in_list,
             );
         }
         ParsedMarkdown { blocks }
@@ -514,6 +518,7 @@ impl ParseState {
         let mut open_fence_len = self.open_fence_len;
         let mut code_language = self.code_language.clone();
         let mut code_block_id = self.code_block_id;
+        let mut in_list = self.in_list;
         for raw_line in tail.lines() {
             push_parsed_line(
                 raw_line,
@@ -521,6 +526,7 @@ impl ParseState {
                 &mut open_fence_len,
                 &mut code_language,
                 &mut code_block_id,
+                &mut in_list,
             );
         }
         blocks
@@ -551,6 +557,7 @@ fn push_parsed_line(
     open_fence_len: &mut Option<usize>,
     code_language: &mut Option<String>,
     code_block_id: &mut usize,
+    in_list: &mut bool,
 ) {
     let trimmed = raw_line.trim_start();
     let fence_len = trimmed.chars().take_while(|c| *c == '`').count();
@@ -589,6 +596,7 @@ fn push_parsed_line(
     }
 
     if let Some((depth, text)) = parse_blockquote(trimmed) {
+        *in_list = false;
         blocks.push(Block::Quote {
             depth,
             text: text.to_string(),
@@ -597,6 +605,7 @@ fn push_parsed_line(
     }
 
     if let Some((level, text)) = parse_heading(trimmed) {
+        *in_list = false;
         blocks.push(Block::Heading {
             level,
             text: text.to_string(),
@@ -608,6 +617,7 @@ fn push_parsed_line(
     }
 
     if let Some((bullet, text)) = parse_list_item(trimmed) {
+        *in_list = true;
         blocks.push(Block::ListItem {
             indent: raw_line[..raw_line.len() - trimmed.len()].chars().count(),
             bullet,
@@ -617,16 +627,19 @@ fn push_parsed_line(
     }
 
     if is_horizontal_rule(trimmed) {
+        *in_list = false;
         blocks.push(Block::HorizontalRule);
         return;
     }
 
     match parse_table_row(trimmed) {
         Some(cells) => {
+            *in_list = false;
             blocks.push(Block::TableRow(cells));
             return;
         }
         None if trimmed.starts_with('|') => {
+            *in_list = false;
             blocks.push(Block::TableSeparator);
             return;
         }
@@ -639,8 +652,9 @@ fn push_parsed_line(
         return;
     }
 
+    *in_list &= trimmed.len() < raw_line.len();
     blocks.push(Block::Paragraph {
-        text: raw_line.to_string(),
+        text: if *in_list { raw_line } else { trimmed }.to_string(),
     });
 }
 
@@ -807,9 +821,7 @@ pub fn render_parsed_tagged_with_palette(
                 let link_style = Style::default()
                     .fg(palette::WHALE_ACTION)
                     .add_modifier(Modifier::UNDERLINED);
-                out.extend(render_line_with_links_tagged(
-                    text, width, base_style, link_style,
-                ));
+                out.extend(render_paragraph_tagged(text, width, base_style, link_style));
             }
             Block::Blank => {
                 out.push(RenderedMarkdownLine {
@@ -1374,6 +1386,36 @@ fn render_wrapped_code_spans_tagged(
             }
         })
         .collect()
+}
+
+fn render_paragraph_tagged(
+    text: &str,
+    width: usize,
+    base_style: Style,
+    link_style: Style,
+) -> Vec<RenderedMarkdownLine> {
+    let body = text.trim_start();
+    let indent = text[..text.len() - body.len()]
+        .chars()
+        .count()
+        .min(width / 2);
+    let mut rows = render_line_with_links_tagged(
+        body,
+        width.saturating_sub(indent).max(1),
+        base_style,
+        link_style,
+    );
+    if indent == 0 {
+        return rows;
+    }
+    for (idx, row) in rows.iter_mut().enumerate() {
+        row.line.spans.insert(0, Span::raw(" ".repeat(indent)));
+        row.links = row.links.iter().map(|link| link.shifted(indent)).collect();
+        if idx > 0 {
+            row.copy_prefix_width = indent;
+        }
+    }
+    rows
 }
 
 fn render_list_line_tagged(
