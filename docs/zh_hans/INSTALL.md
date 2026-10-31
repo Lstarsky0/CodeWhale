@@ -210,8 +210,9 @@ codewhale doctor        # diagnostics; see the note in §8 about what it does NO
 
 ### 升级 / 卸载
 
-* 升级：`codewhale update`（见 §7）。
-* 卸载：`rm ~/.local/bin/codewhale ~/.local/bin/codew`，数据的清理见 §12。
+* 升级：此安装会自动更新（见 §7），也可以立即运行 `codewhale update`。
+* 卸载：`~/.local/bin/codewhale uninstall` 预览该安装收据所拥有的文件；加上
+  `--yes` 才会删除。数据的清理见 §12。
 
 ---
 
