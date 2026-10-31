@@ -24,7 +24,7 @@
   },
   "crates/cli/src/update/uninstall.rs": {
     "path_canonicalize": 8,
-    "std_fs": 6
+    "std_fs": 11
   },
   "crates/cloud-facts/src/lib.rs": {
     "std_fs": 1
