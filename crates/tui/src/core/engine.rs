@@ -4308,11 +4308,6 @@ impl Engine {
                         }
                         Op::SetFleetRoster { roster } => {
                             self.config.fleet_roster = roster;
-                            let _ = self
-                                .send_event(Event::status(
-                                    "Fleet roster refreshed for subsequent turns".to_string(),
-                                ))
-                                .await;
                         }
                         Op::SyncSession {
                             session_id,
