@@ -315,6 +315,12 @@ impl ReasoningEffort {
                 other => other,
             };
         }
+        if provider == ProviderKind::Vllm
+            && let Some(tier) = codewhale_config::local_reasoning::local_reasoning_spec(wire_model)
+                .and_then(|spec| spec.normalize(normalized.as_setting()))
+        {
+            return Self::from_setting(tier);
+        }
         let catalog_identity = if provider == ProviderKind::Custom {
             identity
         } else {

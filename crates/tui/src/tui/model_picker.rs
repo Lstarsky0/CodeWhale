@@ -4942,6 +4942,17 @@ fn route_picker_efforts(
         // does carry tiers when the account publishes them (#6396).
         return CODEX_PICKER_EFFORTS.to_vec();
     }
+    if provider == ProviderKind::Vllm
+        && let Some(spec) = codewhale_config::local_reasoning::local_reasoning_spec(wire_model)
+    {
+        return std::iter::once(ReasoningEffort::Auto)
+            .chain(
+                spec.tiers
+                    .iter()
+                    .filter_map(|tier| catalog_effort_value(tier)),
+            )
+            .collect();
+    }
     if let Some(offering) = ReasoningEffort::offering_for_reasoning(provider, base_url, wire_model)
         && let Some(catalog_efforts) = catalog_picker_efforts(&offering)
     {
