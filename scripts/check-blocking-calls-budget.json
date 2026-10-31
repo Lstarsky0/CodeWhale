@@ -38,6 +38,9 @@
   "crates/config/src/path_io.rs": {
     "path_canonicalize": 2
   },
+  "crates/config/src/persistence.rs": {
+    "thread_sleep": 1
+  },
   "crates/config/src/private_directory.rs": {
     "path_canonicalize": 1,
     "std_fs": 1
@@ -154,7 +157,8 @@
     "std_fs": 2
   },
   "crates/runtime/src/settings.rs": {
-    "std_fs": 4
+    "std_fs": 5,
+    "thread_sleep": 1
   },
   "crates/runtime/src/working_set.rs": {
     "path_canonicalize": 1,
