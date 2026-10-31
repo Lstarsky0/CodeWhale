@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 // Legacy per-host replay fixtures only; live production consumers use the companion.
 //! Sandboxed, read-only execution of the generated Whalesong world. This reuses
 //! the workspace's existing QuickJS dependency; no JS filesystem/network APIs,
