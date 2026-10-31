@@ -16,9 +16,31 @@ pub(crate) async fn history_owner_work<T: Send + 'static>(
     .await
 }
 
-pub(crate) fn saved_document_digest(session: &SavedSession) -> Result<String> {
+/// Enforce the canonical byte bound on a history, measured the way it is
+/// carried between owners rather than the way it sits on disk.
+///
+/// A saved document repeats its own conversation while it carries a journal:
+/// `messages` and the journal's active branch hold the same turns, so the
+/// stored file is up to twice the history it holds. The reader that opens such
+/// a document already judges it by [`SavedSession::transport_form`]
+/// (`SessionManager::load_session_snapshot_with_limit`), so a writer that
+/// judged the stored shape against the same bound refused to write back a
+/// conversation the runtime was still opening, saving and running turns on.
+/// That is exactly how a fork — and with it `/undo`, retry and
+/// `fork-at-turn` — came to fail on every conversation whose stored file
+/// passed 8 MiB while its history was still half that.
+///
+/// Every writer of a complete history calls this instead of measuring the
+/// session itself, so the writers cannot drift from each other or from the
+/// reader.
+pub(crate) fn ensure_history_transport_fits(session: &SavedSession) -> Result<()> {
     let mut size = HistorySizeBound(MAX_CANONICAL_HISTORY_BYTES);
     serde_json::to_writer(&mut size, &session.transport_form())?;
+    Ok(())
+}
+
+pub(crate) fn saved_document_digest(session: &SavedSession) -> Result<String> {
+    ensure_history_transport_fits(session)?;
     Ok(codewhale_runtime::hashing::sha256_hex(
         codewhale_runtime::hashing::canonical_json(&serde_json::to_value(session)?).as_bytes(),
     ))

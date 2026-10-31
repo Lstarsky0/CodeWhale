@@ -971,6 +971,173 @@ mod recovery {
         Ok(())
     }
 
+    /// A fork is refused for the history it carries, not for the shape it is
+    /// stored in.
+    ///
+    /// A saved document repeats its own conversation while it carries a
+    /// journal: `messages` and the journal's active branch hold the same
+    /// turns, so its file is up to twice the history it holds. The reader that
+    /// opens such a document already knows this — an oversized file is judged
+    /// by `SavedSession::transport_form` — but the fork writer judged the
+    /// stored shape against the same 8 MiB bound. A conversation whose file
+    /// passed 8 MiB could therefore be opened, saved and continued for several
+    /// turns, yet never forked, and so never undone, retried or branched;
+    /// reported from the VS Code client on a 9.8 MiB conversation
+    /// (`/undo` answered "full history exceeds byte transport bound") whose
+    /// carried form was 5.2 MiB.
+    #[tokio::test]
+    async fn a_fork_measures_the_history_it_carries_not_the_shape_it_stores() -> Result<()> {
+        let _env = crate::test_support::lock_test_env();
+        let dir = tempfile::tempdir()?;
+        let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", dir.path());
+        let manager = RuntimeThreadManager::open(
+            config(),
+            dir.path().to_path_buf(),
+            test_manager_config(dir.path().join("runtime")),
+        )?;
+        let thread = manager
+            .create_thread(CreateThreadRequest::default())
+            .await?;
+        let base = Utc::now();
+        let at = |seconds: i64| Some(base + chrono::Duration::seconds(seconds));
+
+        // One tool result big enough that the document's two copies of it
+        // (messages and journal) cross the bound while either copy alone does
+        // not. The margin is deliberate: it must stay over the bound on the
+        // stored side and under it on the carried side.
+        let bulk = "x".repeat(4 * 1024 * 1024 + 512 * 1024);
+        let bash_call = "call_bash_bulk";
+        let turn_one = "turn_bulk_output";
+        let turn_two = "turn_after_bulk";
+
+        let text_item = |id: &str, turn: &str, order: i64, kind: TurnItemKind, text: &str| {
+            let mut item = sample_item(turn, id, TurnItemLifecycleStatus::Completed);
+            item.kind = kind;
+            item.started_at = at(order);
+            item.ended_at = item.started_at;
+            item.summary = text.to_string();
+            item.detail = Some(text.to_string());
+            item
+        };
+        let mut bulk_call = sample_item(turn_one, "item_bulk", TurnItemLifecycleStatus::Completed);
+        bulk_call.kind = TurnItemKind::ToolCall;
+        bulk_call.started_at = at(1);
+        bulk_call.ended_at = bulk_call.started_at;
+        bulk_call.summary = "bash: bulk output".to_string();
+        bulk_call.detail = Some(bulk.clone());
+        bulk_call.metadata = Some(json!({
+            "tool_use_id": bash_call,
+            "tool_name": "bash",
+            "tool_input": "{\"command\":\"cat big.txt\"}",
+            "tool_result_for": bash_call,
+            "is_error": false,
+        }));
+
+        let items = vec![
+            text_item(
+                "item_u1",
+                turn_one,
+                0,
+                TurnItemKind::UserMessage,
+                "read big.txt",
+            ),
+            bulk_call,
+            text_item(
+                "item_a1",
+                turn_one,
+                2,
+                TurnItemKind::AgentMessage,
+                "that is a lot of text",
+            ),
+            text_item(
+                "item_u2",
+                turn_two,
+                3,
+                TurnItemKind::UserMessage,
+                "now undo that",
+            ),
+            text_item("item_a2", turn_two, 4, TurnItemKind::AgentMessage, "done"),
+        ];
+        for item in &items {
+            manager.store.save_item(item)?;
+        }
+        for (turn_id, order) in [(turn_one, 0), (turn_two, 10)] {
+            let mut turn = sample_turn(&thread.id, turn_id, RuntimeTurnStatus::Completed);
+            turn.started_at = at(order);
+            turn.ended_at = turn.started_at;
+            manager.store.save_turn(&turn)?;
+        }
+        let mut stored = manager.get_thread(&thread.id).await?;
+        stored.latest_turn_id = Some(turn_two.to_string());
+        manager.store.save_thread(&stored)?;
+
+        let transcript: Vec<Message> = serde_json::from_value(json!([
+            {"role":"user","content":[
+                {"type":"text","text":"read big.txt"},
+                {"type":"text","text":"<turn_meta>\nCurrent local date: 2026-09-24\n</turn_meta>"}]},
+            {"role":"assistant","content":[
+                {"type":"tool_use","id":bash_call,"name":"bash","input":{"command":"cat big.txt"}}]},
+            {"role":"user","content":[
+                {"type":"tool_result","tool_use_id":bash_call,"content":bulk}]},
+            {"role":"assistant","content":[
+                {"type":"text","text":"that is a lot of text"}]},
+            {"role":"user","content":[
+                {"type":"text","text":"now undo that"},
+                {"type":"text","text":"<turn_meta>\nCurrent local date: 2026-09-24\n</turn_meta>"}]},
+            {"role":"assistant","content":[
+                {"type":"text","text":"done"}]}
+        ]))?;
+        let saved = crate::session_manager::create_saved_session_with_id_and_mode(
+            Uuid::new_v4().to_string(),
+            &transcript,
+            &thread.model,
+            dir.path(),
+            0,
+            None,
+            Some("agent"),
+        );
+        let sessions = crate::session_manager::SessionManager::new(
+            crate::session_manager::default_sessions_dir()?,
+        )?;
+        {
+            let _admission = manager.session_checkpoint_guard().await;
+            sessions.save_session(&saved)?;
+            manager
+                .set_thread_session_checkpoint(&thread.id, &saved)
+                .await?;
+        }
+
+        // The fixture has to be in the failing regime, or the test proves
+        // nothing: the file on disk is over the bound, the history it carries
+        // is not.
+        let bound = codewhale_protocol::MAX_CANONICAL_HISTORY_BYTES;
+        let written = std::fs::metadata(
+            crate::session_manager::default_sessions_dir()?
+                .join(format!("{}.json", saved.metadata.id)),
+        )?
+        .len();
+        let carried = serde_json::to_vec(&saved.transport_form())?.len();
+        assert!(
+            written > bound as u64,
+            "the stored document must exceed the bound: {written} bytes"
+        );
+        assert!(
+            carried <= bound,
+            "the carried history must fit the bound: {carried} bytes"
+        );
+
+        let prepared = manager.prepare_fork_at_user_message(&thread.id, 0).await?;
+        let (_, prefix, _) = &prepared.own_session;
+        assert_eq!(
+            prefix.as_slice(),
+            &transcript[..4],
+            "the fork keeps exactly the messages before the undone turn"
+        );
+        let (fork, _, _, _) = manager.publish_prepared_fork(prepared).await?;
+        assert_eq!(manager.restore_thread_messages(&fork)?, transcript[..4]);
+        Ok(())
+    }
+
     /// A fork's checkpoint has to describe the document as a reader sees it.
     ///
     /// A saved session is repaired on the way out, and `resume_session` writes
@@ -23353,6 +23520,104 @@ fn a_compaction_checkpoint_is_not_a_kept_prompt() {
             &session_recovery_projection(&[user("first"), user("undo me")])
         ),
         Some(3)
+    );
+}
+
+/// The rest of the engine's own traffic, by the rule the checkpoint test above
+/// states: none of it is recorded on a turn, so none of it may read as a kept
+/// prompt.
+///
+/// A conversation that received an MCP-server notice, a deferred-toolbox
+/// snapshot, or a screenshot could not be cut at all: `/undo` answered
+/// "Cannot identify an exact saved-history boundary for this backtrack" before
+/// it touched a file, so the failed turns a person wanted gone stayed in the
+/// transcript. Both the notice and the toolbox snapshot carry the runtime
+/// provenance line inside their `<turn_meta>`; a person's own prompt carries
+/// none, which is what keeps this recognition from swallowing a real turn.
+#[test]
+fn runtime_traffic_and_attachment_tags_are_not_kept_prompts() {
+    let text = |text: &str| ContentBlock::Text {
+        text: text.to_string(),
+        cache_control: None,
+    };
+    let prompt_meta = || text("<turn_meta>\nCurrent local date: 2026-09-24\n</turn_meta>");
+    let runtime_meta =
+        || text("<turn_meta>\nInput provenance: runtime (non-authoritative)\n</turn_meta>");
+    let user = |content: Vec<ContentBlock>| Message {
+        role: Role::User,
+        content,
+    };
+    let assistant = |text_: &str| Message {
+        role: Role::Assistant,
+        content: vec![text(text_)],
+    };
+    let attached = "second\n[Attached image: /tmp/shot.png]";
+    let messages = vec![
+        user(vec![text("first"), prompt_meta()]),
+        // The MCP-server notice the engine puts at the head of a session.
+        user(vec![
+            text(
+                "<codewhale:runtime_event kind=\"mcp_configured_servers\" visibility=\"internal\">\n- chrome-devtools\n</codewhale:runtime_event>",
+            ),
+            runtime_meta(),
+        ]),
+        assistant("ok"),
+        // A prompt that carried a screenshot: the engine brackets the image
+        // with path tags, and the record keeps only the naming block.
+        user(vec![
+            text(attached),
+            text("<image path=\"/tmp/shot.png\">"),
+            ContentBlock::ImageUrl {
+                image_url: codewhale_models::ImageUrlContent {
+                    url: "data:image/png;base64,iVBORw0KGgo=".to_string(),
+                },
+            },
+            text("</image>"),
+            prompt_meta(),
+        ]),
+        // The deferred-toolbox snapshot the engine injects when the tool set
+        // changes; it sits under a full per-turn preamble, not a bare one.
+        user(vec![
+            text("{\"type\":\"current_deferred_toolbox\",\"active_deferred_tools\":[]}"),
+            text(
+                "<turn_meta>\nCurrent local date: 2026-09-24\nInput provenance: runtime (non-authoritative)\n## Repo Working Set\nTop-level dirs: src\n</turn_meta>",
+            ),
+        ]),
+        assistant("ok2"),
+        user(vec![text("undo me"), prompt_meta()]),
+    ];
+
+    assert!(
+        projected_user_text(&messages[1]).is_none(),
+        "the MCP notice is not a prompt"
+    );
+    assert!(
+        projected_user_text(&messages[4]).is_none(),
+        "the toolbox snapshot is not a prompt"
+    );
+    assert_eq!(
+        projected_user_text(&messages[3]).as_deref(),
+        Some(attached),
+        "a screenshot's prompt is the block that named it, not its tags"
+    );
+
+    // Both walks the fork runs land where the records say they must. The
+    // kept history is every message but the last, so the exact prefix ends
+    // one past the end of the transcript's kept region.
+    let kept = vec!["first".to_string(), attached.to_string()];
+    assert_eq!(saved_history_boundary(&messages, &kept, "undo me"), Some(6));
+    assert_eq!(
+        exact_prefix_boundary(
+            &messages,
+            &session_recovery_projection(&[
+                user(vec![text("first"), prompt_meta()]),
+                assistant("ok"),
+                user(vec![text(attached)]),
+                assistant("ok2"),
+            ])
+        ),
+        Some(messages.len() - 1),
+        "the exact prefix ends just past the last kept message"
     );
 }
 

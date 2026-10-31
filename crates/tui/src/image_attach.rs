@@ -907,6 +907,23 @@ fn tag_block(text: &str) -> ContentBlock {
     }
 }
 
+/// True for the `<image path="…">` / `</image>` text blocks that
+/// [`expand_attachment_blocks`] brackets an attachment with.
+///
+/// They exist so the model can tell three screenshots apart, not because a
+/// person typed them: the turn record keeps the prompt block that named
+/// `[Attached image: …]` and nothing else. Readers that rebuild "what the user
+/// said" from a saved transcript skip them, so a prompt that carried a
+/// screenshot still matches the turn that recorded it.
+#[must_use]
+pub(crate) fn is_attachment_tag_block(block: &ContentBlock) -> bool {
+    let ContentBlock::Text { text, .. } = block else {
+        return false;
+    };
+    let text = text.trim();
+    text == "</image>" || (text.starts_with("<image path=\"") && text.ends_with("\">"))
+}
+
 /// Replace every image in a request with text when the route cannot see them.
 ///
 /// Capability is a property of the *route*, not of the attachment, and the
