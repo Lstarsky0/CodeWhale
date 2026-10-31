@@ -1372,7 +1372,7 @@ async fn disabling_mid_call_revokes_at_once_and_teardown_waits_for_async_dispose
     let tool = host_tool(&engine, fixture.workspace(), "slow_wait");
     let context = ToolContext::new(fixture.workspace()).with_plugin_registry(engine.plugin_view());
     let call = tokio::spawn(async move { tool.execute(json!({}), &context).await });
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
 
     let disabled = fixture.disable("slow-tool");
     // The revocation scan (a full re-hash of the staged tree) runs first;

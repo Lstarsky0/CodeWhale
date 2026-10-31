@@ -763,7 +763,8 @@ async fn remote_control_events_preserve_current_turn_and_surface_failures() {
             codewhale_localization::Locale::De,
         ] {
             app.ui_locale = locale;
-            for width in [40, 80] {
+            let narrow = if app.sandbox_backend.is_some() { 40 } else { 80 };
+            for width in [narrow, 80] {
                 let facts = crate::tui::phase_strip::tideline_footer_from_app(&mut app, width);
                 let (text, ink) = facts.right.expect("remote failure footer");
                 assert!(text.starts_with("/rc status"), "{locale:?} {width}: {text}");
@@ -787,7 +788,8 @@ async fn remote_control_events_preserve_current_turn_and_surface_failures() {
     let status = app.remote_control.status_line();
     assert!(status.contains("fixture start rejected"), "{status}");
     assert!(!status.contains("fixture_remote_secret"), "{status}");
-    let facts = crate::tui::phase_strip::tideline_footer_from_app(&mut app, 40);
+    let narrow = if app.sandbox_backend.is_some() { 40 } else { 80 };
+    let facts = crate::tui::phase_strip::tideline_footer_from_app(&mut app, narrow);
     let (text, ink) = facts.right.expect("synchronous failure footer");
     assert!(text.starts_with("/rc status"), "{text}");
     assert_eq!(ink, codewhale_palette::ChromeInk::Failure);

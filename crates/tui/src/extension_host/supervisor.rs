@@ -871,7 +871,7 @@ fn native_runtime_libraries(program: &Path) -> Result<Vec<PathBuf>, String> {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|error| format!("Native runtime library inspection unavailable: {error}"))?;
-        let status = match child.wait_timeout(Duration::from_secs(3)) {
+        let status = match child.wait_timeout(Duration::from_secs(10)) {
             Ok(Some(status)) => status,
             _ => {
                 let _ = child.kill();
